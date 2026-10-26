@@ -199,6 +199,9 @@ Only the proof step is trained, because there Dafny gives an unambiguous yes or 
 2. **GRPO with LoRA:** Glimmer learns directly from Dafny's verdict, with a graded reward. LoRA instead of full
    fine-tuning: for reinforcement learning it reaches nearly the same quality at a fraction of the GPU cost.
 
+**Release:** the trained LoRA adapter is published on Hugging Face, with its evaluation results and the license of
+the base model.
+
 **Training data:** Vericoding, DafnyBench and translated Python functions, the exact input the proof agent gets in the
 product. Evaluation tasks never enter training.
 
