@@ -7,7 +7,7 @@ Built for the [Meta Global AI Developer Hackathon 2026](https://dev.meta.ai/even
 
 ## Built during the hackathon
 
-Everything in this repository was created during the hackathon building period from October 27 to November 4, 2026.
+Everything in this repository was created after the official hackathon kickoff on October 26, 2026, 12:00 PM ET.
 No code, data or assets were prepared before the event.
 
 ## Status
