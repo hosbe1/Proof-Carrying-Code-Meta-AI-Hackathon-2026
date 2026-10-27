@@ -26,8 +26,8 @@ Proofs must pass with the Dafny 4.11.0 release binary and its Z3, as CI uses. Ve
 - One issue, one branch `agent/<issue number>-<slug>`, one pull request whose description says `Closes #<n>`.
 - Merge (squash) only with green CI and a finished review. Never merge a red pull request.
 - Issues labelled `human` need a person (training runs, live evaluation, demo video); assign them to yourself.
-- Meta models are called only from the dedicated Meta environment. Tests that call them are marked `live` and never run
-  elsewhere or in CI.
+- Meta models are called only where `PCC_META_ALLOWED=1` is set: on team machines only in the dedicated Meta
+  environment, and in the GitHub Action, which sets it. Tests that call them are marked `live` and never run in CI.
 
 ## Rules
 

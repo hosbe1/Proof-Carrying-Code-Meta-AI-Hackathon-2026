@@ -45,7 +45,7 @@ SOURCE_RANK: tuple[frozenset[SourceKind], ...] = (
     frozenset({SourceKind.COMMIT}),
     frozenset({SourceKind.DOCSTRING}),
     frozenset({SourceKind.COMMENT}),
-    # Not ranked by the plan. As an extension of the plan, each is ranked below comments.
+    # The plan ranks these below comments, in this order.
     frozenset({SourceKind.CALL_SITE}),
     frozenset({SourceKind.DOCS}),
     frozenset({SourceKind.CONVENTION}),
