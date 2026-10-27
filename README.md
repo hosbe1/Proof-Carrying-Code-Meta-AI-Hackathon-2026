@@ -12,4 +12,20 @@ No code, data or assets were prepared before the event.
 
 ## Status
 
-Work in progress.
+Work in progress. The package skeleton is in place; the pipeline steps are being built.
+
+## Development
+
+```bash
+uv sync
+uv run pytest
+```
+
+Needs Python 3.12, [uv](https://docs.astral.sh/uv/) and [Dafny](https://dafny.org) 4.11. See
+[docs/plan.md](docs/plan.md) for the plan, [docs/architecture.md](docs/architecture.md) for the code layout and
+[AGENTS.md](AGENTS.md) for the rules every contributor, human or agent, follows. All work is tracked as GitHub issues
+and follows the process in AGENTS.md.
+
+## License
+
+[AGPL-3.0](LICENSE).

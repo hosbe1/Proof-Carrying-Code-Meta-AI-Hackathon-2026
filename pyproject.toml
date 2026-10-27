@@ -1,0 +1,71 @@
+[project]
+name = "pcc"
+version = "0.1.0"
+description = "Proof-carrying code for Python: Muse models turn Python functions into checkable Dafny proof certificates."
+readme = "README.md"
+license = "AGPL-3.0-only"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "hypothesis>=6.100",
+    "crosshair-tool>=0.0.70",
+]
+
+[project.scripts]
+pcc-check = "pcc.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "import-linter>=2.0",
+]
+
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pcc"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-m 'not live' --strict-markers"
+markers = [
+    "live: calls real models or services; run by hand, never in CI",
+    "dafny: needs the dafny CLI on PATH",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+mypy_path = "src"
+files = ["src", "tests"]
+
+# Architecture rules, enforced in CI (lint-imports). See docs/architecture.md.
+[tool.importlinter]
+root_package = "pcc"
+
+[[tool.importlinter.contracts]]
+name = "Layers: entry points > pipeline > steps > infrastructure > pylib > config > core"
+type = "layers"
+containers = ["pcc"]
+# Every module directly under pcc must sit in a layer, so a new module cannot skip the rules.
+exhaustive = true
+layers = [
+    "cli | evaluation",
+    "pipeline",
+    "project | context | intent | spec | contracts | transpile | translate_ai | equivalence | prove | counterexample | second_opinion | certificate | report",
+    "models | verifier | sandbox",
+    "pylib",
+    "config",
+    "core",
+]
