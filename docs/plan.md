@@ -90,13 +90,41 @@ everyone has to trust, and it is kept as small and as well checked as possible.
 **What the transpiler can do, the transpiler does. Only the rest goes to the model.** Both paths exist from the start,
 so the pipeline always runs end to end. Every new transpiler rule takes work away from the model.
 
-**Rule-based transpiler.** It translates both the function and the spec predicate. Each rule is short and documented.
-Constructs outside its supported subset are handed to the model, never guessed.
+**Rule-based transpiler.** It parses with Python's `ast` module and targets one fixed Python version (3.12). Each rule
+is short and documented. Constructs outside its supported subset are handed to the model, never guessed. Missing type
+hints are inferred with a type checker (mypy or pyright) where possible.
+
+It has two modes:
+
+- **Code mode** produces executable Dafny. `all(x <= r for x in xs)` becomes a loop or a recursive function.
+- **Spec mode** produces logical Dafny. The same expression becomes `forall i :: 0 <= i < |xs| ==> xs[i] <= r`, which
+  the prover can use directly. Translating specs like code would make proofs much harder.
 
 **Python library in Dafny.** Python's behavior is rebuilt in Dafny as a library of building blocks, for example
-`py_floordiv`, `py_mod`, `py_list_append` or `py_str_split`, including the exceptions they raise. The transpiler maps
-Python almost one to one onto these blocks. Each block is proven against its spec in Dafny and tested against CPython
-on a large number of inputs. A new transpiler rule only lands together with the blocks it needs.
+`py_floordiv`, `py_mod`, `py_list_append` or `py_str_split`. The transpiler maps Python almost one to one onto these
+blocks. This matters because the two languages differ even on basics: `7 // -2` is `-4` in Python, while `7 / -2` is
+`-3` in Dafny, and `7 % -2` is `-1` versus `1`.
+
+What each block guarantees, stated precisely:
+
+- **Proven in Dafny against its own spec.** This shows that the block and its spec agree, not that they match Python.
+- **Tested against CPython** on a large number of inputs, including edge cases such as negative indices, slices past
+  the end, `x or default` returning a value instead of a bool, `max` returning the first of equal elements, stable
+  `sorted`, and `zip` truncating. This is the evidence that the block matches Python.
+
+A new transpiler rule only lands together with the blocks it needs, with their proofs and tests.
+
+**Python errors become preconditions.** `xs[i]` can raise `IndexError`, `a // 0` raises `ZeroDivisionError`,
+`max([])` raises `ValueError`. Each block requires that its error case does not happen, so a proof also shows that the
+function never crashes on inputs its spec allows. Functions that raise on purpose (`raise`) are handled in a later
+tier.
+
+**Mutation and aliasing.** Dafny sequences are immutable values, Python lists are shared objects: after
+`ys = xs; ys.append(1)`, `xs` has changed too. The transpiler therefore translates
+
+- lists that are never changed as Dafny sequences,
+- local lists that are changed but never shared as reassigned sequences (`xs := xs + [v]`),
+- shared lists and changed parameters not at all: they go to the AI fallback until a later tier covers them.
 
 **AI fallback.** The model translates whatever the transpiler does not support yet. These translations can still reach
 `proven`, but the pull request comment and the certificate say clearly: translated by AI, tested, not guaranteed.
@@ -108,7 +136,14 @@ on a large number of inputs. A new transpiler rule only lands together with the 
   boundaries). Equal means equal results **and** equal error behavior: if the original raises on an input, the
   translation must raise too or carry a matching precondition.
 - **Symbolic search:** `crosshair diffbehavior` runs the original and the back-compiled version with symbolic inputs on
-  real CPython and searches for an input on which they differ.
+  real CPython and searches for an input on which they differ. A first test with integers and lists of integers found
+  every planted translation bug, including one that 10,000 random inputs missed, with no false alarms on correct
+  translations. Strings, dicts and other types still have to be tested. "No differences found" means none were found,
+  not that none exist.
+
+Back-compiled Dafny uses its own runtime types, for example `_dafny.Seq` instead of `list`. A small converter turns
+Python values into Dafny values and back for both checks. It is part of what has to be trusted, so it gets its own
+tests.
 
 A mismatch on the transpiler path is a transpiler bug. It is fixed in the transpiler, and the function falls back to
 the AI path in the meantime. On the AI path the model retranslates with the counterexample as a hint, up to three
@@ -166,9 +201,14 @@ can copy its bug. Whether this lowers false alarms is measured on HumanEvalFix.
 The goal is a result for every function, and as many proofs as possible. The transpiler grows tier by tier; whatever
 it does not cover yet goes to the AI fallback:
 
-1. Pure functions with type hints: numbers, booleans, strings, lists, tuples, loops, recursion, `all`, `any`,
-   comprehensions. This also covers almost all spec predicates.
-2. Dicts, sets, exceptions as a result type
+1. Pure functions with type hints: integers, booleans, strings, lists, tuples, loops, recursion, `all`, `any`,
+   comprehensions. This also covers almost all spec predicates. Not in this tier:
+   - `float` and true division `/`, which always returns a `float` in Python, even for `4 / 2`
+   - arithmetic on booleans, since `True + 1 == 2` in Python
+   - string methods that depend on Unicode tables, such as `upper()`, because `"ß".upper()` is `"SS"`. At first only
+     concatenation, comparison, `len` and indexing. Lone surrogate characters are valid in Python strings but not in
+     Dafny, so the string blocks must handle or reject them.
+2. Dicts, sets, functions that raise on purpose (`raise`), as a result type
 3. Classes and methods that only change their own state
 4. Functions using libraries, files or network, through contracts
 
@@ -191,7 +231,8 @@ during the demo or the judging.
 ### Certificate
 
 Certificates live in the repository under `proofs/`: per function the Dafny file, the spec in Python and Dafny, the
-assumptions, the translation path (transpiler or AI) and the checks the translation passed. Anyone can run `dafny verify proofs/`.
+assumptions, the translation path (transpiler or AI) and the checks the translation passed. Anyone can run
+`dafny verify proofs/`.
 On every pull request the action checks whether each certificate still matches its code and flags stale ones.
 
 ### Pull request comment
@@ -225,13 +266,15 @@ Only the proof step is trained, because there Dafny gives an unambiguous yes or 
 1. **Warm start with SFT:** collect successful proofs and train Glimmer on them (expert iteration). GRPO only learns
    when some attempts succeed and others fail, so this step comes first. Glimmer SFT is free on Fireworks until 30 Nov.
 2. **GRPO with LoRA:** Glimmer learns directly from Dafny's verdict, with a graded reward. LoRA instead of full
-   fine-tuning: for reinforcement learning it reaches nearly the same quality at a fraction of the GPU cost.
+   fine-tuning: for reinforcement learning it matches full fine-tuning at a fraction of the GPU cost.
 
 **Release:** the trained LoRA adapter is published on Hugging Face, with its evaluation results and the license of
 the base model.
 
 **Training data:** Vericoding, DafnyBench and translated Python functions, the exact input the proof agent gets in the
-product. Evaluation tasks never enter training.
+product. Transpiler output uses the `py_*` blocks, which Vericoding and DafnyBench never do, so a large share of the
+training data is transpiler output, and the library's specs are part of the proof agent's prompt. Evaluation tasks
+never enter training.
 
 **Compute:** no own money is spent. GPU credits the team receives (Modal, Baseten, Fireworks) are pooled for training.
 Without such credits the project stops after the free SFT step, and GRPO is shipped ready to run (code, reward
@@ -250,7 +293,8 @@ function, config) without a result.
 Fixed test splits never enter training, for example about 40 of the 164 HumanEvalFix functions.
 
 **Metrics:** proof rate, bugs found, false alarms (a `counterexample` on correct code), share per Python tier, share
-translated by the transpiler, cost and time per function. False alarms must stay close to zero. Target values are set after the first run.
+translated by the transpiler, cost and time per function. False alarms must stay close to zero. Target values are set
+after the first run.
 
 **Comparison:** Glimmer before training, after SFT and after GRPO, against Spark, Spark Open and Wonder on the same
 tasks.
@@ -259,8 +303,8 @@ tasks.
 
 A known real bug from BugsInPy: the pull request with the bug turns red with a counterexample, the pull request with
 the fix turns green with a certificate that the viewer can re-check. The demo function is translated by the
-transpiler, not by AI. If the project finds a real, previously unknown
-bug or contradiction along the way, that becomes the highlight.
+transpiler, not by AI. If the project finds a real, previously unknown bug or contradiction along the way, that
+becomes the highlight.
 
 ## Licensing
 
@@ -279,5 +323,9 @@ BugsInPy are checked before any of their data enters the repository.
 ## Outlook
 
 - Grow the transpiler beyond the four tiers
+- `float` support through Dafny's `fp64` type, once it ships in a release and compiles to Python. It exists on Dafny's
+  development branch but not in release 4.11, is verification-only so far, and Dafny's `==` on it differs from
+  Python's (`NaN`, signed zero), so `==` would map to `fp64.Equal`.
 - Prove the transpiler itself. This first needs a formal semantics of the supported Python subset and of Dafny.
+  Research semantics of older Python versions exist (λπ, K-Python) and could serve as a starting point.
 - More verifier backends behind `verify(code)`, for example Lean
