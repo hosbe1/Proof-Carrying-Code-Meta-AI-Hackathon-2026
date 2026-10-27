@@ -33,7 +33,7 @@ Python function
   ├─ 1. Collect context     fixed collector + agent that searches further when unclear
   ├─ 2. Write intent        plain text with cited sources, conflicts flagged
   ├─ 3. Write spec          executable Python predicate, checked with Hypothesis and mutants
-  ├─ 4. Translate           Python → Dafny for code and spec, differential check
+  ├─ 4. Translate           rule-based transpiler, AI only for the rest, then checked
   ├─ 5. Prove               trained Glimmer → Spark Open or Spark → Wonder
   ├─ 6. Search counterexample   only after a failed proof
   ├─ 7. Second opinion      only when step 5 or 6 reports a problem
@@ -84,15 +84,38 @@ A spec that passes these checks is frozen. Later steps may not change it.
 
 ### 4. Translate to Dafny
 
-The model translates both the function and the spec predicate to Dafny. There is no hand-written transpiler.
+If the translation is wrong, the proof is about a function that does not exist. The translation is therefore the part
+everyone has to trust, and it is kept as small and as well checked as possible.
 
-Each translation is checked differentially: the Dafny version is compiled back to Python
-(`dafny build --target:py`) and compared with the original on 10,000 random inputs plus edge cases proposed by the
-model (empty collections, negative numbers, boundaries). Equal means equal results **and** equal error behavior: if the
-original raises on an input, the translation must raise too or carry a matching precondition.
+**What the transpiler can do, the transpiler does. Only the rest goes to the model.** Both paths exist from the start,
+so the pipeline always runs end to end. Every new transpiler rule takes work away from the model.
 
-On a mismatch the model retranslates with the counterexample as a hint, up to three times. After that the function is
-`not_checkable`. The certificate states openly that equivalence was tested on many inputs, not proven for all.
+**Rule-based transpiler.** It translates both the function and the spec predicate. Each rule is short and documented.
+Constructs outside its supported subset are handed to the model, never guessed.
+
+**Python library in Dafny.** Python's behavior is rebuilt in Dafny as a library of building blocks, for example
+`py_floordiv`, `py_mod`, `py_list_append` or `py_str_split`, including the exceptions they raise. The transpiler maps
+Python almost one to one onto these blocks. Each block is proven against its spec in Dafny and tested against CPython
+on a large number of inputs. A new transpiler rule only lands together with the blocks it needs.
+
+**AI fallback.** The model translates whatever the transpiler does not support yet. These translations can still reach
+`proven`, but the pull request comment and the certificate say clearly: translated by AI, tested, not guaranteed.
+
+**Every translation is checked**, whichever path produced it:
+
+- **Differential testing:** the Dafny version is compiled back to Python (`dafny build --target:py`) and compared with
+  the original on 10,000 random inputs plus edge cases proposed by the model (empty collections, negative numbers,
+  boundaries). Equal means equal results **and** equal error behavior: if the original raises on an input, the
+  translation must raise too or carry a matching precondition.
+- **Symbolic search:** `crosshair diffbehavior` runs the original and the back-compiled version with symbolic inputs on
+  real CPython and searches for an input on which they differ.
+
+A mismatch on the transpiler path is a transpiler bug. It is fixed in the transpiler, and the function falls back to
+the AI path in the meantime. On the AI path the model retranslates with the counterexample as a hint, up to three
+times. After that the function is `not_checkable`.
+
+The certificate states openly what the proof rests on: the translation path, the checks it passed, and that
+equivalence was checked, not proven for all inputs.
 
 **Calls inside the project** are handled bottom-up. Callees are proven first; callers then use only the callee's spec,
 as Dafny does anyway. Independent functions can be proven in parallel. If a callee is not proven, or functions call
@@ -140,14 +163,19 @@ can copy its bug. Whether this lowers false alarms is measured on HumanEvalFix.
 
 ## Supported Python
 
-The goal is a result for every function, and as many proofs as possible. Support grows in tiers:
+The goal is a result for every function, and as many proofs as possible. The transpiler grows tier by tier; whatever
+it does not cover yet goes to the AI fallback:
 
-1. Pure functions with numbers, strings, lists, dicts, tuples
-2. Classes and methods that only change their own state
-3. Functions using libraries, files or network, through contracts
-4. Everything else, such as `eval`, metaprogramming or threads: `not_checkable` with the reason
+1. Pure functions with type hints: numbers, booleans, strings, lists, tuples, loops, recursion, `all`, `any`,
+   comprehensions. This also covers almost all spec predicates.
+2. Dicts, sets, exceptions as a result type
+3. Classes and methods that only change their own state
+4. Functions using libraries, files or network, through contracts
 
-The share of functions per tier is reported as a metric.
+Everything else, such as `eval`, metaprogramming or threads, stays with the AI fallback or becomes `not_checkable` with
+the reason. Rules needed by the demo bug come first.
+
+Reported metrics: the share of functions per tier, and the share translated by the transpiler instead of the model.
 
 ## Product: GitHub Action
 
@@ -163,14 +191,14 @@ during the demo or the judging.
 ### Certificate
 
 Certificates live in the repository under `proofs/`: per function the Dafny file, the spec in Python and Dafny, the
-assumptions and the input coverage of the differential check. Anyone can run `dafny verify proofs/`.
+assumptions, the translation path (transpiler or AI) and the checks the translation passed. Anyone can run `dafny verify proofs/`.
 On every pull request the action checks whether each certificate still matches its code and flags stale ones.
 
 ### Pull request comment
 
 A summary on top, for example "12 proven, 1 counterexample, 3 open". Counterexamples always come first. Per function:
 
-1. Result state
+1. Result state, and whether the translation came from the transpiler or from AI
 2. Intent in plain text with sources
 3. For `counterexample`: the input as a ready-to-copy Python test
 4. Assumptions: contracts, unproven callees, contradictions between sources
@@ -182,7 +210,7 @@ At runtime the pipeline calls **only Meta models**.
 
 | Step | Model |
 |---|---|
-| Intent, spec, translation | Muse Spark |
+| Intent, spec, AI fallback translation | Muse Spark |
 | Proof, stage 1 | trained Muse Glimmer |
 | Proof, stage 2 | Muse Spark Open (hosted) or Muse Spark |
 | Proof, stage 3 | Muse Wonder |
@@ -221,8 +249,8 @@ function, config) without a result.
 
 Fixed test splits never enter training, for example about 40 of the 164 HumanEvalFix functions.
 
-**Metrics:** proof rate, bugs found, false alarms (a `counterexample` on correct code), share per Python tier, cost and
-time per function. False alarms must stay close to zero. Target values are set after the first run.
+**Metrics:** proof rate, bugs found, false alarms (a `counterexample` on correct code), share per Python tier, share
+translated by the transpiler, cost and time per function. False alarms must stay close to zero. Target values are set after the first run.
 
 **Comparison:** Glimmer before training, after SFT and after GRPO, against Spark, Spark Open and Wonder on the same
 tasks.
@@ -230,7 +258,8 @@ tasks.
 ## Demo
 
 A known real bug from BugsInPy: the pull request with the bug turns red with a counterexample, the pull request with
-the fix turns green with a certificate that the viewer can re-check. If the project finds a real, previously unknown
+the fix turns green with a certificate that the viewer can re-check. The demo function is translated by the
+transpiler, not by AI. If the project finds a real, previously unknown
 bug or contradiction along the way, that becomes the highlight.
 
 ## Licensing
@@ -249,4 +278,6 @@ BugsInPy are checked before any of their data enters the repository.
 
 ## Outlook
 
+- Grow the transpiler beyond the four tiers
+- Prove the transpiler itself. This first needs a formal semantics of the supported Python subset and of Dafny.
 - More verifier backends behind `verify(code)`, for example Lean
