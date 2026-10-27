@@ -231,3 +231,5 @@ PyLib-py/
 # Test result files written by local runs
 TestResults/
 
+# Claude Code local settings, never shared
+.claude/settings.local.json
