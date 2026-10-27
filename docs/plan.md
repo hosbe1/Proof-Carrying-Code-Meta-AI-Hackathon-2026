@@ -242,10 +242,13 @@ difference rejects the attempt, so the prover cannot prove a different function.
 **Anti-cheat:** the checker rejects any proof that changes the frozen spec or uses `assume`, `expect`, `{:axiom}`,
 `@Axiom`, body-less lemmas, `{:verify false}`, `{:only}`, `{:extern}`, `decreases *` or `{:termination false}`,
 `@VerifyOnly`, or attributes that override the resource limit (`{:rlimit}`, `{:resource_limit}`, `{:timeLimit}`,
-`{:timeLimitMultiplier}`). The full list, with a test file for each form, is in `pcc.verifier.anti_cheat`. Contracts
-from step 4 are allowed only in a separate, generated assumptions module that is listed in the certificate. Dafny's exit
-code alone is not enough: in Dafny 4.11 `{:axiom}` and `@Axiom` verify with exit code 0, so the checker scans the code
-itself. Only exit code 0 together with a clean scan counts as verified.
+`{:timeLimitMultiplier}`, and their `@` forms). Attributes are checked against an allowlist (`trigger`, `induction`,
+`fuel`/`@Fuel`, `opaque`, `split_here`, `isolate_assertions`/`@IsolateAssertions`), with or without arguments; any other
+attribute is rejected, because some, like `{:selective_checking}`, make Dafny accept `ensures false` with exit code 0.
+The full list, with a test file for each form, is in `pcc.verifier.anti_cheat`. Contracts from step 4 are allowed only
+in a separate, generated assumptions module that is listed in the certificate. Dafny's exit code alone is not enough: in
+Dafny 4.11 `{:axiom}` and `@Axiom` verify with exit code 0, so the checker scans the code itself. Only exit code 0
+together with a clean scan counts as verified.
 
 ### 6. Search for a counterexample
 
