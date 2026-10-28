@@ -647,16 +647,17 @@ in the order of the critical paths, as soon as their blockers are closed:
 
 1. Config and interfaces, which block almost every ticket.
 2. The training path: the verifier, sandbox and model parts it needs; the Vericoding harness with the header check; the
-   reward; the rejection sampling tool and the SFT export. Then the Glimmer deployment with its smoke test and
-   throughput, the baseline of base Glimmer on the Vericoding test split, and round 0.
+   reward; the rejection sampling tool and the SFT export; the evaluation report. Then the Glimmer deployment with its
+   smoke test and throughput, the baseline of base Glimmer on the Vericoding test split, and round 0.
 3. Pipeline wave 1 (intent, spec, transpiler, equivalence and certificate parts), in parallel with the training path
    whenever a runner is free.
 4. Pipeline wave 2 (proof, mutants, counterexample), then the offline end-to-end test on the palindrome, CLI and action,
    the demo repository and the live red and green pull requests, and the pipeline baseline on the HumanEvalFix test
    split.
-5. SFT 1, round 1, SFT 2 and the evaluations after training, then the comparison table.
-6. The bug hunt.
-7. The video and the submission.
+5. SFT 1, round 1, SFT 2 and the evaluations after training, the spec writer comparison and the proof-only tasks,
+   then the comparison table.
+6. The bug hunt, and in parallel the video, which shows the bug hunt results so far.
+7. The submission.
 
 About 45 agent tickets lie on the main path. They run on two or three runners in parallel worktrees, in the order of
 the critical paths, the training path first. Large tickets on the green-pull-request path are split into chained parts
