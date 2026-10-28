@@ -12,6 +12,11 @@ The original Python code stays as it is. Every function gets one of two things:
 
 The certificate travels with the code, which is what "proof-carrying code" means.
 
+The project is the verification of Python code with Meta models. What matters most is that the verification approach is
+right and that we make measurable progress with the Meta models: on the evaluation and by training Glimmer. The bug hunt
+in open-source projects is an add-on. When time or money runs short, the priority is the verification pipeline first,
+then progress with the Meta models (evaluation, model comparison, training), then the bug hunt.
+
 ## Result states
 
 Every function ends in exactly one of four states:
@@ -35,7 +40,7 @@ Python function
   ├─ 2. Write intent        plain text with cited sources, conflicts flagged
   ├─ 3. Write spec          executable Python predicate, checked with Hypothesis and mutants
   ├─ 4. Translate           rule-based transpiler, AI only for the rest, then checked
-  ├─ 5. Prove               trained Glimmer → Spark Open or Spark → Wonder
+  ├─ 5. Prove               trained Glimmer → Spark → Wonder
   ├─ 6. Search counterexample   only after a failed proof
   ├─ 7. Second opinion      only when step 5 or 6 reports a problem
   └─ 8. Report              certificate in proofs/, comment on the pull request
@@ -185,11 +190,11 @@ the unsupported construct as a hint (this counts as one of its two rewrites), an
   the original on 10,000 random inputs plus edge cases proposed by the model (empty collections, negative numbers,
   boundaries). Only inputs on which `pre` holds count. Equal means: both return equal values, or both raise;
   back-compiled Dafny does not check preconditions at run time, so the exception types are not compared.
-- **Symbolic search:** `crosshair diffbehavior` runs the original and the back-compiled version with symbolic inputs on
-  real CPython and searches for an input on which they differ. A first test with integers and lists of integers found
-  every planted translation bug, including one that 10,000 random inputs missed, with no false alarms on correct
-  translations. Strings, dicts and other types still have to be tested. "No differences found" means none were found,
-  not that none exist.
+- **Symbolic search (stretch):** `crosshair diffbehavior` runs the original and the back-compiled version with symbolic
+  inputs on real CPython and searches for an input on which they differ. A first test with integers and lists of
+  integers found every planted translation bug, including one that 10,000 random inputs missed, with no false alarms on
+  correct translations. Strings, dicts and other types still have to be tested. "No differences found" means none were
+  found, not that none exist.
 - **Spec translation:** the transpiled `spec` and `pre` are compiled back to Python as well and evaluated next to the
   Python ones on the inputs from step 3, with the results of the original and of every mutant. They must agree on every
   input; otherwise the function is `not_checkable` ("spec translation differs"). Without this check a wrong spec
@@ -227,12 +232,12 @@ Dafny's error message back.
 | Stage | Model | Attempts |
 |---|---|---|
 | 1 | trained Glimmer | up to 8 |
-| 2 | Spark Open or Spark, whichever measures better | up to 3, with all previous failures |
+| 2 | Spark | up to 3, with all previous failures |
 | 3 | Wonder | 1, only for functions of at most 40 source lines |
 
 These numbers are starting values. They are tuned after the first evaluation run and are configurable in the action.
-Stage 1 is skipped while no Glimmer endpoint is configured; stage 2 uses Spark Open only where a partner key is
-available. Dafny always runs with a fixed resource limit and never with `--allow-warnings`.
+Stage 1 is skipped while no Glimmer endpoint is configured. Dafny always runs with a fixed resource limit and never
+with `--allow-warnings`.
 
 **The proof may only add ghost code:** loop invariants, `decreases` clauses, `assert` statements, `calc` blocks, lemmas
 and calls to those lemmas. The executable code and the method header stay as translated, except for added `decreases`
@@ -350,6 +355,16 @@ One comment per pull request, updated on every run. A summary on top, for exampl
 4. Assumptions: contracts, unproven callees, contradictions between sources
 5. Collapsed: the Dafny spec, and a link to the artifact with the certificates
 
+### Local results viewer
+
+`pcc-check view <path> [--port 8765]` is the way to browse the pipeline results (bug hunt and HumanEvalFix evaluation)
+locally. The path is a `scan.jsonl` file or a run folder in `docs/results/`. It starts a server on `127.0.0.1` only and
+opens the browser. One page shows a table of all functions (project, path, name, state,
+reason, cost) with filters by state and project and a search box. A detail view per function shows the intent, the spec,
+the Dafny code, the proof result, a counterexample as pytest, the second opinion and the cost. The viewer only reads
+files and starts no runs. There is no hosted service: it would show results from running untrusted code, it would need
+keys, and it would cost money to run.
+
 ## Models
 
 At runtime the pipeline calls **only Meta models**.
@@ -357,64 +372,132 @@ At runtime the pipeline calls **only Meta models**.
 | Step | Model | Where it runs |
 |---|---|---|
 | Intent, spec, AI fallback translation | Muse Spark (`muse-spark-1.3`) | Meta Model API |
-| Proof, stage 1 | trained Muse Glimmer | own deployment, optional (see Training) |
-| Proof, stage 2 | Muse Spark Open or Muse Spark | Spark Open through a partner (Baseten, Fireworks) if a key is available, else Meta Model API |
+| Proof, stage 1 | trained Muse Glimmer | own deployment on Modal (vLLM, SGLang as fallback, scale to zero); fallback a Fireworks on-demand deployment |
+| Proof, stage 2 | Muse Spark (`muse-spark-1.3`) | Meta Model API |
 | Proof, stage 3 | Muse Wonder (`muse-wonder-1.0`) | Meta Model API |
 
 Every endpoint is OpenAI-compatible and configured by a base URL and an API key from the environment: the Meta Model
-API by `META_API_KEY`, a Glimmer deployment by `PCC_GLIMMER_BASE_URL` and `PCC_GLIMMER_API_KEY`, a Spark Open partner
-by `PCC_SPARK_OPEN_BASE_URL` and `PCC_SPARK_OPEN_API_KEY`. A stage whose endpoint is not configured is skipped. Prices
-per million input/output tokens: `muse-spark-1.3` $1.25/$4.25, `muse-spark-1.3-contributor` $0.10/$0.20,
-`muse-wonder-1.0` $4/$20.
+API by `META_API_KEY`, a Glimmer deployment by `PCC_GLIMMER_BASE_URL` and `PCC_GLIMMER_API_KEY`. A stage whose
+endpoint is not configured is skipped. Prices per million input/output tokens: `muse-spark-1.3` $1.25/$4.25,
+`muse-spark-1.3-contributor` $0.10/$0.20, `muse-wonder-1.0` $4/$20.
 
-All four models run on the same evaluation tasks. The comparison table decides the roles in stage 2.
-Only Glimmer is trained. At 816B parameters, Spark Open is too large to train within our means.
+Endpoints billed per GPU hour (a Glimmer deployment) count $0 per token in the function budget; their GPU time is
+tracked per deployment and capped in Compute.
 
-Our own evaluation runs on public data and may use the cheaper contributor mode (`muse-spark-1.3-contributor`), in
-which Meta may train on the content. It runs only in a dedicated environment on each machine: the client refuses to
-call Meta models unless `PCC_META_ALLOWED=1` is set there, and tests that call real models never run in CI.
+The model comparison covers Glimmer (base and trained), Spark and Wonder on the same evaluation tasks. The spec writer
+is Spark by default (`ModelsConfig.spec`), and the second opinion is Wonder, a different model from the spec writer. The
+comparison may change the spec writer: the better model becomes the default.
+
+**Why Glimmer is trained, not Spark:** Spark is closed; Spark Open (816B) is too large to train or serve within our
+means. Glimmer is Apache 2.0, a dense 30B model that fits one GPU, so the trained adapter can be served for evaluation,
+the demo and the product, and published.
+
+Our evaluation and training data are public, so Spark runs in contributor mode (`muse-spark-1.3-contributor`) for the
+evaluation, the training data and the bug hunt, where Meta may train on the content. Wonder has no contributor mode and
+is used sparingly. Contributor mode runs only in the Meta environment, where `PCC_META_ALLOWED=1` is set: the client
+refuses to call Meta models without it, and tests that call real models never run in CI.
 
 ## Training
 
-Only the proof step is trained, because there Dafny gives an unambiguous yes or no.
+Only the proof step is trained, because there Dafny gives an unambiguous yes or no. The main method is rejection
+sampling (expert iteration): the model proposes proofs, Dafny keeps the verified ones, and Glimmer is trained on them.
+The training data are proofs: verified answers to Vericoding tasks, and proof-only tasks built from them, which match
+the step the product runs. An answer may not change the method header or the spec. The check compares the header as a
+whole, so an added `requires`, `modifies`, `reads` or `decreases` counts as a change. Two prompt formats exist, and
+both stay as they are in the training data: the Vericoding format (spec given, the model writes code and proof) and the
+pipeline format (the proof step's prompt in the product).
 
-1. **Warm start with SFT:** collect successful proofs and train Glimmer on them (expert iteration). GRPO only learns
-   when some attempts succeed and others fail, so this step comes first. Glimmer SFT with LoRA is free on Fireworks
-   until 30 Nov, so this step needs no credits.
-2. **GRPO with LoRA:** Glimmer learns directly from Dafny's verdict, with a graded reward:
+The collection is the set of verified proofs that the pipeline finds for HumanEval training functions, run with Spark in
+contributor mode.
 
-   | Outcome | Reward |
-   |---|---|
-   | verified and the anti-cheat scan is clean | 1 |
-   | not verified | 0 |
-   | anti-cheat violation (`assume`, changed spec, …) | −1 |
+1. **Round 0:** Spark in contributor mode (`muse-spark-1.3-contributor`, Meta Model API, run in the Meta environment)
+   makes 8 attempts per Vericoding training task. Dafny checks them on a team machine (it is not a model), and the
+   verified proofs are kept.
+2. **SFT 1:** LoRA SFT (rank 16) of base Glimmer on the round 0 proofs and the proofs collected so far. Glimmer SFT with
+   LoRA is free on Fireworks until Nov 30, through the UI or the Serverless Training API. If dataset uploads stay
+   disabled for our account (reported by participants on Oct 28), SFT uses the Serverless Training API, which is also
+   free. The adapter is downloaded in PEFT format (`firectl download model`), which vLLM loads with `--lora-modules`.
+3. **Round 1:** the SFT 1 model, served with vLLM on Modal, samples again on the tasks still unsolved, and the verified
+   proofs are added.
+4. **SFT 2:** LoRA SFT (rank 16) of base Glimmer, not of SFT 1, on all verified proofs of rounds 0 and 1 and of the
+   collection, plus the proof-only tasks where they are ready.
+5. **GRPO (stretch only):** starts from SFT 2 on Fireworks with the tasks that are left, capped at $50, after a bounded
+   pre-pass (see below).
 
-   Groups in which every attempt gets the same reward are dropped, because they teach nothing. Partial credit for partly
-   verified proofs comes only if too few groups differ, because it is easy to game with trivial lemmas. LoRA instead of
-   full fine-tuning: for reinforcement learning it matches full fine-tuning at a fraction of the GPU cost.
+**Proof-only tasks:** the verified answers are turned into tasks for the proof step alone. The executable code stays as
+it is, the ghost code is removed, and the model is asked to add the annotations. That is the product's step 5. These
+tasks go into SFT 2 and form the step-5 evaluation set (see Evaluation).
 
-**Training data:** 500 to 2,000 verified proofs, collected during our own evaluation runs with Spark and Wonder on the
-training splits of Vericoding and DafnyBench, plus transpiler output of MBPP and HumanEval training functions, the exact
-input the proof agent gets in the product. Transpiler output uses the `py_*` blocks, which Vericoding and DafnyBench
-never do, and the library's specs are part of the proof agent's prompt. Evaluation tasks never enter training, nor does
-any dataset without a license that allows it (see Licensing). Collection uses Spark in contributor mode, which costs 8 %
-of standard mode for input tokens and 5 % for output tokens (Wonder has no contributor mode). It stops at a spend cap of
+**Why only the proof step is trained, and not the spec:** technical depth: Dafny's verdict is a yes or no reward. Demo:
+the proof rate of the same Glimmer model before and after training is the measurement. Impact: an open 30B model proves
+in our own infrastructure. Meta tooling: each Muse model has one clear role. The spec is not trained, because it has no
+unambiguous reward, so HumanEvalFix is its evaluation set. Trained Glimmer is proof stage 1 everywhere: in the
+evaluation, the demo and the bug hunt.
+
+**Why rejection sampling:** training is free, so the money buys data. The cost and speed of round 1 on Modal are
+measured in its first hour. At the $50 GRPO cap only about 9 to 12 steps fit, which would not give a measurable gain, so
+GRPO is a stretch goal.
+
+**GRPO (stretch):** Glimmer learns directly from Dafny's verdict, with a graded reward:
+
+| Outcome | Reward |
+|---|---|
+| verified and the anti-cheat scan is clean | 1 |
+| not verified | 0 |
+| anti-cheat violation, changed spec or changed method header (`assume`, `requires false`, …) | −1 |
+
+Groups in which every attempt gets the same reward are dropped, because they teach nothing. Partial credit for partly
+verified proofs comes only if too few groups differ, because it is easy to game with trivial lemmas. LoRA instead of
+full fine-tuning: for reinforcement learning it matches full fine-tuning at a fraction of the GPU cost.
+
+GRPO runs through the Fireworks Serverless Training API with a custom loop: Fireworks samples and trains, our code
+computes the reward with Dafny. Glimmer rates per 1M tokens: prefill $1.96, cached prefill $0.39, sample $4.88, train
+$5.86; spend cap $50.
+
+GRPO is a small proof of concept. The pre-pass samples 64 Vericoding training tasks (fixed seed) 8 times each with SFT
+2; its cost counts toward the $50. Assuming about 2k prompt and 2k sample tokens per attempt, a step of 16 tasks × 8
+samples costs about $4.75 (the pre-pass about $7.00, prefill and sample only). After the pre-pass, $50 buys about 9
+such steps; with 1.5k prompt and sample tokens per attempt, about 12. The pre-pass keeps the tasks that SFT 2 solves in
+1 to 7 of 8 attempts, so the groups in a step can differ in reward.
+
+**Training data:** 500 to 2,000 verified proofs from rounds 0 and 1 on the Vericoding training tasks, the collection,
+and the proof-only tasks. The collection is the exact input the proof agent gets in the product, because pipeline output
+uses the `py_*` blocks, which Vericoding never does, and the library's specs are part of the proof agent's prompt.
+Evaluation tasks never enter training, nor does any dataset without a license that allows it (see Licensing). MBPP is
+used only after the submission. Round 0 and the collection use Spark in contributor mode, which costs 8 % of standard
+mode for input tokens and 5 % for output tokens (Wonder has no contributor mode). Together they stop at a spend cap of
 $100; without contributor mode the target drops to about 500. Tasks that appear in more than one dataset are
-deduplicated by their source task, so no test task reaches training through another dataset. DafnyBench is used for
-training only, never evaluated. HumanEval training functions exclude the HumanEvalFix test tasks, which are the same 164
-problems.
+deduplicated by their source task, so no test task reaches training through another dataset. DafnyBench is not used
+before the submission, since no issue collects it. HumanEval training functions exclude the HumanEvalFix test tasks,
+which are the same 164 problems.
 
-**Compute:** no own money is spent. The team has the Meta Model API credits ($150 per person), which pay for Spark and
-Wonder only. Partner credits (Baseten, Modal, Fireworks) are applied for but not confirmed. Local machines have no
-suitable GPU, so a 30B model would be too slow for evaluation. So:
+**Compute:** No own money is spent. Local machines have no suitable GPU.
 
-- **Glimmer evaluation** (before and after training) runs on a GPU rented by the hour from free monthly credits (Modal)
-  or partner credits, for a few hours at a time, never permanently.
-- **SFT** runs on Fireworks for free.
-- **GRPO** runs only if GPU credits arrive. Otherwise it is shipped ready to run: code, reward function and config,
-  tested end to end on a small model, without a result for Glimmer.
-- **Oct 28:** a person checks that Fireworks SFT is free for Glimmer and whether the trained adapter can be downloaded,
-  and records the result here.
+| Credits | Amount | Used for | Cap |
+|---|---|---|---|
+| Meta Model API | $150 per person, three people ($450) | Bug hunt (full pipeline, Spark in contributor mode, Wonder in proof stage 3), round 0 and training data collection (Spark, contributor mode), model comparison (Wonder), pipeline development, evaluation and demo, reserve | bug hunt $100, training data $100 (round 0 and collection), development, evaluation, comparison and demo $200, reserve $50 |
+| Modal | $100, plus $30 free per month as reserve | Round 1 sampling with vLLM on an H100, evaluation of base, SFT 1 and SFT 2, demo serving | round 1 sampling $40, evaluation and demo serving $60 |
+| Fireworks | $100 | SFT 1 and SFT 2 (free until Nov 30, if confirmed on Oct 28), GRPO stretch; reserve for an on-demand deployment if a trained adapter cannot be served on Modal, or for sampling if Modal fails | GRPO $50, reserve $50 |
+
+Modal's caps add up to the $100 partner credits. The free $30 per month, confirmed for November too, is the reserve. The
+three Meta keys sit in one Meta environment on one team member's machine.
+
+Hard limits per run, set with `--max-cost-usd` (Meta) or `--max-seconds` (Modal GPU time):
+
+- Round 0 sampling $40, the collection $60. Together they are the training data bucket of $100.
+- Bug hunt $100 in total, shared out over the chosen projects.
+- The comparison, development and demo bucket of $200: Wonder spec comparison on the 80 HumanEvalFix test functions $30;
+  Wonder proof comparison, one attempt on a fixed 150-task subset of the Vericoding test split $15; eight evaluation
+  runs in contributor mode at $10 each $80; development $40; demo $10. $25 stays unassigned as margin.
+- Reserve $50 on Meta.
+- Modal: round 1 sampling $40, about 10 H100 hours; evaluation and demo serving $60, about 15 H100 hours.
+- Fireworks: GRPO stretch $50, the `max_spend_usd` of the training config.
+
+- Glimmer is served only while a job runs and scales to zero; nothing runs permanently.
+- SFT is free on Fireworks until Nov 30, if confirmed on Oct 28, through the UI or the Serverless Training API.
+- Every job records its spend in its issue, and Meta spend is recorded per key.
+- **Oct 28:** the open points of the Fireworks, Modal and Meta access are checked that day, and the answers are recorded
+  in the issue tracker, not in this plan.
 
 **Release:** the trained LoRA adapter is published on Hugging Face, with its evaluation results and the license of
 the base model, if the training provider allows downloading it. Otherwise the training data, config and evaluation
@@ -424,10 +507,10 @@ results are published so the adapter can be reproduced.
 
 | Dataset | Measures |
 |---|---|
-| Vericoding (Dafny part) | the proof step alone (human-written specs) |
-| HumanEvalFix | the whole pipeline (each function correct and buggy) |
+| Vericoding (Dafny part) | code and proof from a given spec (human-written specs); the proof step alone on proof-only tasks |
+| HumanEvalFix | the whole pipeline (each function correct and buggy), and the spec writer alone (steps 1 to 3) |
 | BugsInPy | real bugs in real projects with commit history, stretch goal |
-| DafnyBench | training data only (see Training), not evaluated |
+| DafnyBench | not used before the submission, not evaluated |
 | MBPP-DFY | translation and proof of simple functions, later candidate, used locally only |
 
 Fixed test splits never enter training: 40 of the 164 HumanEvalFix functions and 20 % of the Vericoding Dafny tasks,
@@ -435,12 +518,33 @@ drawn with a fixed seed. The repository stores only the task IDs of each split a
 datasets and checks their hashes, never the datasets themselves. Vericoding and HumanEvalFix come first; the others only
 if time remains.
 
-**Metrics:** proof rate, bugs found, false alarms (a `counterexample` on correct code), share per Python tier, share
-translated by the transpiler, cost and time per function. False alarms must stay close to zero. Target values are set
-after the first run.
+**Protocol:** every run uses the same settings: temperature 0.8 and at most 4096 output tokens. Attempts are independent
+samples. pass@1 is the mean over the attempts. pass@k, with k the number of attempts, is the share of tasks with at
+least one verified attempt, with a 95 % Wilson interval. Comparisons are paired: all models get the same tasks, and the
+summary lists the tasks that one model solves and another does not. Every run has a hard cap on cost and on time. It
+records the git SHA, the UTC date, the endpoint, the model name it sent, the hash of the split file, and whether it ran
+in contributor mode. Every results table states that mode. A run is published as a folder
+`docs/results/<date>-<commit>-<name>/` with `summary.md`, `summary.json` and `meta.json`. `docs/results/history.md` has
+one row per run: date, commit, model, dataset, n, rate and cost.
 
-**Comparison:** Glimmer before training, after SFT and after GRPO, against Spark, Spark Open and Wonder on the same
-tasks.
+**Metrics:** proof rate, bugs found, false alarms (a `counterexample` on correct code), false proofs (a `proven` on
+buggy code, listed by function), share per Python tier, share translated by the transpiler, the share that each proof
+stage contributes (proven by Glimmer, then Spark, then Wonder), second-opinion agreement on counterexamples, the share
+of functions whose `pre` accepts less than 20 % of inputs, and cost and time per function. False alarms and false proofs
+must stay close to zero. Target values are set after the first run.
+
+**Comparison:** base Glimmer, SFT 1, SFT 2 and, if it ran, GRPO on the same tasks, against Spark and Wonder:
+
+- Vericoding test split: base Glimmer first, as the baseline of October 30, then SFT 1 and SFT 2, each with four
+  attempts. Spark with four attempts. Wonder with one attempt on a fixed 150-task subset, compared by pass@1.
+- Spec writer: Spark, Wonder and base Glimmer on the 40 HumanEvalFix test functions, each in its fixed and its buggy
+  version (80 functions). They are compared on correct passes, buggy functions caught and false alarms. The better model
+  becomes the default spec writer.
+- Glimmer on the fixed HumanEvalFix versions: base against SFT 2, the whole pipeline with proof stage 1 only.
+- Proof-only tasks: the step-5 evaluation set, on the test split, built from the verified Spark answers of that split.
+  The Vericoding harness runs it.
+
+All runs with Spark use contributor mode, because the evaluation data is public.
 
 ## Demo
 
@@ -462,46 +566,108 @@ there too, for when the GitHub sources of step 1 are built. The repository carri
 
 The demo lives in its own public repository that uses our action: the pull request with the bug turns red with a
 counterexample, the pull request with the fix turns green with a certificate that the viewer can re-check. Both demo
-functions are translated by the transpiler, not by AI. If the project finds a real, previously unknown bug or
-contradiction along the way, that becomes the highlight.
+functions are translated by the transpiler, not by AI. The palindrome pull requests are the demo. A confirmed bug from
+the bug hunt is a bonus for the video, not the highlight.
+
+## Bug hunt
+
+The bug hunt runs the full pipeline (steps 1 to 8, with the Dafny translation and proof) on every checkable function of
+the chosen projects. It shows the verification process on public open-source projects, with its numbers. A confirmed
+real bug is a bonus for the video.
+
+**Calibrate:** before unknown projects, the scan runs on TheAlgorithms/Python, limited to `strings/`, at the commits
+before historical single-function fixes, starting with the palindrome fix. It measures whether the scan finds them and
+how many false alarms it gives. `find_pattern` counts only if support for calls into the project is merged, since
+otherwise it ends `not_checkable`.
+
+1. **Choose projects:** 5 to 10 public Python projects with many pure functions, type hints and docstrings or doctests,
+   mostly on `int`, `str` and lists (algorithm collections, parsing and utility libraries). `pcc-check survey` counts
+   how many functions of a repository are checkable before any model is called. The full pipeline costs more per
+   function than steps 1 to 3, so the number of projects is chosen to stay within the cap in step 2.
+2. **Scan:** `pcc-check scan <repo>` runs the full pipeline on every checkable function: `precheck`, then steps 1 to 8.
+   Each function ends `proven` (with its certificate, written to `--proofs-dir`), `counterexample`, `open` or
+   `not_checkable`, always with the reason. Spark runs in contributor mode (`--contributor`), since the code is public.
+   Wonder runs as second opinion and in proof stage 3. Glimmer is proof stage 1 whenever its endpoint is up. Each run
+   has a hard cap on cost (`--max-cost-usd`); the bug hunt is capped at $100 of Meta credits in total.
+3. **Triage:** automatic filters come first; the second opinion (Wonder) then runs on what is left. The spec must accept
+   every doctest example of the function, otherwise the counterexample is set to `open` ("spec contradicts docstring").
+   A counterexample that only raises an exception is listed apart from wrong results, and wrong results are triaged
+   first, since libraries often raise on purpose. Then a person checks it against the documentation and, where unclear,
+   the project's tests and issues. A blind spec can misread a vague docstring, so nothing is reported without this
+   check.
+4. **Report:** a team member opens an issue in the project with the generated pytest and, if one exists, the possible
+   fix, following the project's contribution guidelines. Only bugs a person has confirmed are reported.
+5. **Results:** `docs/results/bug-hunt.md` lists projects, functions checked, the states (`proven` with certificates,
+   `counterexample`, `open`, `not_checkable`), confirmed bugs and links to the reported issues. A confirmed bug is a
+   bonus for the video; the palindrome pull requests remain the demo of red and green.
+
+Scanning sends public code only.
 
 ## Submission
 
 Due Wed Nov 4, 9:00 PM ET, through the Cerebral Valley submission page: the public repository, a working 3-minute demo
-video, and every team member added. The video opens with one line on what was built during the event. It shows which
-Meta model does what in the pipeline, the trained Glimmer and the model comparison, because "use of Meta AI tooling"
-is one of four equally weighted criteria, next to impact, technical depth and demo quality.
+video, and every team member added. The demo in the video is the palindrome pull requests, one red and one green. The
+video opens with one line on what was built during the event. It shows which Meta model does what in the pipeline, the
+trained Glimmer and the model comparison, because "use of Meta AI tooling" is one of four equally weighted criteria,
+next to impact, technical depth and demo quality. It has one line on how false proofs are prevented: the anti-cheat
+scan, the ghost-only check, the header check and the spec-translation check. The bug hunt results
+(`docs/results/bug-hunt.md`) go with the repository if they exist; a confirmed bug from them is a bonus for the video.
+
+The README has a results section with one chart: base Glimmer, SFT 1 and SFT 2 against Spark and Wonder, with intervals
+and the cost per solved task. Before the submission, every certificate is re-checked with `dafny verify` and
+`dafny audit`, and a person reviews every proof of buggy code.
 
 ## Licensing
 
-The code is licensed under AGPL-3.0. `THIRD_PARTY.md` lists every dataset and model with its license and link.
-If Muse Spark Open is used, the README carries "Built with Muse Spark Open". The hackathon disqualifies projects that
-use code or data without the rights to it, so:
+The code is licensed under AGPL-3.0. `THIRD_PARTY.md` lists every dataset and model with its license and link. The
+hackathon disqualifies projects that use code or data without the rights to it, so:
 
 | Dataset | License | Use |
 |---|---|---|
 | HumanEvalFix | MIT | evaluation and training, with notice |
-| HumanEval | MIT | training (transpiler input), with notice |
-| MBPP | CC-BY-4.0 | training (transpiler input), with attribution |
+| HumanEval | MIT | training (collection input), with notice |
+| MBPP | CC-BY-4.0 | training, only after the submission, with attribution |
 | Vericoding | MIT, tasks from sources with their own licenses | evaluation and training, without the unlicensed VerifiedCogen part |
-| DafnyBench | Apache-2.0 | training, with notice |
+| DafnyBench | Apache-2.0 | not used before the submission; with notice if used later |
 | BugsInPy | none | referenced by bug ID and commit only, fetched from the original projects at run time, never trained on |
 | MBPP-DFY | GPL-3.0 | local evaluation only, never committed |
 
 ## Cut order
 
-If the demo is at risk, these go first, in this order: GRPO, the search agent of step 1, calls inside the project, the
-`find_pattern` highlight, crosshair (differential testing stays), the second opinion. The red pull request needs only
-steps 1 to 3, so it is built first; the green one needs translation and proof.
+If the demo is at risk, these go first, in this order: GRPO, the bug hunt, round 1 of rejection sampling, the search
+agent of step 1, calls inside the project, the `find_pattern` highlight, crosshair (differential testing stays), the
+second opinion. The red pull request needs steps 1 to 3 and, for its counterexample, the second opinion, so it is built
+first; the green one needs translation and proof.
+
+## Schedule
+
+Dates are in ET. The milestones are fixed; the tickets of each one are in the order of the critical paths.
+
+| Date | Milestone |
+|---|---|
+| Oct 28 | Fireworks, Modal and Meta access checked; credits redeemed; Meta environment set up; config and interfaces merged; Glimmer deployment running, base Glimmer smoke test, tokens per second measured |
+| Oct 29 | Training path first: verifier, sandbox and model parts it needs; the Vericoding harness with the header check; the reward; the rejection sampling tool and the SFT export |
+| Oct 30 noon | Baseline on the Vericoding test split: base Glimmer, with date and commit; round 0 starts (Spark, contributor mode) |
+| Oct 31 | SFT 1 submitted; pipeline wave 1 (intent, spec, transpiler, equivalence and certificate parts) in parallel |
+| Nov 1 | Round 1 on Modal; pipeline wave 2 (proof, mutants, counterexample); SFT 2 submitted by night |
+| Nov 2 18:00 | Offline end-to-end test on the palindrome green; CLI and action merged; demo repository created; live red and green pull requests; pipeline baseline on the HumanEvalFix test split |
+| Nov 3 20:00 | Final numbers frozen (baseline and SFT evaluations, comparison table); bug hunt results |
+| Nov 4 | Video by 15:00, submit by 18:00 |
+
+About 45 agent tickets lie on the main path. They run on two or three runners in parallel worktrees, in the order of
+the critical paths, the training path first. Large tickets on the green-pull-request path are split into chained parts
+where the parts are separable. The offline end-to-end test has the most blockers of any ticket, so a person or a strong
+model takes it.
 
 ## Decided later
 
 - Target values for the metrics, after the first evaluation run
 - Attempt counts and budgets, after the first evaluation run
-- GRPO compute, once it is known which GPU credits the team receives
 
-The repository structure is decided and described in [architecture.md](architecture.md). Tasks are GitHub issues,
-split by dependencies so that agents can work in parallel (see [AGENTS.md](../AGENTS.md)).
+The repository structure is decided and described in [architecture.md](architecture.md). Tasks are GitHub issues.
+The project is developed with agents that run in parallel, so the work is split for that: a large task is split into
+smaller ones when they succeed more reliably, the number of tasks is not reduced for convenience, and every two tasks
+that touch the same file are ordered by a dependency, so parallel runners never collide (see [AGENTS.md](../AGENTS.md)).
 
 ## Outlook
 
