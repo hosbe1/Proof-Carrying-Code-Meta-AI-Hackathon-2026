@@ -360,7 +360,7 @@ At runtime the pipeline calls **only Meta models**.
 | Step | Model | Where it runs |
 |---|---|---|
 | Intent, spec, AI fallback translation | Muse Spark (`muse-spark-1.3`) | Meta Model API |
-| Proof, stage 1 | trained Muse Glimmer | own deployment on Modal (vLLM, scale to zero); fallback a Fireworks on-demand deployment |
+| Proof, stage 1 | trained Muse Glimmer | own deployment on Modal (vLLM, SGLang as fallback, scale to zero); fallback a Fireworks on-demand deployment |
 | Proof, stage 2 | Muse Spark (`muse-spark-1.3`) | Meta Model API |
 | Proof, stage 3 | Muse Wonder (`muse-wonder-1.0`) | Meta Model API |
 
@@ -378,29 +378,30 @@ The model comparison covers Glimmer (base and trained), Spark and Wonder on the 
 means. Glimmer is Apache 2.0, a dense 30B model that fits one GPU, so the trained adapter can be served for evaluation,
 the demo and the product, and published.
 
-Our own evaluation runs on public data and may use the cheaper contributor mode (`muse-spark-1.3-contributor`), in
-which Meta may train on the content. It runs only in a dedicated environment on each machine: the client refuses to
-call Meta models unless `PCC_META_ALLOWED=1` is set there, and tests that call real models never run in CI.
+Our evaluation and training data are public and may use the cheaper contributor mode (`muse-spark-1.3-contributor`), in
+which Meta may train on the content. Contributor mode runs only in the Meta environment, where `PCC_META_ALLOWED=1` is
+set: the client refuses to call Meta models without it, and tests that call real models never run in CI.
 
 ## Training
 
 Only the proof step is trained, because there Dafny gives an unambiguous yes or no. The main method is rejection
 sampling (expert iteration): the model proposes proofs, Dafny keeps the verified ones, and Glimmer is trained on them.
 
-1. **Round 0:** base Glimmer, served with vLLM on Modal, makes 8 attempts per Vericoding training task. Dafny checks
-   them (Dafny runs locally or on Modal CPUs; it is not a model), and the verified proofs are kept.
-2. **SFT 1:** LoRA SFT of Glimmer on these proofs plus the contributor-mode data (see Training data). Glimmer SFT with
-   LoRA is free on Fireworks until Nov 30, through the UI or the Serverless Training API. If dataset uploads stay
-   disabled for our account (reported by participants on Oct 28), SFT uses the Serverless Training API, which is also
-   free.
-3. **Round 1:** the SFT 1 model samples again on the tasks still unsolved; the verified proofs are added, and the
-   result is **SFT 2**.
-4. **GRPO (stretch only):** starts from SFT 2 on Fireworks with the tasks that are left, capped at $50, after a bounded
+1. **Round 0:** Spark in contributor mode (`muse-spark-1.3-contributor`, Meta Model API) makes 8 attempts per Vericoding
+   training task. Dafny checks them on a team machine (it is not a model), and the verified proofs are kept.
+2. **SFT 1:** LoRA SFT (rank 16) of base Glimmer on the round 0 proofs. Glimmer SFT with LoRA is free on Fireworks until
+   Nov 30, through the UI or the Serverless Training API. If dataset uploads stay disabled for our account (reported by
+   participants on Oct 28), SFT uses the Serverless Training API, which is also free. The adapter is downloaded in PEFT
+   format (`firectl download model`), which vLLM loads with `--lora-modules`.
+3. **Round 1:** the SFT 1 model, served with vLLM on Modal, samples again on the tasks still unsolved, and the verified
+   proofs are added.
+4. **SFT 2:** LoRA SFT (rank 16) of base Glimmer, not of SFT 1, on all verified proofs of rounds 0 and 1.
+5. **GRPO (stretch only):** starts from SFT 2 on Fireworks with the tasks that are left, capped at $50, after a bounded
    pre-pass (see below).
 
-**Why rejection sampling:** training is free, so the money buys data. Sampling with vLLM on a Modal H100 is estimated at
-about a tenth of the per-token cost on Fireworks (to be measured in the first hour). At the $50 GRPO cap only about 9 to
-12 steps fit, which would not give a measurable gain, so GRPO is a stretch goal.
+**Why rejection sampling:** training is free, so the money buys data. The cost and speed of round 1 on Modal are
+measured in its first hour. At the $50 GRPO cap only about 9 to 12 steps fit, which would not give a measurable gain, so
+GRPO is a stretch goal.
 
 **GRPO (stretch):** Glimmer learns directly from Dafny's verdict, with a graded reward:
 
@@ -424,31 +425,29 @@ samples costs about $4.75 (the pre-pass about $7.00, prefill and sample only). A
 such steps; with 1.5k prompt and sample tokens per attempt, about 12. The pre-pass keeps the tasks that SFT 2 solves in
 1 to 7 of 8 attempts, so the groups in a step can differ in reward.
 
-**Training data:** 500 to 2,000 verified proofs from the rounds of rejection sampling on the Vericoding training tasks,
-plus contributor-mode Spark output on the training splits of Vericoding and DafnyBench, plus transpiler output of MBPP
-and HumanEval training functions, the exact
-input the proof agent gets in the product. Transpiler output uses the `py_*` blocks, which Vericoding and DafnyBench
-never do, and the library's specs are part of the proof agent's prompt. Evaluation tasks never enter training, nor does
-any dataset without a license that allows it (see Licensing). Collection uses Spark in contributor mode, which costs 8 %
-of standard mode for input tokens and 5 % for output tokens (Wonder has no contributor mode). It stops at a spend cap of
-$100; without contributor mode the target drops to about 500. Tasks that appear in more than one dataset are
-deduplicated by their source task, so no test task reaches training through another dataset. DafnyBench is used for
-training only, never evaluated. HumanEval training functions exclude the HumanEvalFix test tasks, which are the same 164
-problems.
+**Training data:** 500 to 2,000 verified proofs from rounds 0 and 1 on the Vericoding training tasks, plus transpiler
+output of MBPP and HumanEval training functions, the exact input the proof agent gets in the product. Transpiler output
+uses the `py_*` blocks, which Vericoding never does, and the library's specs are part of the proof agent's prompt.
+Evaluation tasks never enter training, nor does any dataset without a license that allows it (see Licensing). Round 0
+and the collection use Spark in contributor mode, which costs 8 % of standard mode for input tokens and 5 % for output
+tokens (Wonder has no contributor mode). Together they stop at a spend cap of $100; without contributor mode the target
+drops to about 500. Tasks that appear in more than one dataset are deduplicated by their source task, so no test task
+reaches training through another dataset. DafnyBench is not used before the submission, since no issue collects it.
+HumanEval training functions exclude the HumanEvalFix test tasks, which are the same 164 problems.
 
 **Compute:** No own money is spent. Local machines have no suitable GPU.
 
 | Credits | Amount | Used for | Cap |
 |---|---|---|---|
-| Meta Model API | $150 per person, three people ($450) | Bug hunt (Spark, scan and second opinion), training data from contributor mode, model comparison (Wonder), development and demo, reserve | bug hunt $200, training data $100, comparison (Wonder) $100, development and demo $100, reserve $50 |
-| Modal | $100, plus $30 free per month as reserve | Sampling with vLLM on an H100 (rounds 0 and 1), evaluation of base, SFT 1 and SFT 2, demo serving | sampling round 0 $35, round 1 $25, evaluation and demo $40 |
-| Fireworks | $100 | SFT 1 and SFT 2 (free until Nov 30), GRPO stretch; reserve for an on-demand deployment if a trained adapter cannot be served on Modal, or for sampling if Modal fails | GRPO $50, reserve $50 |
+| Meta Model API | $150 per person, three people ($450) | Bug hunt (Spark scan, Wonder second opinion), round 0 and training data collection (Spark, contributor mode), model comparison (Wonder), development and demo, reserve | bug hunt $200, training data $100 (round 0 and collection), comparison, development and demo $100 (one bucket), reserve $50 |
+| Modal | $100, plus $30 free per month as reserve | Round 1 sampling with vLLM on an H100, evaluation of base, SFT 1 and SFT 2, demo serving | round 1 sampling $40, evaluation and demo serving $60 |
+| Fireworks | $100 | SFT 1 and SFT 2 (free until Nov 30, if confirmed on Oct 28), GRPO stretch; reserve for an on-demand deployment if a trained adapter cannot be served on Modal, or for sampling if Modal fails | GRPO $50, reserve $50 |
 
-Modal's caps add up to the $100 partner credits; the free $30 per month is the reserve. The three Meta keys sit in one
-Meta environment on one team member's machine.
+Modal's caps add up to the $100 partner credits. The free $30 per month, confirmed for November too, is the reserve. The
+three Meta keys sit in one Meta environment on one team member's machine.
 
 - Glimmer is served only while a job runs and scales to zero; nothing runs permanently.
-- SFT is free on Fireworks until Nov 30, through the UI or the Serverless Training API.
+- SFT is free on Fireworks until Nov 30, if confirmed on Oct 28, through the UI or the Serverless Training API.
 - Every job records its spend in its issue.
 - **Oct 28:** the open points of the Fireworks, Modal and Meta access are checked that day, and the answers are recorded
   in the issue tracker, not in this plan.
@@ -464,7 +463,7 @@ results are published so the adapter can be reproduced.
 | Vericoding (Dafny part) | the proof step alone (human-written specs) |
 | HumanEvalFix | the whole pipeline (each function correct and buggy) |
 | BugsInPy | real bugs in real projects with commit history, stretch goal |
-| DafnyBench | training data only (see Training), not evaluated |
+| DafnyBench | not used before the submission, not evaluated |
 | MBPP-DFY | translation and proof of simple functions, later candidate, used locally only |
 
 Fixed test splits never enter training: 40 of the 164 HumanEvalFix functions and 20 % of the Vericoding Dafny tasks,
@@ -512,18 +511,20 @@ before historical single-function fixes, starting with the palindrome fix. It me
 how many false alarms it gives. `find_pattern` counts only if support for calls into the project is merged, since
 otherwise it ends `not_checkable`.
 
-1. **Choose projects:** public Python projects with many pure functions, type hints and docstrings or doctests, mostly
-   on `int`, `str` and lists (algorithm collections, parsing and utility libraries). `pcc-check survey` counts how many
-   functions of a repository are checkable before any model is called.
-2. **Scan:** `pcc-check run --stop-after spec` runs steps 1 to 3 on every checkable function and stops; a function
-   ends `counterexample` or `open` ("scan only"). The scan uses Spark via the Meta API in contributor mode
-   (`--contributor`), since the code is public; the scan and the second opinion together are capped at $200 of Meta
-   credits. Counterexamples go on to triage.
-3. **Triage:** Automatic filters come first; the second opinion then runs on what is left. The spec must accept every
-   doctest example of the function, otherwise the counterexample is set to `open` ("spec contradicts docstring"). A
-   counterexample that only raises an exception is listed apart from wrong results, and wrong results are triaged first,
-   since libraries often raise on purpose. Then a person checks it against the documentation and, where unclear, the
-   project's tests and issues. A blind spec can misread a vague docstring, so nothing is reported without this check.
+1. **Choose projects:** 30 to 50 public Python projects with many pure functions, type hints and docstrings or doctests,
+   mostly on `int`, `str` and lists (algorithm collections, parsing and utility libraries). `pcc-check survey` counts
+   how many functions of a repository are checkable before any model is called; at contributor rates a function costs
+   an estimated $0.001 to $0.01.
+2. **Scan:** `pcc-check run --stop-after spec` runs steps 1 to 3 on every checkable function and stops; a function ends
+   `counterexample` or `open` ("scan only"). The scan uses Spark via the Meta API in contributor mode (`--contributor`),
+   since the code is public. Counterexamples go on to triage. The scan and the second opinion together are capped at
+   $200 of Meta credits.
+3. **Triage:** Automatic filters come first; the second opinion then runs on what is left, with Wonder, which has no
+   contributor mode. The spec must accept every doctest example of the function, otherwise the counterexample is set to
+   `open` ("spec contradicts docstring"). A counterexample that only raises an exception is listed apart from wrong
+   results, and wrong results are triaged first, since libraries often raise on purpose. Then a person checks it against
+   the documentation and, where unclear, the project's tests and issues. A blind spec can misread a vague docstring, so
+   nothing is reported without this check.
 4. **Report:** a team member opens an issue in the project with the generated pytest and, if one exists, the possible
    fix, following the project's contribution guidelines. Only bugs a person has confirmed are reported.
 5. **Results:** `docs/results/bug-hunt.md` lists projects, functions checked, counterexamples, confirmed bugs and links
@@ -551,7 +552,7 @@ hackathon disqualifies projects that use code or data without the rights to it, 
 | HumanEval | MIT | training (transpiler input), with notice |
 | MBPP | CC-BY-4.0 | training (transpiler input), with attribution |
 | Vericoding | MIT, tasks from sources with their own licenses | evaluation and training, without the unlicensed VerifiedCogen part |
-| DafnyBench | Apache-2.0 | training, with notice |
+| DafnyBench | Apache-2.0 | not used before the submission; with notice if used later |
 | BugsInPy | none | referenced by bug ID and commit only, fetched from the original projects at run time, never trained on |
 | MBPP-DFY | GPL-3.0 | local evaluation only, never committed |
 
