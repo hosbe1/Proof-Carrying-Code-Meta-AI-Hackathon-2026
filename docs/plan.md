@@ -385,7 +385,8 @@ Endpoints billed per GPU hour (a Glimmer deployment) count $0 per token in the f
 tracked per deployment and capped in Compute.
 
 The model comparison covers Glimmer (base and trained), Spark and Wonder on the same evaluation tasks. The spec writer
-is Spark by default (`ModelsConfig.spec`), and the second opinion is Wonder, a different model from the spec writer. The
+is Spark by default (`ModelsConfig.spec`). The second opinion is Spark too (`ModelsConfig.second_opinion`); it differs
+from the spec writer in what it sees, the function body, not in the model. The
 comparison may change the spec writer: the better model becomes the default.
 
 **Why Glimmer is trained, not Spark:** Spark is closed; Spark Open (816B) is too large to train or serve within our
@@ -415,7 +416,7 @@ contributor mode.
    verified proofs are kept.
 2. **SFT 1:** LoRA SFT (rank 16) of base Glimmer on the round 0 proofs and the proofs collected so far. Glimmer SFT with
    LoRA is free on Fireworks until Nov 30, through the UI or the Serverless Training API. If dataset uploads stay
-   disabled for our account (reported by participants on Oct 28), SFT uses the Serverless Training API, which is also
+   disabled for our account (reported by other participants), SFT uses the Serverless Training API, which is also
    free. The adapter is downloaded in PEFT format (`firectl download model`), which vLLM loads with `--lora-modules`.
 3. **Round 1:** the SFT 1 model, served with vLLM on Modal, samples again on the tasks still unsolved, and the verified
    proofs are added.
@@ -477,7 +478,7 @@ which are the same 164 problems.
 |---|---|---|---|
 | Meta Model API | $150 per person, three people ($450) | Bug hunt (full pipeline, Spark in contributor mode, Wonder in proof stage 3), round 0 and training data collection (Spark, contributor mode), model comparison (Wonder), pipeline development, evaluation and demo, reserve | bug hunt $100, training data $100 (round 0 and collection), development, evaluation, comparison and demo $200, reserve $50 |
 | Modal | $100, plus $30 free per month as reserve | Round 1 sampling with vLLM on an H100, evaluation of base, SFT 1 and SFT 2, demo serving | round 1 sampling $40, evaluation and demo serving $60 |
-| Fireworks | $100 | SFT 1 and SFT 2 (free until Nov 30, if confirmed on Oct 28), GRPO stretch; reserve for an on-demand deployment if a trained adapter cannot be served on Modal, or for sampling if Modal fails | GRPO $50, reserve $50 |
+| Fireworks | $100 | SFT 1 and SFT 2 (free until Nov 30, if #3 confirms it), GRPO stretch; reserve for an on-demand deployment if a trained adapter cannot be served on Modal, or for sampling if Modal fails | GRPO $50, reserve $50 |
 
 Modal's caps add up to the $100 partner credits. The free $30 per month, confirmed for November too, is the reserve. The
 three Meta keys sit in one Meta environment on one team member's machine.
@@ -494,9 +495,9 @@ Hard limits per run, set with `--max-cost-usd` (Meta) or `--max-seconds` (Modal 
 - Fireworks: GRPO stretch $50, the `max_spend_usd` of the training config.
 
 - Glimmer is served only while a job runs and scales to zero; nothing runs permanently.
-- SFT is free on Fireworks until Nov 30, if confirmed on Oct 28, through the UI or the Serverless Training API.
+- SFT is free on Fireworks until Nov 30, if #3 confirms it, through the UI or the Serverless Training API.
 - Every job records its spend in its issue, and Meta spend is recorded per key.
-- **Oct 28:** the open points of the Fireworks, Modal and Meta access are checked that day, and the answers are recorded
+- The open points of the Fireworks, Modal and Meta access are checked in #3, and the answers are recorded
   in the issue tracker, not in this plan.
 
 **Release:** the trained LoRA adapter is published on Hugging Face, with its evaluation results and the license of
@@ -535,7 +536,7 @@ must stay close to zero. Target values are set after the first run.
 
 **Comparison:** base Glimmer, SFT 1, SFT 2 and, if it ran, GRPO on the same tasks, against Spark and Wonder:
 
-- Vericoding test split: base Glimmer first, as the baseline of October 30, then SFT 1 and SFT 2, each with four
+- Vericoding test split: base Glimmer first, as the baseline, then SFT 1 and SFT 2, each with four
   attempts. Spark with four attempts. Wonder with one attempt on a fixed 150-task subset, compared by pass@1.
 - Spec writer: Spark, Wonder and base Glimmer on the 40 HumanEvalFix test functions, each in its fixed and its buggy
   version (80 functions). They are compared on correct passes, buggy functions caught and false alarms. The better model
@@ -587,9 +588,9 @@ otherwise it ends `not_checkable`.
 2. **Scan:** `pcc-check scan <repo>` runs the full pipeline on every checkable function: `precheck`, then steps 1 to 8.
    Each function ends `proven` (with its certificate, written to `--proofs-dir`), `counterexample`, `open` or
    `not_checkable`, always with the reason. Spark runs in contributor mode (`--contributor`), since the code is public.
-   Wonder runs as second opinion and in proof stage 3. Glimmer is proof stage 1 whenever its endpoint is up. Each run
+   Wonder runs in proof stage 3. Glimmer is proof stage 1 whenever its endpoint is up. Each run
    has a hard cap on cost (`--max-cost-usd`); the bug hunt is capped at $100 of Meta credits in total.
-3. **Triage:** automatic filters come first; the second opinion (Wonder) then runs on what is left. The spec must accept
+3. **Triage:** automatic filters come first; the second opinion (Spark) then runs on what is left. The spec must accept
    every doctest example of the function, otherwise the counterexample is set to `open` ("spec contradicts docstring").
    A counterexample that only raises an exception is listed apart from wrong results, and wrong results are triaged
    first, since libraries often raise on purpose. Then a person checks it against the documentation and, where unclear,
@@ -639,20 +640,24 @@ agent of step 1, calls inside the project, the `find_pattern` highlight, crossha
 second opinion. The red pull request needs steps 1 to 3 and, for its counterexample, the second opinion, so it is built
 first; the green one needs translation and proof.
 
-## Schedule
+## Order of work
 
-Dates are in ET. The milestones are fixed; the tickets of each one are in the order of the critical paths.
+There is no day-by-day schedule. The only fixed date is the submission deadline (see Submission). Tickets are picked up
+in the order of the critical paths, as soon as their blockers are closed:
 
-| Date | Milestone |
-|---|---|
-| Oct 28 | Fireworks, Modal and Meta access checked; credits redeemed; Meta environment set up; config and interfaces merged; Glimmer deployment running, base Glimmer smoke test, tokens per second measured |
-| Oct 29 | Training path first: verifier, sandbox and model parts it needs; the Vericoding harness with the header check; the reward; the rejection sampling tool and the SFT export |
-| Oct 30 noon | Baseline on the Vericoding test split: base Glimmer, with date and commit; round 0 starts (Spark, contributor mode) |
-| Oct 31 | SFT 1 submitted; pipeline wave 1 (intent, spec, transpiler, equivalence and certificate parts) in parallel |
-| Nov 1 | Round 1 on Modal; pipeline wave 2 (proof, mutants, counterexample); SFT 2 submitted by night |
-| Nov 2 18:00 | Offline end-to-end test on the palindrome green; CLI and action merged; demo repository created; live red and green pull requests; pipeline baseline on the HumanEvalFix test split |
-| Nov 3 20:00 | Final numbers frozen (baseline and SFT evaluations, comparison table); bug hunt results |
-| Nov 4 | Video by 15:00, submit by 18:00 |
+1. Config and interfaces, which block almost every ticket.
+2. The training path: the verifier, sandbox and model parts it needs; the Vericoding harness with the header check; the
+   reward; the rejection sampling tool and the SFT export; the evaluation report. Then the Glimmer deployment with its
+   smoke test and throughput, the baseline of base Glimmer on the Vericoding test split, and round 0.
+3. Pipeline wave 1 (intent, spec, transpiler, equivalence and certificate parts), in parallel with the training path
+   whenever a runner is free.
+4. Pipeline wave 2 (proof, mutants, counterexample), then the offline end-to-end test on the palindrome, CLI and action,
+   the demo repository and the live red and green pull requests, and the pipeline baseline on the HumanEvalFix test
+   split.
+5. SFT 1, round 1, SFT 2 and the evaluations after training, the spec writer comparison and the proof-only tasks,
+   then the comparison table.
+6. The bug hunt, and in parallel the video, which shows the bug hunt results so far.
+7. The submission.
 
 About 45 agent tickets lie on the main path. They run on two or three runners in parallel worktrees, in the order of
 the critical paths, the training path first. Large tickets on the green-pull-request path are split into chained parts

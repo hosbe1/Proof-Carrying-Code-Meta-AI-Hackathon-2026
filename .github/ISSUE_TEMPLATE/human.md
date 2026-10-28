@@ -1,6 +1,6 @@
 ---
 name: Person task
-about: Work that needs a person (accounts, training runs, live evaluation, demo, submission)
+about: Work that needs a person (accounts, credits, demo video, submission, confirming a bug)
 labels: [human]
 ---
 
