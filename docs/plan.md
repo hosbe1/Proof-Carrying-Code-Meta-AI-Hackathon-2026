@@ -232,8 +232,9 @@ Dafny's error message back.
 | 3 | Wonder | 1, only for functions of at most 40 source lines |
 
 These numbers are starting values. They are tuned after the first evaluation run and are configurable in the action.
-Stage 1 is skipped while no Glimmer endpoint is configured; stage 2 uses Spark Open where its endpoint (Modal) is
-configured. Dafny always runs with a fixed resource limit and never with `--allow-warnings`.
+Stage 1 is skipped while no Glimmer endpoint is configured; stage 2 uses Spark Open instead of Spark if the comparison
+shows it is better and its endpoint (Modal) is configured; the switch is a change of `prover_stages`. Dafny always runs
+with a fixed resource limit and never with `--allow-warnings`.
 
 **The proof may only add ghost code:** loop invariants, `decreases` clauses, `assert` statements, `calc` blocks, lemmas
 and calls to those lemmas. The executable code and the method header stay as translated, except for added `decreases`
@@ -359,7 +360,7 @@ At runtime the pipeline calls **only Meta models**.
 |---|---|---|
 | Intent, spec, AI fallback translation | Muse Spark (`muse-spark-1.3`) | Meta Model API |
 | Proof, stage 1 | trained Muse Glimmer | own deployment on Modal (vLLM, scale to zero); fallback a Fireworks on-demand deployment |
-| Proof, stage 2 | Muse Spark Open or Muse Spark | Modal shared endpoint, billed per token (confirmed in H-01); else Meta Model API |
+| Proof, stage 2 | Muse Spark Open or Muse Spark | Modal shared endpoint, billed per token (to be confirmed on Oct 28, see Compute); else Meta Model API |
 | Proof, stage 3 | Muse Wonder (`muse-wonder-1.0`) | Meta Model API |
 
 Every endpoint is OpenAI-compatible and configured by a base URL and an API key from the environment: the Meta Model
@@ -388,10 +389,10 @@ call Meta models unless `PCC_META_ALLOWED=1` is set there, and tests that call r
 
 Only the proof step is trained, because there Dafny gives an unambiguous yes or no.
 
-1. **Warm start with SFT:** collect successful proofs and train Glimmer on them (expert iteration). GRPO only learns
-   when some attempts succeed and others fail, so this step comes first. Glimmer SFT with LoRA is free on Fireworks
-   until Nov 30. If dataset uploads stay disabled for our account (reported by participants on Oct 28), LoRA SFT runs on
-   a Modal GPU instead.
+1. **Warm start with SFT:** collect successful proofs and train Glimmer on them (expert iteration). SFT and GRPO are
+   independent: GRPO's task selection (step 2) replaces the need for SFT first. Glimmer SFT with LoRA is free on
+   Fireworks until Nov 30. If dataset uploads stay disabled for our account (reported by participants on Oct 28), LoRA
+   SFT runs on a Modal GPU instead.
 2. **GRPO with LoRA:** Glimmer learns directly from Dafny's verdict, with a graded reward:
 
    | Outcome | Reward |
@@ -408,9 +409,12 @@ Only the proof step is trained, because there Dafny gives an unambiguous yes or 
    computes the reward with Dafny. Glimmer rates per 1M tokens: prefill $1.96, cached prefill $0.39, sample $4.88, train
    $5.86; spend cap $60.
 
-   GRPO is a small proof of concept: at the listed rates $60 buys roughly 12 to 15 steps of 16 tasks with 8 samples
-   each. It starts from base Glimmer on Vericoding training tasks that base Glimmer solves in 1 to 7 of 8 attempts, so
-   it does not wait for SFT.
+   GRPO is a small proof of concept. The pre-pass samples 64 Vericoding training tasks (fixed seed) 8 times each with
+   base Glimmer; its cost counts toward the $60. Assuming about 2k prompt and 2k sample tokens per attempt, a step of 16
+   tasks × 8 samples costs about $4.75 (the pre-pass about $7.00, prefill and sample only). After the pre-pass, $60 buys
+   about 11 such steps; with 1.5k prompt and sample tokens per attempt, about 15. The pre-pass selects the Vericoding
+   training tasks that base Glimmer solves in 1 to 7 of 8 attempts, so GRPO starts from base Glimmer and does not wait
+   for SFT.
 
 **Training data:** 500 to 2,000 verified proofs, collected during our own evaluation runs with Spark and Wonder on the
 training splits of Vericoding and DafnyBench, plus transpiler output of MBPP and HumanEval training functions, the exact
@@ -431,11 +435,14 @@ problems.
 | Fireworks | $100 | GRPO through the Training API; reserve for an on-demand Glimmer deployment | GRPO $60 |
 | Modal | $100, plus $30 free per month, not expiring | Glimmer serving (vLLM), Spark Open stage 2, fallback SFT | serving $50, Spark Open $30, SFT fallback $40 |
 
+Modal's caps total $120 against $100 partner credits, so $20 comes from the free $30 per month. The Meta caps come from
+one person's $150; the comparison (Wonder) and the demo use a second team member's Meta credits, cap $100.
+
 - Glimmer is served only while a job runs and scales to zero; nothing runs permanently.
 - SFT is free on Fireworks until Nov 30.
 - Every job records its spend in its issue.
 - **Oct 28:** a person checks Fireworks dataset uploads, adapter download and Training API access, and Modal's Spark
-  Open endpoint, and records the answers here (H-01).
+  Open endpoint, and records the answers here.
 
 **Release:** the trained LoRA adapter is published on Hugging Face, with its evaluation results and the license of
 the base model, if the training provider allows downloading it. Otherwise the training data, config and evaluation
@@ -489,25 +496,25 @@ contradiction along the way, that becomes the highlight.
 ## Bug hunt
 
 The main goal of the demo is a bug hunt on public open-source projects, with its numbers; a confirmed real bug is the
-highlight. The bug hunt uses only steps 1 to 3, so it needs no translation and no proof and costs a few model calls per
-function.
+highlight. The bug hunt uses steps 1 to 3, plus the second opinion for counterexamples, so it needs no translation and
+no proof and costs a few model calls per function.
 
-**Calibrate:** before unknown projects, the scan runs on TheAlgorithms/Python at the commits before the known fixes (the
-palindrome and `find_pattern`), which measures whether it finds them and how many false alarms it gives.
+**Calibrate:** before unknown projects, the scan runs on TheAlgorithms/Python, limited to `strings/`, at the commits
+before historical single-function fixes, starting with the palindrome fix. It measures whether the scan finds them and
+how many false alarms it gives. `find_pattern` counts only if support for calls into the project is merged, since
+otherwise it ends `not_checkable`.
 
 1. **Choose projects:** public Python projects with many pure functions, type hints and docstrings or doctests, mostly
    on `int`, `str` and lists (algorithm collections, parsing and utility libraries). `pcc-check survey` counts how many
    functions of a repository are checkable before any model is called.
-2. **Scan:** `pcc-check run --stop-after spec` runs steps 1 to 3 on every checkable function and stops; a function ends
-   `counterexample` or `open` ("scan only"). The scan uses Spark in contributor mode (`--contributor`), since the
-   code is public. A counterexample also gets the second opinion (step 7), so the scan is steps 1 to 3 plus step 7 for
-   counterexamples.
-3. **Triage:** every counterexample goes through the second opinion (step 7). Automatic filters come first: the spec
-   must accept every doctest example of the function, otherwise the counterexample is dropped as "spec contradicts
-   docstring"; a counterexample that only raises an exception is listed apart from wrong results, and wrong results are
-   triaged first, since libraries often raise on purpose. Then a person checks it against the documentation and, where
-   unclear, the project's tests and issues. A blind spec can misread a vague docstring, so nothing is reported without
-   this check.
+2. **Scan:** `pcc-check run --stop-after spec` runs steps 1 to 3 on every checkable function and stops; a function
+   ends `counterexample` or `open` ("scan only"). The scan uses Spark in contributor mode (`--contributor`), since the
+   code is public. Counterexamples go on to triage.
+3. **Triage:** Automatic filters come first; the second opinion then runs on what is left. The spec must accept every
+   doctest example of the function, otherwise the counterexample is set to `open` ("spec contradicts docstring"). A
+   counterexample that only raises an exception is listed apart from wrong results, and wrong results are triaged first,
+   since libraries often raise on purpose. Then a person checks it against the documentation and, where unclear, the
+   project's tests and issues. A blind spec can misread a vague docstring, so nothing is reported without this check.
 4. **Report:** a team member opens an issue in the project with the generated pytest and, if one exists, the possible
    fix, following the project's contribution guidelines. Only bugs a person has confirmed are reported.
 5. **Results:** `docs/results/bug-hunt.md` lists projects, functions checked, counterexamples, confirmed bugs and links
@@ -520,9 +527,9 @@ Scanning sends public code only.
 
 Due Wed Nov 4, 9:00 PM ET, through the Cerebral Valley submission page: the public repository, a working 3-minute demo
 video, and every team member added. The bug hunt results (`docs/results/bug-hunt.md`) go with the video and the
-repository. The video opens with one line on what was built during the event. It shows which
-Meta model does what in the pipeline, the trained Glimmer and the model comparison, because "use of Meta AI tooling"
-is one of four equally weighted criteria, next to impact, technical depth and demo quality.
+repository. The video opens with one line on what was built during the event. It shows which Meta model does what in the
+pipeline, the trained Glimmer and the model comparison, because "use of Meta AI tooling" is one of four equally weighted
+criteria, next to impact, technical depth and demo quality.
 
 ## Licensing
 
@@ -543,9 +550,10 @@ use code or data without the rights to it, so:
 ## Cut order
 
 If the demo is at risk, these go first, in this order: the search agent of step 1, calls inside the project, the
-`find_pattern` highlight, GRPO, crosshair (differential testing stays), the second opinion. The red pull request needs
-only steps 1 to 3, so it is built first; the green one needs translation and proof. The bug hunt is not cut: it needs
-only steps 1 to 3, which the red pull request needs anyway.
+`find_pattern` highlight, GRPO, crosshair (differential testing stays), the second opinion (except in the bug hunt). The
+red pull request needs steps 1 to 3 and, for its counterexample, the second opinion, so it is built first; the green one
+needs translation and proof. The bug hunt is not cut: it needs steps 1 to 3, plus the second opinion for
+counterexamples, as the red pull request does.
 
 ## Decided later
 
