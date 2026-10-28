@@ -10,8 +10,8 @@ The original Python code stays as it is. Every function gets one of two things:
 - a **proof certificate**: a Dafny file with spec and proof that anyone can re-check with `dafny verify`, or
 - a **counterexample**: a concrete input on which the code breaks its spec, delivered as a ready-to-run Python test.
 
-The certificate travels with the code, which is what "proof-carrying code" means. The main goal of the demo is a real
-bug found in a public open-source project and reported upstream (see Bug hunt).
+The certificate travels with the code, which is what "proof-carrying code" means. The main goal of the demo is a bug
+hunt on public open-source projects, with its numbers; a confirmed real bug is the highlight.
 
 ## Result states
 
@@ -232,8 +232,8 @@ Dafny's error message back.
 | 3 | Wonder | 1, only for functions of at most 40 source lines |
 
 These numbers are starting values. They are tuned after the first evaluation run and are configurable in the action.
-Stage 1 is skipped while no Glimmer endpoint is configured; stage 2 uses Spark Open only where a partner key is
-available. Dafny always runs with a fixed resource limit and never with `--allow-warnings`.
+Stage 1 is skipped while no Glimmer endpoint is configured; stage 2 uses Spark Open where its endpoint (Modal) is
+configured. Dafny always runs with a fixed resource limit and never with `--allow-warnings`.
 
 **The proof may only add ghost code:** loop invariants, `decreases` clauses, `assert` statements, `calc` blocks, lemmas
 and calls to those lemmas. The executable code and the method header stay as translated, except for added `decreases`
@@ -359,11 +359,11 @@ At runtime the pipeline calls **only Meta models**.
 |---|---|---|
 | Intent, spec, AI fallback translation | Muse Spark (`muse-spark-1.3`) | Meta Model API |
 | Proof, stage 1 | trained Muse Glimmer | own deployment on Modal (vLLM, scale to zero); fallback a Fireworks on-demand deployment |
-| Proof, stage 2 | Muse Spark Open or Muse Spark | Modal shared endpoint, billed per token; else Meta Model API |
+| Proof, stage 2 | Muse Spark Open or Muse Spark | Modal shared endpoint, billed per token (confirmed in H-01); else Meta Model API |
 | Proof, stage 3 | Muse Wonder (`muse-wonder-1.0`) | Meta Model API |
 
 Every endpoint is OpenAI-compatible and configured by a base URL and an API key from the environment: the Meta Model
-API by `META_API_KEY`, a Glimmer deployment by `PCC_GLIMMER_BASE_URL` and `PCC_GLIMMER_API_KEY`, a Spark Open partner
+API by `META_API_KEY`, a Glimmer deployment by `PCC_GLIMMER_BASE_URL` and `PCC_GLIMMER_API_KEY`, a Spark Open endpoint
 by `PCC_SPARK_OPEN_BASE_URL` and `PCC_SPARK_OPEN_API_KEY`. A stage whose endpoint is not configured is skipped. Prices
 per million input/output tokens: `muse-spark-1.3` $1.25/$4.25, `muse-spark-1.3-contributor` $0.10/$0.20,
 `muse-wonder-1.0` $4/$20.
@@ -406,7 +406,11 @@ Only the proof step is trained, because there Dafny gives an unambiguous yes or 
 
    GRPO runs through the Fireworks Serverless Training API with a custom loop: Fireworks samples and trains, our code
    computes the reward with Dafny. Glimmer rates per 1M tokens: prefill $1.96, cached prefill $0.39, sample $4.88, train
-   $5.86; spend cap $60. Fallback: TRL with LoRA on a Modal GPU.
+   $5.86; spend cap $60.
+
+   GRPO is a small proof of concept: at the listed rates $60 buys roughly 12 to 15 steps of 16 tasks with 8 samples
+   each. It starts from base Glimmer on Vericoding training tasks that base Glimmer solves in 1 to 7 of 8 attempts, so
+   it does not wait for SFT.
 
 **Training data:** 500 to 2,000 verified proofs, collected during our own evaluation runs with Spark and Wonder on the
 training splits of Vericoding and DafnyBench, plus transpiler output of MBPP and HumanEval training functions, the exact
@@ -423,9 +427,9 @@ problems.
 
 | Credits | Amount | Used for | Cap |
 |---|---|---|---|
-| Meta Model API | $150 per person | Spark and Wonder in the pipeline, evaluation, training data collection | collection $100 |
+| Meta Model API | $150 per person | Spark and Wonder in the pipeline, evaluation, training data collection | collection $100, bug hunt $40 |
 | Fireworks | $100 | GRPO through the Training API; reserve for an on-demand Glimmer deployment | GRPO $60 |
-| Modal | $100, plus $30 free per month, not expiring | Glimmer serving (vLLM), Spark Open stage 2, fallback training | serving $50, Spark Open $30, training $40 |
+| Modal | $100, plus $30 free per month, not expiring | Glimmer serving (vLLM), Spark Open stage 2, fallback SFT | serving $50, Spark Open $30, SFT fallback $40 |
 
 - Glimmer is served only while a job runs and scales to zero; nothing runs permanently.
 - SFT is free on Fireworks until Nov 30.
@@ -484,30 +488,39 @@ contradiction along the way, that becomes the highlight.
 
 ## Bug hunt
 
-The main goal of the demo is a real, previously unknown bug in a public open-source project. The bug hunt uses only
-steps 1 to 3, so it needs no translation and no proof and costs a few model calls per function.
+The main goal of the demo is a bug hunt on public open-source projects, with its numbers; a confirmed real bug is the
+highlight. The bug hunt uses only steps 1 to 3, so it needs no translation and no proof and costs a few model calls per
+function.
+
+**Calibrate:** before unknown projects, the scan runs on TheAlgorithms/Python at the commits before the known fixes (the
+palindrome and `find_pattern`), which measures whether it finds them and how many false alarms it gives.
 
 1. **Choose projects:** public Python projects with many pure functions, type hints and docstrings or doctests, mostly
    on `int`, `str` and lists (algorithm collections, parsing and utility libraries). `pcc-check survey` counts how many
    functions of a repository are checkable before any model is called.
 2. **Scan:** `pcc-check run --stop-after spec` runs steps 1 to 3 on every checkable function and stops; a function ends
-   `counterexample` or passes. The scan uses Spark; Glimmer on Modal is used instead if HumanEvalFix shows it gives as
-   few false alarms.
-3. **Triage:** every counterexample goes through the second opinion (step 7) and then a person, who checks it against
-   the documentation and, where unclear, the project's tests and issues. A blind spec can misread a vague docstring, so
-   nothing is reported without this check.
+   `counterexample` or `open` ("scan only"). The scan uses Spark in contributor mode (`--contributor`), since the
+   code is public. A counterexample also gets the second opinion (step 7), so the scan is steps 1 to 3 plus step 7 for
+   counterexamples.
+3. **Triage:** every counterexample goes through the second opinion (step 7). Automatic filters come first: the spec
+   must accept every doctest example of the function, otherwise the counterexample is dropped as "spec contradicts
+   docstring"; a counterexample that only raises an exception is listed apart from wrong results, and wrong results are
+   triaged first, since libraries often raise on purpose. Then a person checks it against the documentation and, where
+   unclear, the project's tests and issues. A blind spec can misread a vague docstring, so nothing is reported without
+   this check.
 4. **Report:** a team member opens an issue in the project with the generated pytest and, if one exists, the possible
    fix, following the project's contribution guidelines. Only bugs a person has confirmed are reported.
 5. **Results:** `docs/results/bug-hunt.md` lists projects, functions checked, counterexamples, confirmed bugs and links
    to the reported issues. The best confirmed bug is the highlight of the video; the palindrome pull requests remain the
    demo of red and green.
 
-Scanning sends public code only. Contributor mode may be used, since the code is public.
+Scanning sends public code only.
 
 ## Submission
 
 Due Wed Nov 4, 9:00 PM ET, through the Cerebral Valley submission page: the public repository, a working 3-minute demo
-video, and every team member added. The video opens with one line on what was built during the event. It shows which
+video, and every team member added. The bug hunt results (`docs/results/bug-hunt.md`) go with the video and the
+repository. The video opens with one line on what was built during the event. It shows which
 Meta model does what in the pipeline, the trained Glimmer and the model comparison, because "use of Meta AI tooling"
 is one of four equally weighted criteria, next to impact, technical depth and demo quality.
 
