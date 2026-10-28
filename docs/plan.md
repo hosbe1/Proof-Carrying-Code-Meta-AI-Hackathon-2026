@@ -10,10 +10,12 @@ The original Python code stays as it is. Every function gets one of two things:
 - a **proof certificate**: a Dafny file with spec and proof that anyone can re-check with `dafny verify`, or
 - a **counterexample**: a concrete input on which the code breaks its spec, delivered as a ready-to-run Python test.
 
-The certificate travels with the code, which is what "proof-carrying code" means. The main goal is an excellent
-verification process. The bug hunt shows it: a real bug found in a public open-source project and confirmed is the
-highlight of the demo. When time or money runs short, the priority is the verification pipeline first, then the bug
-hunt, then training.
+The certificate travels with the code, which is what "proof-carrying code" means.
+
+The project is the verification of Python code with Meta models. What matters most is that the verification approach is
+right and that we make measurable progress with the Meta models: on the evaluation and by training Glimmer. The bug hunt
+in open-source projects is an add-on. When time or money runs short, the priority is the verification pipeline first,
+then progress with the Meta models (evaluation, model comparison, training), then the bug hunt.
 
 ## Result states
 
@@ -353,6 +355,15 @@ One comment per pull request, updated on every run. A summary on top, for exampl
 4. Assumptions: contracts, unproven callees, contradictions between sources
 5. Collapsed: the Dafny spec, and a link to the artifact with the certificates
 
+### Local results viewer
+
+`pcc-check view <scan.jsonl> [--port 8765]` is the way to browse bug hunt and evaluation results locally. It starts a
+server on `127.0.0.1` only and opens the browser. One page shows a table of all functions (project, path, name, state,
+reason, cost) with filters by state and project and a search box. A detail view per function shows the intent, the spec,
+the Dafny code, the proof result, a counterexample as pytest, the second opinion and the cost. The viewer only reads
+files and starts no runs. There is no hosted service: it would show results from running untrusted code, it would need
+keys, and it would cost money to run.
+
 ## Models
 
 At runtime the pipeline calls **only Meta models**.
@@ -439,7 +450,7 @@ HumanEval training functions exclude the HumanEvalFix test tasks, which are the 
 
 | Credits | Amount | Used for | Cap |
 |---|---|---|---|
-| Meta Model API | $150 per person, three people ($450) | Bug hunt (Spark scan, Wonder second opinion), round 0 and training data collection (Spark, contributor mode), model comparison (Wonder), development and demo, reserve | bug hunt $200, training data $100 (round 0 and collection), comparison, development and demo $100 (one bucket), reserve $50 |
+| Meta Model API | $150 per person, three people ($450) | Bug hunt (full pipeline, Spark in contributor mode, Wonder in proof stage 3), round 0 and training data collection (Spark, contributor mode), model comparison (Wonder), pipeline development, evaluation and demo, reserve | bug hunt $100, training data $100 (round 0 and collection), development, evaluation, comparison and demo $200, reserve $50 |
 | Modal | $100, plus $30 free per month as reserve | Round 1 sampling with vLLM on an H100, evaluation of base, SFT 1 and SFT 2, demo serving | round 1 sampling $40, evaluation and demo serving $60 |
 | Fireworks | $100 | SFT 1 and SFT 2 (free until Nov 30, if confirmed on Oct 28), GRPO stretch; reserve for an on-demand deployment if a trained adapter cannot be served on Modal, or for sampling if Modal fails | GRPO $50, reserve $50 |
 
@@ -497,47 +508,48 @@ there too, for when the GitHub sources of step 1 are built. The repository carri
 
 The demo lives in its own public repository that uses our action: the pull request with the bug turns red with a
 counterexample, the pull request with the fix turns green with a certificate that the viewer can re-check. Both demo
-functions are translated by the transpiler, not by AI. If the project finds a real, previously unknown bug or
-contradiction along the way, that becomes the highlight.
+functions are translated by the transpiler, not by AI. The palindrome pull requests are the demo. A confirmed bug from
+the bug hunt is a bonus for the video, not the highlight.
 
 ## Bug hunt
 
-The bug hunt shows the verification process on public open-source projects, with its numbers; a confirmed real bug is
-the highlight of the demo. The bug hunt uses steps 1 to 3, plus the second opinion for counterexamples, so it needs no
-translation and no proof and costs a few model calls per function.
+The bug hunt runs the full pipeline (steps 1 to 8, with the Dafny translation and proof) on every checkable function of
+the chosen projects. It shows the verification process on public open-source projects, with its numbers. A confirmed
+real bug is a bonus for the video.
 
 **Calibrate:** before unknown projects, the scan runs on TheAlgorithms/Python, limited to `strings/`, at the commits
 before historical single-function fixes, starting with the palindrome fix. It measures whether the scan finds them and
 how many false alarms it gives. `find_pattern` counts only if support for calls into the project is merged, since
 otherwise it ends `not_checkable`.
 
-1. **Choose projects:** 30 to 50 public Python projects with many pure functions, type hints and docstrings or doctests,
+1. **Choose projects:** 5 to 10 public Python projects with many pure functions, type hints and docstrings or doctests,
    mostly on `int`, `str` and lists (algorithm collections, parsing and utility libraries). `pcc-check survey` counts
-   how many functions of a repository are checkable before any model is called; at contributor rates a function costs
-   an estimated $0.001 to $0.01.
-2. **Scan:** `pcc-check run --stop-after spec` runs steps 1 to 3 on every checkable function and stops; a function ends
-   `counterexample` or `open` ("scan only"). The scan uses Spark via the Meta API in contributor mode (`--contributor`),
-   since the code is public. Counterexamples go on to triage. The scan and the second opinion together are capped at
-   $200 of Meta credits.
-3. **Triage:** Automatic filters come first; the second opinion then runs on what is left, with Wonder, which has no
-   contributor mode. The spec must accept every doctest example of the function, otherwise the counterexample is set to
-   `open` ("spec contradicts docstring"). A counterexample that only raises an exception is listed apart from wrong
-   results, and wrong results are triaged first, since libraries often raise on purpose. Then a person checks it against
-   the documentation and, where unclear, the project's tests and issues. A blind spec can misread a vague docstring, so
+   how many functions of a repository are checkable before any model is called. The full pipeline costs more per
+   function than steps 1 to 3, so the number of projects is chosen to stay within the cap in step 2.
+2. **Scan:** `pcc-check scan <repo>` runs the full pipeline on every checkable function: `precheck`, then steps 1 to 8.
+   Each function ends `proven` (with its certificate), `counterexample`, `open` or `not_checkable`, always with the
+   reason. Spark runs in contributor mode (`--contributor`), since the code is public; Wonder runs only where the
+   pipeline uses it, in proof stage 3. The bug hunt is capped at $100 of Meta credits.
+3. **Triage:** Automatic filters come first; the second opinion then runs on what is left, with Spark in contributor
+   mode. The spec must accept every doctest example of the function, otherwise the counterexample is set to `open`
+   ("spec contradicts docstring"). A counterexample that only raises an exception is listed apart from wrong results,
+   and wrong results are triaged first, since libraries often raise on purpose. Then a person checks it against the
+   documentation and, where unclear, the project's tests and issues. A blind spec can misread a vague docstring, so
    nothing is reported without this check.
 4. **Report:** a team member opens an issue in the project with the generated pytest and, if one exists, the possible
    fix, following the project's contribution guidelines. Only bugs a person has confirmed are reported.
-5. **Results:** `docs/results/bug-hunt.md` lists projects, functions checked, counterexamples, confirmed bugs and links
-   to the reported issues. The best confirmed bug is the highlight of the video; the palindrome pull requests remain the
-   demo of red and green.
+5. **Results:** `docs/results/bug-hunt.md` lists projects, functions checked, the states (`proven` with certificates,
+   `counterexample`, `open`, `not_checkable`), confirmed bugs and links to the reported issues. A confirmed bug is a
+   bonus for the video; the palindrome pull requests remain the demo of red and green.
 
 Scanning sends public code only.
 
 ## Submission
 
 Due Wed Nov 4, 9:00 PM ET, through the Cerebral Valley submission page: the public repository, a working 3-minute demo
-video, and every team member added. The bug hunt results (`docs/results/bug-hunt.md`) go with the video and the
-repository. The video opens with one line on what was built during the event. It shows which Meta model does what in the
+video, and every team member added. The demo in the video is the palindrome pull requests, one red and one green. The
+bug hunt results (`docs/results/bug-hunt.md`) go with the repository; a confirmed bug from them is a bonus for the
+video. The video opens with one line on what was built during the event. It shows which Meta model does what in the
 pipeline, the trained Glimmer and the model comparison, because "use of Meta AI tooling" is one of four equally weighted
 criteria, next to impact, technical depth and demo quality.
 
@@ -558,12 +570,10 @@ hackathon disqualifies projects that use code or data without the rights to it, 
 
 ## Cut order
 
-If the demo is at risk, these go first, in this order: GRPO, round 1 of rejection sampling, the search agent of step 1,
-calls inside the project, the `find_pattern` highlight, crosshair (differential testing stays), the second opinion
-(except in the bug hunt). The
-red pull request needs steps 1 to 3 and, for its counterexample, the second opinion, so it is built first; the green one
-needs translation and proof. The bug hunt is not cut: it needs steps 1 to 3, plus the second opinion for
-counterexamples, as the red pull request does.
+If the demo is at risk, these go first, in this order: GRPO, the bug hunt, round 1 of rejection sampling, the search
+agent of step 1, calls inside the project, the `find_pattern` highlight, crosshair (differential testing stays), the
+second opinion. The red pull request needs steps 1 to 3 and, for its counterexample, the second opinion, so it is built
+first; the green one needs translation and proof.
 
 ## Decided later
 
