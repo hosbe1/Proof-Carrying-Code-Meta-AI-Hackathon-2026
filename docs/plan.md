@@ -10,7 +10,8 @@ The original Python code stays as it is. Every function gets one of two things:
 - a **proof certificate**: a Dafny file with spec and proof that anyone can re-check with `dafny verify`, or
 - a **counterexample**: a concrete input on which the code breaks its spec, delivered as a ready-to-run Python test.
 
-The certificate travels with the code, which is what "proof-carrying code" means.
+The certificate travels with the code, which is what "proof-carrying code" means. The main goal of the demo is a real
+bug found in a public open-source project and reported upstream (see Bug hunt).
 
 ## Result states
 
@@ -357,8 +358,8 @@ At runtime the pipeline calls **only Meta models**.
 | Step | Model | Where it runs |
 |---|---|---|
 | Intent, spec, AI fallback translation | Muse Spark (`muse-spark-1.3`) | Meta Model API |
-| Proof, stage 1 | trained Muse Glimmer | own deployment, optional (see Training) |
-| Proof, stage 2 | Muse Spark Open or Muse Spark | Spark Open through a partner (Baseten, Fireworks) if a key is available, else Meta Model API |
+| Proof, stage 1 | trained Muse Glimmer | own deployment on Modal (vLLM, scale to zero); fallback a Fireworks on-demand deployment |
+| Proof, stage 2 | Muse Spark Open or Muse Spark | Modal shared endpoint, billed per token; else Meta Model API |
 | Proof, stage 3 | Muse Wonder (`muse-wonder-1.0`) | Meta Model API |
 
 Every endpoint is OpenAI-compatible and configured by a base URL and an API key from the environment: the Meta Model
@@ -367,8 +368,17 @@ by `PCC_SPARK_OPEN_BASE_URL` and `PCC_SPARK_OPEN_API_KEY`. A stage whose endpoin
 per million input/output tokens: `muse-spark-1.3` $1.25/$4.25, `muse-spark-1.3-contributor` $0.10/$0.20,
 `muse-wonder-1.0` $4/$20.
 
+Endpoints billed per GPU hour (a Glimmer deployment) count $0 per token in the function budget; their GPU time is
+tracked per deployment and capped in Compute. Spark Open on Modal is priced per token (reported $1.25/$4.25, $0.15
+cached input; measured on first use).
+
 All four models run on the same evaluation tasks. The comparison table decides the roles in stage 2.
-Only Glimmer is trained. At 816B parameters, Spark Open is too large to train within our means.
+
+**Why Glimmer is trained, not Spark:** Spark is closed. Spark Open could get a LoRA SFT (Fireworks bills models over
+300B at $10 per 1M training tokens), but serving a fine-tuned 816B model needs a multi-GPU dedicated deployment at $8
+per GPU hour, which the credits cover for about an hour, and reinforcement learning on it is out of reach. Glimmer is
+Apache 2.0, a dense 30B model that fits one GPU, so the trained adapter can be served for evaluation, the demo and the
+product, and published. Spark Open is used untrained as proof stage 2, through Modal's shared endpoint.
 
 Our own evaluation runs on public data and may use the cheaper contributor mode (`muse-spark-1.3-contributor`), in
 which Meta may train on the content. It runs only in a dedicated environment on each machine: the client refuses to
@@ -380,7 +390,8 @@ Only the proof step is trained, because there Dafny gives an unambiguous yes or 
 
 1. **Warm start with SFT:** collect successful proofs and train Glimmer on them (expert iteration). GRPO only learns
    when some attempts succeed and others fail, so this step comes first. Glimmer SFT with LoRA is free on Fireworks
-   until 30 Nov, so this step needs no credits.
+   until Nov 30. If dataset uploads stay disabled for our account (reported by participants on Oct 28), LoRA SFT runs on
+   a Modal GPU instead.
 2. **GRPO with LoRA:** Glimmer learns directly from Dafny's verdict, with a graded reward:
 
    | Outcome | Reward |
@@ -393,6 +404,10 @@ Only the proof step is trained, because there Dafny gives an unambiguous yes or 
    verified proofs comes only if too few groups differ, because it is easy to game with trivial lemmas. LoRA instead of
    full fine-tuning: for reinforcement learning it matches full fine-tuning at a fraction of the GPU cost.
 
+   GRPO runs through the Fireworks Serverless Training API with a custom loop: Fireworks samples and trains, our code
+   computes the reward with Dafny. Glimmer rates per 1M tokens: prefill $1.96, cached prefill $0.39, sample $4.88, train
+   $5.86; spend cap $60. Fallback: TRL with LoRA on a Modal GPU.
+
 **Training data:** 500 to 2,000 verified proofs, collected during our own evaluation runs with Spark and Wonder on the
 training splits of Vericoding and DafnyBench, plus transpiler output of MBPP and HumanEval training functions, the exact
 input the proof agent gets in the product. Transpiler output uses the `py_*` blocks, which Vericoding and DafnyBench
@@ -404,17 +419,19 @@ deduplicated by their source task, so no test task reaches training through anot
 training only, never evaluated. HumanEval training functions exclude the HumanEvalFix test tasks, which are the same 164
 problems.
 
-**Compute:** no own money is spent. The team has the Meta Model API credits ($150 per person), which pay for Spark and
-Wonder only. Partner credits (Baseten, Modal, Fireworks) are applied for but not confirmed. Local machines have no
-suitable GPU, so a 30B model would be too slow for evaluation. So:
+**Compute:** No own money is spent. Local machines have no suitable GPU.
 
-- **Glimmer evaluation** (before and after training) runs on a GPU rented by the hour from free monthly credits (Modal)
-  or partner credits, for a few hours at a time, never permanently.
-- **SFT** runs on Fireworks for free.
-- **GRPO** runs only if GPU credits arrive. Otherwise it is shipped ready to run: code, reward function and config,
-  tested end to end on a small model, without a result for Glimmer.
-- **Oct 28:** a person checks that Fireworks SFT is free for Glimmer and whether the trained adapter can be downloaded,
-  and records the result here.
+| Credits | Amount | Used for | Cap |
+|---|---|---|---|
+| Meta Model API | $150 per person | Spark and Wonder in the pipeline, evaluation, training data collection | collection $100 |
+| Fireworks | $100 | GRPO through the Training API; reserve for an on-demand Glimmer deployment | GRPO $60 |
+| Modal | $100, plus $30 free per month, not expiring | Glimmer serving (vLLM), Spark Open stage 2, fallback training | serving $50, Spark Open $30, training $40 |
+
+- Glimmer is served only while a job runs and scales to zero; nothing runs permanently.
+- SFT is free on Fireworks until Nov 30.
+- Every job records its spend in its issue.
+- **Oct 28:** a person checks Fireworks dataset uploads, adapter download and Training API access, and Modal's Spark
+  Open endpoint, and records the answers here (H-01).
 
 **Release:** the trained LoRA adapter is published on Hugging Face, with its evaluation results and the license of
 the base model, if the training provider allows downloading it. Otherwise the training data, config and evaluation
@@ -465,6 +482,28 @@ counterexample, the pull request with the fix turns green with a certificate tha
 functions are translated by the transpiler, not by AI. If the project finds a real, previously unknown bug or
 contradiction along the way, that becomes the highlight.
 
+## Bug hunt
+
+The main goal of the demo is a real, previously unknown bug in a public open-source project. The bug hunt uses only
+steps 1 to 3, so it needs no translation and no proof and costs a few model calls per function.
+
+1. **Choose projects:** public Python projects with many pure functions, type hints and docstrings or doctests, mostly
+   on `int`, `str` and lists (algorithm collections, parsing and utility libraries). `pcc-check survey` counts how many
+   functions of a repository are checkable before any model is called.
+2. **Scan:** `pcc-check run --stop-after spec` runs steps 1 to 3 on every checkable function and stops; a function ends
+   `counterexample` or passes. The scan uses Spark; Glimmer on Modal is used instead if HumanEvalFix shows it gives as
+   few false alarms.
+3. **Triage:** every counterexample goes through the second opinion (step 7) and then a person, who checks it against
+   the documentation and, where unclear, the project's tests and issues. A blind spec can misread a vague docstring, so
+   nothing is reported without this check.
+4. **Report:** a team member opens an issue in the project with the generated pytest and, if one exists, the possible
+   fix, following the project's contribution guidelines. Only bugs a person has confirmed are reported.
+5. **Results:** `docs/results/bug-hunt.md` lists projects, functions checked, counterexamples, confirmed bugs and links
+   to the reported issues. The best confirmed bug is the highlight of the video; the palindrome pull requests remain the
+   demo of red and green.
+
+Scanning sends public code only. Contributor mode may be used, since the code is public.
+
 ## Submission
 
 Due Wed Nov 4, 9:00 PM ET, through the Cerebral Valley submission page: the public repository, a working 3-minute demo
@@ -490,15 +529,15 @@ use code or data without the rights to it, so:
 
 ## Cut order
 
-If the demo is at risk, these go first, in this order: GRPO, the search agent of step 1, calls inside the project, the
-`find_pattern` highlight, crosshair (differential testing stays), the second opinion. The red pull request needs only
-steps 1 to 3, so it is built first; the green one needs translation and proof.
+If the demo is at risk, these go first, in this order: the search agent of step 1, calls inside the project, the
+`find_pattern` highlight, GRPO, crosshair (differential testing stays), the second opinion. The red pull request needs
+only steps 1 to 3, so it is built first; the green one needs translation and proof. The bug hunt is not cut: it needs
+only steps 1 to 3, which the red pull request needs anyway.
 
 ## Decided later
 
 - Target values for the metrics, after the first evaluation run
 - Attempt counts and budgets, after the first evaluation run
-- GRPO compute, once it is known which GPU credits the team receives
 
 The repository structure is decided and described in [architecture.md](architecture.md). Tasks are GitHub issues,
 split by dependencies so that agents can work in parallel (see [AGENTS.md](../AGENTS.md)).
