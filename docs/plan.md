@@ -10,8 +10,10 @@ The original Python code stays as it is. Every function gets one of two things:
 - a **proof certificate**: a Dafny file with spec and proof that anyone can re-check with `dafny verify`, or
 - a **counterexample**: a concrete input on which the code breaks its spec, delivered as a ready-to-run Python test.
 
-The certificate travels with the code, which is what "proof-carrying code" means. The main goal of the demo is a bug
-hunt on public open-source projects, with its numbers; a confirmed real bug is the highlight.
+The certificate travels with the code, which is what "proof-carrying code" means. The main goal is an excellent
+verification process. The bug hunt shows it: a real bug found in a public open-source project and confirmed is the
+highlight of the demo. When time or money runs short, the priority is the verification pipeline first, then the bug
+hunt, then training.
 
 ## Result states
 
@@ -36,7 +38,7 @@ Python function
   ├─ 2. Write intent        plain text with cited sources, conflicts flagged
   ├─ 3. Write spec          executable Python predicate, checked with Hypothesis and mutants
   ├─ 4. Translate           rule-based transpiler, AI only for the rest, then checked
-  ├─ 5. Prove               trained Glimmer → Spark Open or Spark → Wonder
+  ├─ 5. Prove               trained Glimmer → Spark → Wonder
   ├─ 6. Search counterexample   only after a failed proof
   ├─ 7. Second opinion      only when step 5 or 6 reports a problem
   └─ 8. Report              certificate in proofs/, comment on the pull request
@@ -228,13 +230,12 @@ Dafny's error message back.
 | Stage | Model | Attempts |
 |---|---|---|
 | 1 | trained Glimmer | up to 8 |
-| 2 | Spark Open or Spark, whichever measures better | up to 3, with all previous failures |
+| 2 | Spark | up to 3, with all previous failures |
 | 3 | Wonder | 1, only for functions of at most 40 source lines |
 
 These numbers are starting values. They are tuned after the first evaluation run and are configurable in the action.
-Stage 1 is skipped while no Glimmer endpoint is configured; stage 2 uses Spark Open instead of Spark if the comparison
-shows it is better and its endpoint (Modal) is configured; the switch is a change of `prover_stages`. Dafny always runs
-with a fixed resource limit and never with `--allow-warnings`.
+Stage 1 is skipped while no Glimmer endpoint is configured. Dafny always runs with a fixed resource limit and never
+with `--allow-warnings`.
 
 **The proof may only add ghost code:** loop invariants, `decreases` clauses, `assert` statements, `calc` blocks, lemmas
 and calls to those lemmas. The executable code and the method header stay as translated, except for added `decreases`
@@ -360,26 +361,22 @@ At runtime the pipeline calls **only Meta models**.
 |---|---|---|
 | Intent, spec, AI fallback translation | Muse Spark (`muse-spark-1.3`) | Meta Model API |
 | Proof, stage 1 | trained Muse Glimmer | own deployment on Modal (vLLM, scale to zero); fallback a Fireworks on-demand deployment |
-| Proof, stage 2 | Muse Spark Open or Muse Spark | Modal shared endpoint, billed per token (to be confirmed on Oct 28, see Compute); else Meta Model API |
+| Proof, stage 2 | Muse Spark (`muse-spark-1.3`) | Meta Model API |
 | Proof, stage 3 | Muse Wonder (`muse-wonder-1.0`) | Meta Model API |
 
 Every endpoint is OpenAI-compatible and configured by a base URL and an API key from the environment: the Meta Model
-API by `META_API_KEY`, a Glimmer deployment by `PCC_GLIMMER_BASE_URL` and `PCC_GLIMMER_API_KEY`, a Spark Open endpoint
-by `PCC_SPARK_OPEN_BASE_URL` and `PCC_SPARK_OPEN_API_KEY`. A stage whose endpoint is not configured is skipped. Prices
-per million input/output tokens: `muse-spark-1.3` $1.25/$4.25, `muse-spark-1.3-contributor` $0.10/$0.20,
-`muse-wonder-1.0` $4/$20.
+API by `META_API_KEY`, a Glimmer deployment by `PCC_GLIMMER_BASE_URL` and `PCC_GLIMMER_API_KEY`. A stage whose
+endpoint is not configured is skipped. Prices per million input/output tokens: `muse-spark-1.3` $1.25/$4.25,
+`muse-spark-1.3-contributor` $0.10/$0.20, `muse-wonder-1.0` $4/$20.
 
 Endpoints billed per GPU hour (a Glimmer deployment) count $0 per token in the function budget; their GPU time is
-tracked per deployment and capped in Compute. Spark Open on Modal is priced per token (reported $1.25/$4.25, $0.15
-cached input; measured on first use).
+tracked per deployment and capped in Compute.
 
-All four models run on the same evaluation tasks. The comparison table decides the roles in stage 2.
+The model comparison covers Glimmer (base and trained), Spark and Wonder on the same evaluation tasks.
 
-**Why Glimmer is trained, not Spark:** Spark is closed. Spark Open could get a LoRA SFT (Fireworks bills models over
-300B at $10 per 1M training tokens), but serving a fine-tuned 816B model needs a multi-GPU dedicated deployment at $8
-per GPU hour, which the credits cover for about an hour, and reinforcement learning on it is out of reach. Glimmer is
-Apache 2.0, a dense 30B model that fits one GPU, so the trained adapter can be served for evaluation, the demo and the
-product, and published. Spark Open is used untrained as proof stage 2, through Modal's shared endpoint.
+**Why Glimmer is trained, not Spark:** Spark is closed; Spark Open (816B) is too large to train or serve within our
+means. Glimmer is Apache 2.0, a dense 30B model that fits one GPU, so the trained adapter can be served for evaluation,
+the demo and the product, and published.
 
 Our own evaluation runs on public data and may use the cheaper contributor mode (`muse-spark-1.3-contributor`), in
 which Meta may train on the content. It runs only in a dedicated environment on each machine: the client refuses to
@@ -387,37 +384,49 @@ call Meta models unless `PCC_META_ALLOWED=1` is set there, and tests that call r
 
 ## Training
 
-Only the proof step is trained, because there Dafny gives an unambiguous yes or no.
+Only the proof step is trained, because there Dafny gives an unambiguous yes or no. The main method is rejection
+sampling (expert iteration): the model proposes proofs, Dafny keeps the verified ones, and Glimmer is trained on them.
 
-1. **Warm start with SFT:** collect successful proofs and train Glimmer on them (expert iteration). SFT and GRPO are
-   independent: GRPO's task selection (step 2) replaces the need for SFT first. Glimmer SFT with LoRA is free on
-   Fireworks until Nov 30. If dataset uploads stay disabled for our account (reported by participants on Oct 28), LoRA
-   SFT runs on a Modal GPU instead.
-2. **GRPO with LoRA:** Glimmer learns directly from Dafny's verdict, with a graded reward:
+1. **Round 0:** base Glimmer, served with vLLM on Modal, makes 8 attempts per Vericoding training task. Dafny checks
+   them (Dafny runs locally or on Modal CPUs; it is not a model), and the verified proofs are kept.
+2. **SFT 1:** LoRA SFT of Glimmer on these proofs plus the contributor-mode data (see Training data). Glimmer SFT with
+   LoRA is free on Fireworks until Nov 30, through the UI or the Serverless Training API. If dataset uploads stay
+   disabled for our account (reported by participants on Oct 28), SFT uses the Serverless Training API, which is also
+   free.
+3. **Round 1:** the SFT 1 model samples again on the tasks still unsolved; the verified proofs are added, and the
+   result is **SFT 2**.
+4. **GRPO (stretch only):** starts from SFT 2 on Fireworks with the tasks that are left, capped at $50, after a bounded
+   pre-pass (see below).
 
-   | Outcome | Reward |
-   |---|---|
-   | verified and the anti-cheat scan is clean | 1 |
-   | not verified | 0 |
-   | anti-cheat violation (`assume`, changed spec, …) | −1 |
+**Why rejection sampling:** training is free, so the money buys data. Sampling with vLLM on a Modal H100 is estimated at
+about a tenth of the per-token cost on Fireworks (to be measured in the first hour). At the $50 GRPO cap only about 9 to
+12 steps fit, which would not give a measurable gain, so GRPO is a stretch goal.
 
-   Groups in which every attempt gets the same reward are dropped, because they teach nothing. Partial credit for partly
-   verified proofs comes only if too few groups differ, because it is easy to game with trivial lemmas. LoRA instead of
-   full fine-tuning: for reinforcement learning it matches full fine-tuning at a fraction of the GPU cost.
+**GRPO (stretch):** Glimmer learns directly from Dafny's verdict, with a graded reward:
 
-   GRPO runs through the Fireworks Serverless Training API with a custom loop: Fireworks samples and trains, our code
-   computes the reward with Dafny. Glimmer rates per 1M tokens: prefill $1.96, cached prefill $0.39, sample $4.88, train
-   $5.86; spend cap $60.
+| Outcome | Reward |
+|---|---|
+| verified and the anti-cheat scan is clean | 1 |
+| not verified | 0 |
+| anti-cheat violation (`assume`, changed spec, …) | −1 |
 
-   GRPO is a small proof of concept. The pre-pass samples 64 Vericoding training tasks (fixed seed) 8 times each with
-   base Glimmer; its cost counts toward the $60. Assuming about 2k prompt and 2k sample tokens per attempt, a step of 16
-   tasks × 8 samples costs about $4.75 (the pre-pass about $7.00, prefill and sample only). After the pre-pass, $60 buys
-   about 11 such steps; with 1.5k prompt and sample tokens per attempt, about 15. The pre-pass selects the Vericoding
-   training tasks that base Glimmer solves in 1 to 7 of 8 attempts, so GRPO starts from base Glimmer and does not wait
-   for SFT.
+Groups in which every attempt gets the same reward are dropped, because they teach nothing. Partial credit for partly
+verified proofs comes only if too few groups differ, because it is easy to game with trivial lemmas. LoRA instead of
+full fine-tuning: for reinforcement learning it matches full fine-tuning at a fraction of the GPU cost.
 
-**Training data:** 500 to 2,000 verified proofs, collected during our own evaluation runs with Spark and Wonder on the
-training splits of Vericoding and DafnyBench, plus transpiler output of MBPP and HumanEval training functions, the exact
+GRPO runs through the Fireworks Serverless Training API with a custom loop: Fireworks samples and trains, our code
+computes the reward with Dafny. Glimmer rates per 1M tokens: prefill $1.96, cached prefill $0.39, sample $4.88, train
+$5.86; spend cap $50.
+
+GRPO is a small proof of concept. The pre-pass samples 64 Vericoding training tasks (fixed seed) 8 times each with SFT
+2; its cost counts toward the $50. Assuming about 2k prompt and 2k sample tokens per attempt, a step of 16 tasks × 8
+samples costs about $4.75 (the pre-pass about $7.00, prefill and sample only). After the pre-pass, $50 buys about 9
+such steps; with 1.5k prompt and sample tokens per attempt, about 12. The pre-pass keeps the tasks that SFT 2 solves in
+1 to 7 of 8 attempts, so the groups in a step can differ in reward.
+
+**Training data:** 500 to 2,000 verified proofs from the rounds of rejection sampling on the Vericoding training tasks,
+plus contributor-mode Spark output on the training splits of Vericoding and DafnyBench, plus transpiler output of MBPP
+and HumanEval training functions, the exact
 input the proof agent gets in the product. Transpiler output uses the `py_*` blocks, which Vericoding and DafnyBench
 never do, and the library's specs are part of the proof agent's prompt. Evaluation tasks never enter training, nor does
 any dataset without a license that allows it (see Licensing). Collection uses Spark in contributor mode, which costs 8 %
@@ -431,18 +440,18 @@ problems.
 
 | Credits | Amount | Used for | Cap |
 |---|---|---|---|
-| Meta Model API | $150 per person | Spark and Wonder in the pipeline, evaluation, training data collection | collection $100, bug hunt $40 |
-| Fireworks | $100 | GRPO through the Training API; reserve for an on-demand Glimmer deployment | GRPO $60 |
-| Modal | $100, plus $30 free per month, not expiring | Glimmer serving (vLLM), Spark Open stage 2, fallback SFT | serving $50, Spark Open $30, SFT fallback $40 |
+| Meta Model API | $150 per person, three people ($450) | Bug hunt (Spark, scan and second opinion), training data from contributor mode, model comparison (Wonder), development and demo, reserve | bug hunt $200, training data $100, comparison (Wonder) $100, development and demo $100, reserve $50 |
+| Modal | $100, plus $30 free per month as reserve | Sampling with vLLM on an H100 (rounds 0 and 1), evaluation of base, SFT 1 and SFT 2, demo serving | sampling round 0 $35, round 1 $25, evaluation and demo $40 |
+| Fireworks | $100 | SFT 1 and SFT 2 (free until Nov 30), GRPO stretch; reserve for an on-demand deployment if a trained adapter cannot be served on Modal, or for sampling if Modal fails | GRPO $50, reserve $50 |
 
-Modal's caps total $120 against $100 partner credits, so $20 comes from the free $30 per month. The Meta caps come from
-one person's $150; the comparison (Wonder) and the demo use a second team member's Meta credits, cap $100.
+Modal's caps add up to the $100 partner credits; the free $30 per month is the reserve. The three Meta keys sit in one
+Meta environment on one team member's machine.
 
 - Glimmer is served only while a job runs and scales to zero; nothing runs permanently.
-- SFT is free on Fireworks until Nov 30.
+- SFT is free on Fireworks until Nov 30, through the UI or the Serverless Training API.
 - Every job records its spend in its issue.
-- **Oct 28:** a person checks Fireworks dataset uploads, adapter download and Training API access, and Modal's Spark
-  Open endpoint, and records the answers here.
+- **Oct 28:** the open points of the Fireworks, Modal and Meta access are checked that day, and the answers are recorded
+  in the issue tracker, not in this plan.
 
 **Release:** the trained LoRA adapter is published on Hugging Face, with its evaluation results and the license of
 the base model, if the training provider allows downloading it. Otherwise the training data, config and evaluation
@@ -467,8 +476,7 @@ if time remains.
 translated by the transpiler, cost and time per function. False alarms must stay close to zero. Target values are set
 after the first run.
 
-**Comparison:** Glimmer before training, after SFT and after GRPO, against Spark, Spark Open and Wonder on the same
-tasks.
+**Comparison:** base Glimmer, SFT 1, SFT 2 and, if it ran, GRPO on the same tasks, against Spark and Wonder.
 
 ## Demo
 
@@ -495,9 +503,9 @@ contradiction along the way, that becomes the highlight.
 
 ## Bug hunt
 
-The main goal of the demo is a bug hunt on public open-source projects, with its numbers; a confirmed real bug is the
-highlight. The bug hunt uses steps 1 to 3, plus the second opinion for counterexamples, so it needs no translation and
-no proof and costs a few model calls per function.
+The bug hunt shows the verification process on public open-source projects, with its numbers; a confirmed real bug is
+the highlight of the demo. The bug hunt uses steps 1 to 3, plus the second opinion for counterexamples, so it needs no
+translation and no proof and costs a few model calls per function.
 
 **Calibrate:** before unknown projects, the scan runs on TheAlgorithms/Python, limited to `strings/`, at the commits
 before historical single-function fixes, starting with the palindrome fix. It measures whether the scan finds them and
@@ -508,8 +516,9 @@ otherwise it ends `not_checkable`.
    on `int`, `str` and lists (algorithm collections, parsing and utility libraries). `pcc-check survey` counts how many
    functions of a repository are checkable before any model is called.
 2. **Scan:** `pcc-check run --stop-after spec` runs steps 1 to 3 on every checkable function and stops; a function
-   ends `counterexample` or `open` ("scan only"). The scan uses Spark in contributor mode (`--contributor`), since the
-   code is public. Counterexamples go on to triage.
+   ends `counterexample` or `open` ("scan only"). The scan uses Spark via the Meta API in contributor mode
+   (`--contributor`), since the code is public; the scan and the second opinion together are capped at $200 of Meta
+   credits. Counterexamples go on to triage.
 3. **Triage:** Automatic filters come first; the second opinion then runs on what is left. The spec must accept every
    doctest example of the function, otherwise the counterexample is set to `open` ("spec contradicts docstring"). A
    counterexample that only raises an exception is listed apart from wrong results, and wrong results are triaged first,
@@ -533,9 +542,8 @@ criteria, next to impact, technical depth and demo quality.
 
 ## Licensing
 
-The code is licensed under AGPL-3.0. `THIRD_PARTY.md` lists every dataset and model with its license and link.
-If Muse Spark Open is used, the README carries "Built with Muse Spark Open". The hackathon disqualifies projects that
-use code or data without the rights to it, so:
+The code is licensed under AGPL-3.0. `THIRD_PARTY.md` lists every dataset and model with its license and link. The
+hackathon disqualifies projects that use code or data without the rights to it, so:
 
 | Dataset | License | Use |
 |---|---|---|
@@ -549,8 +557,9 @@ use code or data without the rights to it, so:
 
 ## Cut order
 
-If the demo is at risk, these go first, in this order: the search agent of step 1, calls inside the project, the
-`find_pattern` highlight, GRPO, crosshair (differential testing stays), the second opinion (except in the bug hunt). The
+If the demo is at risk, these go first, in this order: GRPO, round 1 of rejection sampling, the search agent of step 1,
+calls inside the project, the `find_pattern` highlight, crosshair (differential testing stays), the second opinion
+(except in the bug hunt). The
 red pull request needs steps 1 to 3 and, for its counterexample, the second opinion, so it is built first; the green one
 needs translation and proof. The bug hunt is not cut: it needs steps 1 to 3, plus the second opinion for
 counterexamples, as the red pull request does.
