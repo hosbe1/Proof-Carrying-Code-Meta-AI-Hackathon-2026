@@ -25,7 +25,12 @@ Proofs must pass with the Dafny 4.11.0 release binary and its Z3, as CI uses. Ve
 - Every change starts from a GitHub issue. Pick up only issues labelled `ready` whose "Blocked by" issues are all closed.
 - One issue, one branch `agent/<issue number>-<slug>`, one pull request whose description says `Closes #<n>`.
 - Merge (squash) only with green CI and a finished review. Never merge a red pull request.
-- Issues labelled `human` need a person (training runs, live evaluation, demo video); assign them to yourself.
+- Issues labelled `run` are runs, not code: deployments, training runs and live evaluations. An agent picks them up like
+  any `ready` issue, on a machine that holds the credentials the issue names (Meta models only in the Meta environment,
+  see below). A run stays within the cost cap of its issue, stops every deployment it started, records run IDs and spend
+  in the issue, and brings results into the repository through a pull request.
+- Issues labelled `human` need a person (accounts, credits, demo video, submission, confirming a bug before it is
+  reported upstream); assign them to yourself.
 - Meta models are called only where `PCC_META_ALLOWED=1` is set: on team machines only in the dedicated Meta
   environment, and in the GitHub Action, which sets it. Tests that call them are marked `live` and never run in CI.
 
