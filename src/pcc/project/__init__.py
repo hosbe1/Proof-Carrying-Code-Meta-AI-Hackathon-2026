@@ -6,6 +6,8 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from pcc.core import FunctionRef
+from pcc.project.calls import call_graph
+from pcc.project.diff import changed
 
 
 def discover(repo_root: Path, paths: Sequence[str]) -> tuple[FunctionRef, ...]:
@@ -26,4 +28,4 @@ def call_order(functions: Sequence[FunctionRef]) -> tuple[tuple[FunctionRef, ...
     raise NotImplementedError
 
 
-__all__ = ["affected", "call_order", "discover"]
+__all__ = ["affected", "call_graph", "call_order", "changed", "discover"]

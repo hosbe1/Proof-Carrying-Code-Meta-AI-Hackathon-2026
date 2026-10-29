@@ -8,6 +8,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from pcc.sandbox.loader import target_loader
+from pcc.sandbox.strategies import strategies_source
+
 
 @dataclass(frozen=True, slots=True)
 class RunOutcome:
@@ -29,4 +32,4 @@ def run_python(script: str, *, cwd: Path, timeout_seconds: float = 60.0, memory_
     raise NotImplementedError
 
 
-__all__ = ["RunOutcome", "run_python"]
+__all__ = ["RunOutcome", "run_python", "strategies_source", "target_loader"]
