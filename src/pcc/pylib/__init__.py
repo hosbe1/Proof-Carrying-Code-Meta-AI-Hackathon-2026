@@ -12,4 +12,10 @@ from pathlib import Path
 PYLIB_DIR = Path(__file__).parent
 PYLIB_FILE = PYLIB_DIR / "PyLib.dfy"
 
-__all__ = ["PYLIB_DIR", "PYLIB_FILE"]
+
+def signatures() -> str:
+    """The ``function`` headers with their ``requires``/``ensures`` of every PyLib block, for prompts."""
+    raise NotImplementedError
+
+
+__all__ = ["PYLIB_DIR", "PYLIB_FILE", "signatures"]

@@ -84,6 +84,7 @@ class CheckKind(StrEnum):
     SYMBOLIC = "symbolic"  # crosshair diffbehavior found no difference
     DAFNY_VERIFY = "dafny_verify"
     ANTI_CHEAT = "anti_cheat"  # no forbidden form outside the assumptions module, spec unchanged
+    CANDIDATE_FIX = "candidate_fix"  # a surviving mutant that fixes the original is a possible fix
 
 
 class AssumptionKind(StrEnum):
@@ -155,6 +156,7 @@ class CheckRecord:
     passed: bool
     detail: str = ""
     inputs_tried: int | None = None
+    inputs_total: int | None = None  # with inputs_tried, the share of inputs pre accepts
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,6 +167,7 @@ class Spec:
     predicate: str  # source of a function named ``spec``
     precondition: str | None = None  # source of a function named ``pre``, same arguments as the function
     checks: tuple[CheckRecord, ...] = ()
+    precondition_sources: tuple[Claim, ...] = ()  # every clause of pre cites one of these claims
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,11 +189,20 @@ class Assumption:
 
 
 @dataclass(frozen=True, slots=True)
+class Dependency:
+    """One hashed dependency of a certificate: a callee spec, a contract or PyLib."""
+
+    name: str
+    sha256: str
+
+
+@dataclass(frozen=True, slots=True)
 class Counterexample:
     arguments: str  # Python source of the call arguments, e.g. "[3, -1], key=None"
     expected: str  # what the spec demands, in plain language
     actual: str  # repr of what the code returned or raised
     test: str  # a ready-to-run pytest function
+    suggested_fix: str | None = None  # a surviving mutant that fixes the original, if one was found
 
 
 @dataclass(frozen=True, slots=True)
@@ -288,6 +300,7 @@ class Certificate:
     dafny_version: str
     pylib_sha256: str  # hash of the PyLib.dfy the proof was checked against; re-checking needs that exact file
     pcc_version: str
+    dependency_hashes: tuple[Dependency, ...] = ()  # hashes of the callee specs, contracts and PyLib this proof uses
 
 
 # Every public name of this module. ``pcc.core`` re-exports exactly these, so a new type is added here and nowhere else.
@@ -303,6 +316,7 @@ __all__ = [
     "Contradiction",
     "Counterexample",
     "DafnyError",
+    "Dependency",
     "EquivalenceReport",
     "Evidence",
     "FunctionRef",

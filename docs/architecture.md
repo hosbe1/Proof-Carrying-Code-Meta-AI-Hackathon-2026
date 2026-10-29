@@ -70,14 +70,35 @@ but the package never imports it. The compute provider is decided in [plan.md](p
 FunctionRef
   -> context.collect            -> Context
   -> intent.derive              -> Intent
-  -> spec.write, spec.check     -> Spec (frozen from here on)
-  -> transpile_* or translate_ai -> Translation
+  -> spec.write(intent, *, client, model, hint="")                                  -> Spec
+  -> spec.check(spec, function, repo_root, *, client, model, config: SpecConfig)    -> Spec (frozen from here on)
+  -> spec.spec_cases(spec, function, repo_root, *, config: SpecConfig)              -> tuple[tuple[str, str], ...]
+  -> transpile_function(function, *, callees: Mapping[str, str] = {})               -> str (Dafny, code mode)
+     or translate_ai.translate(function, spec, *, client, model, dafny_spec,
+                               mismatch=None, resolve_retries=2)                   -> Translation
   -> equivalence.check          -> EquivalenceReport   (mismatch: retranslate, at most max_retranslations)
-  -> prove.prove                -> ProofOutcome
-  -> counterexample.search      -> Counterexample | None   (only if not proven)
+  -> equivalence.check_spec(spec, dafny_spec, function, repo_root, *, cases)         -> CheckRecord
+  -> prove.prove(translation, assumptions, *, client, stages,
+                resource_limit, function_lines, extra_modules=(), assumptions_module="") -> ProofOutcome
+  -> counterexample.search(function, spec, repo_root, *, failed_clause, client,
+                           model, config: CounterexampleConfig)                     -> Counterexample | None
+     (only if not proven)
+  -> counterexample.build(function, spec, repo_root, arguments)                     -> Counterexample
   -> second_opinion.review      -> SecondOpinion           (only on a reported problem)
   -> Result -> certificate, report
+
+certificate.from_result(result, config, *, dependency_hashes=())                    -> Certificate
+certificate.is_stale(certificate, function, *, dependency_hashes=(), pylib_sha256)  -> bool
+report.render(results, *, stale=())                                                 -> str
+pipeline.run(function, repo_root, *, client, config, callees={})                    -> Result
+verifier.verify(dafny_code, *, assumptions_module="", resource_limit,
+                timeout_seconds=None, extra_modules=())                             -> VerifyOutcome
 ```
+
+The project scope comes from `project.changed(repo_root, base)` and `project.call_graph(repo_root, functions)`; the
+sandbox builds on `sandbox.target_loader(function)` and `sandbox.strategies_source(function)`; prompts quote
+`pylib.signatures()`; `models.available_stages(config, router)` selects the prover stages. Every stub raises
+`NotImplementedError` until its step ticket fills the body; `tests/test_interfaces.py` locks the signatures above.
 
 Expected failures (`UnsupportedConstruct`, `NotCheckable`, a failed proof) become result states in `pipeline`.
 Only real bugs and broken tools (`ToolError`) escape as exceptions.
