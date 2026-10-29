@@ -11,6 +11,8 @@ Dataset findings (checked against the live sources while writing this module):
   MIT): 164 rows with fields such as ``task_id`` (``"Python/0"`` .. ``"Python/163"``), ``prompt``,
   ``canonical_solution``, ``buggy_solution``, ``bug_type`` and ``test``. The files in the repository are parquet,
   so this module pages through the JSON rows API of the datasets server instead of adding a parquet dependency.
+  The rows API offers no revision selector, so the pinned revision records the dataset commit the rows were
+  observed at while the sha256 of the canonical rows pins the content.
 - ``vericoding`` is ``beneficial-ai-foundation/vericoding`` (MIT), file ``train.jsonl`` (12,504 rows) with fields
   ``id``, ``language``, ``source``, ``source-id`` and the ``vc-*`` Dafny parts. Only rows with ``language ==
   "dafny"`` are kept, and rows with ``source == "verified_cogen"`` are excluded (unlicensed origin, see
@@ -154,7 +156,7 @@ def _download(spec: _DatasetSpec) -> bytes:
             if len(page) < _PAGE_LENGTH:
                 break
         raw = _canonical_rows(rows)
-    _check_sha256(raw, spec.sha256, f"{spec.url} (cache file {spec.cache_filename})")
+    _check_sha256(raw, spec.sha256, f"{spec.url} (revision {spec.revision}, cache file {spec.cache_filename})")
     return raw
 
 
