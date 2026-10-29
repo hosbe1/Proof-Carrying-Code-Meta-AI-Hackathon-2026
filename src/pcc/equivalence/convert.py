@@ -78,7 +78,7 @@ def to_dafny(value: object, py_type: object) -> object:
             return ()
         if len(args) != len(value):
             raise TypeError(f"expected tuple of length {len(args)}, got length {len(value)}")
-        converted_fixed: object = tuple(to_dafny(item, item_type) for item, item_type in zip(value, args))
+        converted_fixed: object = tuple(to_dafny(item, item_type) for item, item_type in zip(value, args, strict=True))
         return converted_fixed
     raise TypeError(f"unsupported type annotation: {py_type!r}")
 
@@ -126,6 +126,6 @@ def to_python(value: object, py_type: object) -> object:
             return ()
         if len(args) != len(value):
             raise TypeError(f"expected tuple of length {len(args)}, got length {len(value)}")
-        converted_fixed: object = tuple(to_python(item, item_type) for item, item_type in zip(value, args))
+        converted_fixed: object = tuple(to_python(item, item_type) for item, item_type in zip(value, args, strict=True))
         return converted_fixed
     raise TypeError(f"unsupported type annotation: {py_type!r}")

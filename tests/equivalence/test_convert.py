@@ -61,16 +61,17 @@ def dafny_modules(tmp_path_factory: pytest.TempPathFactory) -> Iterator[ProbeMod
     out_dir = str(build_dir / "Probe-py")
     sys.path.insert(0, out_dir)
     try:
-        yield ProbeModules(dafny=importlib.import_module("_dafny"), probe=importlib.import_module("Probe"))
+        # The generated file is named after the Dafny module (`ConvertProbe`), not the `.dfy` file.
+        yield ProbeModules(dafny=importlib.import_module("_dafny"), probe=importlib.import_module("ConvertProbe"))
     finally:
         sys.path.remove(out_dir)
         sys.modules.pop("_dafny", None)
-        sys.modules.pop("Probe", None)
+        sys.modules.pop("ConvertProbe", None)
 
 
 def echo(modules: ProbeModules, name: str, value: object) -> object:
     """Call a ``ConvertProbe`` echo method on ``value`` through the compiled code."""
-    namespace: Any = getattr(modules.probe, "default__")
+    namespace: Any = getattr(modules.probe, "default__")  # noqa: B009 -- module built by `dafny build`, unknown to mypy
     method: Any = getattr(namespace, name)
     return method(value)
 
@@ -82,7 +83,8 @@ def seq_type(modules: ProbeModules) -> Any:
 
 def test_convert_imports_only_stdlib() -> None:
     """``convert`` embeds into the sandbox wrapper, so it must not import ``pcc`` and needs ``_dafny`` lazily."""
-    source = Path(typing.cast(str, convert.__file__)).read_text(encoding="utf-8")
+    assert convert.__file__ is not None
+    source = Path(convert.__file__).read_text(encoding="utf-8")
     tree = ast.parse(source)
     top_level: set[str] = set()
     nested: set[str] = set()
@@ -136,9 +138,9 @@ def test_round_trip_list_int(dafny_modules: ProbeModules, value: list[int]) -> N
 @pytest.mark.dafny
 @given(value=st.lists(st.integers()))
 def test_round_trip_typing_list_int(dafny_modules: ProbeModules, value: list[int]) -> None:
-    converted = convert.to_dafny(value, typing.List[int])
+    converted = convert.to_dafny(value, typing.List[int])  # noqa: UP006 -- the ticket requires typing.List support
     assert isinstance(converted, seq_type(dafny_modules))
-    assert convert.to_python(converted, typing.List[int]) == value
+    assert convert.to_python(converted, typing.List[int]) == value  # noqa: UP006 -- the ticket requires typing.List support
 
 
 @pytest.mark.dafny
@@ -177,7 +179,7 @@ def test_ticket_examples(dafny_modules: ProbeModules) -> None:
 @pytest.mark.dafny
 def test_compiled_samples_convert_back(dafny_modules: ProbeModules) -> None:
     """Values produced by real compiled Dafny code convert back to the expected Python values."""
-    namespace: Any = getattr(dafny_modules.probe, "default__")
+    namespace: Any = getattr(dafny_modules.probe, "default__")  # noqa: B009 -- module built by `dafny build`, unknown to mypy
     assert convert.to_python(namespace.SampleStr(), str) == "abc"
     assert convert.to_python(namespace.SampleInts(), list[int]) == [1, -2, 3]
     assert convert.to_python(namespace.SamplePair(), tuple[str, int]) == ("a", 1)
@@ -220,9 +222,7 @@ def test_echo_pair_through_compiled_code(dafny_modules: ProbeModules, value: tup
 @given(value=st.lists(st.lists(st.integers())))
 def test_echo_nested_through_compiled_code(dafny_modules: ProbeModules, value: list[list[int]]) -> None:
     assert (
-        convert.to_python(
-            echo(dafny_modules, "EchoNested", convert.to_dafny(value, list[list[int]])), list[list[int]]
-        )
+        convert.to_python(echo(dafny_modules, "EchoNested", convert.to_dafny(value, list[list[int]])), list[list[int]])
         == value
     )
 
