@@ -55,9 +55,7 @@ def _commit(repo: Path, subject: str, body: str = "", *, dates: bool = False) ->
 
 
 def _ref(source: str, path: str, qualname: str, lineno: int) -> FunctionRef:
-    return FunctionRef(
-        path=path, qualname=qualname, lineno=lineno, source=source, source_hash=source_hash(source)
-    )
+    return FunctionRef(path=path, qualname=qualname, lineno=lineno, source=source, source_hash=source_hash(source))
 
 
 def _kinds(context: Context) -> list[SourceKind]:
@@ -110,11 +108,7 @@ def _rich_repo(repo: Path) -> FunctionRef:
     _write(
         repo,
         "README.md",
-        "# Cart\n"
-        "\n"
-        "The total helper adds up prices.\n"
-        "\n"
-        "Unrelated paragraph.\n",
+        "# Cart\n\nThe total helper adds up prices.\n\nUnrelated paragraph.\n",
     )
     _write(
         repo,
@@ -216,9 +210,7 @@ def test_own_lines_never_count_as_call_site(tmp_path: Path) -> None:
     assert calls[0].ref == "src/m.py:7"
 
 
-def test_new_uncommitted_lines_have_no_commit_history(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
+def test_new_uncommitted_lines_have_no_commit_history(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     """Edge case: new, uncommitted lines have no COMMIT history; a warning is logged, never raised."""
     repo = tmp_path
     _init_repo(repo)
@@ -245,7 +237,11 @@ def test_source_never_appears_in_any_excerpt(tmp_path: Path) -> None:
 
 
 def test_evidence_order_and_refs(tmp_path: Path) -> None:
-    """Evidence comes in ticket order with the documented ref formats."""
+    """Evidence comes in ticket order with the documented ref formats.
+
+    Calls inside test files are calls outside the function too, so they are call sites as well as test
+    source; the ticket only excludes the function's own lines.
+    """
     repo = tmp_path
     function = _rich_repo(repo)
     context = collect(function, repo)
@@ -257,14 +253,16 @@ def test_evidence_order_and_refs(tmp_path: Path) -> None:
         (SourceKind.COMMENT, "src/cart.py:9"),
         (SourceKind.TEST, "tests/test_cart.py::test_total"),
         (SourceKind.CALL_SITE, "src/shop.py:5"),
-        (SourceKind.COMMIT, context.evidence[7].ref),
+        (SourceKind.CALL_SITE, "tests/test_cart.py:5"),
+        (SourceKind.CALL_SITE, "tests/test_cart.py:9"),
+        (SourceKind.COMMIT, context.evidence[9].ref),
         (SourceKind.DOCS, "README.md"),
         (SourceKind.DOCS, "docs/guide.md"),
         (SourceKind.DOCS, "docs/guide.md"),
     ]
-    assert context.evidence[7].ref.startswith("commit ")
-    assert "add cart total" in context.evidence[7].excerpt
-    assert "First version of the cart helper." in context.evidence[7].excerpt
+    assert context.evidence[9].ref.startswith("commit ")
+    assert "add cart total" in context.evidence[9].excerpt
+    assert "First version of the cart helper." in context.evidence[9].excerpt
     call = context.evidence[6]
     assert call.excerpt == (
         "VALUE = 10\nFREE_SHIPPING = 50\nprice = total([VALUE, FREE_SHIPPING])\nprint(price)\ndone = True"
@@ -285,9 +283,7 @@ def test_git_log_L_exact_output_on_two_commit_repo(tmp_path: Path) -> None:
     assert proc.returncode == 0
     new_hash = _git(repo, "rev-parse", "--short", "HEAD").stdout.strip()
     old_hash = _git(repo, "rev-parse", "--short", "HEAD~1").stdout.strip()
-    assert proc.stdout == (
-        f"{new_hash}\nsecond subject\nsecond body\n\n{old_hash}\nfirst subject\nfirst body\n\n"
-    )
+    assert proc.stdout == (f"{new_hash}\nsecond subject\nsecond body\n\n{old_hash}\nfirst subject\nfirst body\n\n")
     assert not any(line.startswith("diff ") for line in proc.stdout.splitlines())
 
 
@@ -302,17 +298,13 @@ def test_comment_block_above_def_is_one_evidence(tmp_path: Path) -> None:
 
 def test_multiline_signature(tmp_path: Path) -> None:
     repo = tmp_path
-    source = (
-        "def combine(\n    first: str,\n    second: str = 'x',\n) -> str:\n    return first + second\n"
-    )
+    source = "def combine(\n    first: str,\n    second: str = 'x',\n) -> str:\n    return first + second\n"
     _write(repo, "src/m.py", source)
     function = _ref(source, "src/m.py", "combine", 1)
     context = collect(function, repo)
     signatures = [item for item in context.evidence if item.kind is SourceKind.SIGNATURE]
     assert len(signatures) == 1
-    assert signatures[0].excerpt == (
-        "def combine(\n    first: str,\n    second: str = 'x',\n) -> str:"
-    )
+    assert signatures[0].excerpt == ("def combine(\n    first: str,\n    second: str = 'x',\n) -> str:")
 
 
 def test_limits_are_enforced(tmp_path: Path) -> None:
@@ -323,9 +315,7 @@ def test_limits_are_enforced(tmp_path: Path) -> None:
     lines.append("    return 1")
     source = "\n".join(lines) + "\n"
     _write(repo, "src/m.py", source)
-    test_file = "\n\n".join(
-        f"def test_{number}():\n    assert f() == 1" for number in range(7)
-    )
+    test_file = "\n\n".join(f"def test_{number}():\n    assert f() == 1" for number in range(7))
     _write(repo, "tests/test_m.py", test_file + "\n")
     function = _ref(source, "src/m.py", "f", 1)
     context = collect(function, repo)
@@ -356,3 +346,54 @@ def test_long_excerpt_is_cut_off(tmp_path: Path) -> None:
     docstrings = [item for item in context.evidence if item.kind is SourceKind.DOCSTRING]
     assert len(docstrings) == 1
     assert docstrings[0].excerpt == "y" * MAX_EXCERPT + "…"
+
+
+def test_signature_single_line_def(tmp_path: Path) -> None:
+    """A single-line definition keeps only the header; the body never leaks into SIGNATURE."""
+    repo = tmp_path
+    source = "def f() -> int: return 1\n"
+    _write(repo, "src/m.py", source)
+    function = _ref(source, "src/m.py", "f", 1)
+    context = collect(function, repo)
+    signatures = [item for item in context.evidence if item.kind is SourceKind.SIGNATURE]
+    assert len(signatures) == 1
+    assert signatures[0].excerpt == "def f() -> int:"
+    assert function.source not in signatures[0].excerpt
+
+
+def test_signature_def_line_trailing_comment(tmp_path: Path) -> None:
+    """A trailing comment on the ``def`` line does not pull the body into SIGNATURE."""
+    repo = tmp_path
+    source = "def f() -> int:  # fast path\n    return 1\n"
+    _write(repo, "src/m.py", source)
+    function = _ref(source, "src/m.py", "f", 1)
+    context = collect(function, repo)
+    signatures = [item for item in context.evidence if item.kind is SourceKind.SIGNATURE]
+    assert len(signatures) == 1
+    assert signatures[0].excerpt == "def f() -> int:  # fast path"
+    assert function.source not in signatures[0].excerpt
+
+
+def test_call_sites_include_calls_in_test_files(tmp_path: Path) -> None:
+    """Calls inside test files are calls outside the function, so they are call sites."""
+    repo = tmp_path
+    source = "def double(x: int) -> int:\n    return x * 2\n"
+    _write(repo, "src/m.py", source)
+    _write(repo, "tests/test_m.py", "def test_double():\n    assert double(21) == 42\n")
+    function = _ref(source, "src/m.py", "double", 1)
+    context = collect(function, repo)
+    calls = [item for item in context.evidence if item.kind is SourceKind.CALL_SITE]
+    assert [item.ref for item in calls] == ["tests/test_m.py:2"]
+    assert "assert double(21) == 42" in calls[0].excerpt
+
+
+def test_docs_match_whole_word_not_substring(tmp_path: Path) -> None:
+    """A common-word name only matches whole words in docs, never a substring like ``maximum``."""
+    repo = tmp_path
+    source = "def max(values: list[int]) -> int:\n    m = values[0]\n    return m\n"
+    _write(repo, "src/m.py", source)
+    _write(repo, "README.md", "# Notes\n\nA paragraph about maximum effort.\n\nUse max for the largest value.\n")
+    function = _ref(source, "src/m.py", "max", 1)
+    context = collect(function, repo)
+    docs = [item for item in context.evidence if item.kind is SourceKind.DOCS]
+    assert [item.excerpt for item in docs] == ["Use max for the largest value."]

@@ -71,7 +71,11 @@ def _cut(text: str) -> str:
 
 
 def _signature(source: str) -> str | None:
-    """The ``def`` line(s) with hints and defaults, or the first line when the source does not parse."""
+    """The ``def`` line(s) with hints and defaults, never including the body.
+
+    The header ends where the first body statement starts (from ``ast``), so a trailing comment on the
+    ``def`` line or a single-line definition cannot leak the body into the excerpt.
+    """
     lines = source.splitlines()
     if not lines:
         return None
@@ -81,10 +85,17 @@ def _signature(source: str) -> str | None:
         return lines[0]
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            end = node.lineno - 1
-            while end < len(lines) and not lines[end].rstrip().endswith(":"):
+            if not node.body:
+                return lines[node.lineno - 1]
+            first = node.lineno - 1
+            last = node.body[0].lineno - 1
+            if last <= first:
+                head = lines[first][: node.body[0].col_offset].rstrip()
+                return head or lines[first]
+            end = first
+            while end < last and not lines[end].rstrip().endswith(":"):
                 end += 1
-            return "\n".join(lines[node.lineno - 1 : end + 1])
+            return "\n".join(lines[first : end + 1] if end < last else lines[first:last])
     return lines[0]
 
 
@@ -190,11 +201,7 @@ def _is_test_file(rel: str) -> bool:
     """Whether ``rel`` holds tests: a ``test_*.py``/``*_test.py`` file or anything under ``tests/``."""
     parts = rel.split("/")
     name = parts[-1]
-    return (
-        fnmatch.fnmatchcase(name, "test_*.py")
-        or fnmatch.fnmatchcase(name, "*_test.py")
-        or "tests" in parts[:-1]
-    )
+    return fnmatch.fnmatchcase(name, "test_*.py") or fnmatch.fnmatchcase(name, "*_test.py") or "tests" in parts[:-1]
 
 
 def _test_functions(tree: ast.Module) -> list[tuple[str, int, int, ast.AST]]:
@@ -206,9 +213,7 @@ def _test_functions(tree: ast.Module) -> list[tuple[str, int, int, ast.AST]]:
                 found.append((node.name, node.lineno, node.end_lineno or node.lineno, node))
         elif isinstance(node, ast.ClassDef):
             for child in node.body:
-                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) and child.name.startswith(
-                    "test"
-                ):
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) and child.name.startswith("test"):
                     found.append(
                         (
                             f"{node.name}::{child.name}",
@@ -253,9 +258,7 @@ def _tests(function: FunctionRef, sources: list[tuple[str, str]]) -> list[Eviden
     return found
 
 
-def _call_sites(
-    function: FunctionRef, sources: list[tuple[str, str]], short: str
-) -> list[Evidence]:
+def _call_sites(function: FunctionRef, sources: list[tuple[str, str]], short: str) -> list[Evidence]:
     """Each call outside the function: the calling line with two lines around it."""
     start = function.lineno
     end = _end_lineno(function)
@@ -282,9 +285,7 @@ def _call_sites(
             first = max(node.lineno - CALL_SITE_CONTEXT_LINES, 1)
             last = min(node.lineno + CALL_SITE_CONTEXT_LINES, len(lines))
             excerpt = "\n".join(lines[first - 1 : last])
-            matches.append(
-                (rel, node.lineno, Evidence(SourceKind.CALL_SITE, f"{rel}:{node.lineno}", _cut(excerpt)))
-            )
+            matches.append((rel, node.lineno, Evidence(SourceKind.CALL_SITE, f"{rel}:{node.lineno}", _cut(excerpt))))
     matches.sort(key=lambda match: (match[0], match[1]))
     return [evidence for _, _, evidence in matches[:MAX_CALL_SITE_EVIDENCE]]
 
@@ -358,8 +359,15 @@ def _parse_commits(output: str) -> list[Evidence]:
     return found
 
 
+def _word_present(text: str, word: str) -> bool:
+    """Whether ``word`` occurs as a whole word, so a common name like ``max`` never matches ``maximum``."""
+    if not word:
+        return False
+    return re.search(rf"\b{re.escape(word)}\b", text) is not None
+
+
 def _docs(repo_root: Path, short: str) -> list[Evidence]:
-    """Paragraphs of ``README*`` and ``docs/**/*.md`` that contain the function name."""
+    """Paragraphs of ``README*`` and ``docs/**/*.md`` that contain the function name as a whole word."""
     candidates = sorted(path for path in repo_root.glob("README*") if path.is_file())
     docs_dir = repo_root / "docs"
     if docs_dir.is_dir():
@@ -376,7 +384,7 @@ def _docs(repo_root: Path, short: str) -> list[Evidence]:
             continue
         for paragraph in re.split(r"\n\s*\n", text):
             stripped = paragraph.strip()
-            if stripped and short in stripped:
+            if stripped and _word_present(stripped, short):
                 found.append(Evidence(SourceKind.DOCS, rel, _cut(stripped)))
                 if len(found) >= MAX_DOCS_EVIDENCE:
                     return found
