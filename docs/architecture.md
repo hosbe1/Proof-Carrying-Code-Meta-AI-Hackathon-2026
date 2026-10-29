@@ -95,6 +95,11 @@ verifier.verify(dafny_code, *, assumptions_module="", resource_limit,
                 timeout_seconds=None, extra_modules=())                             -> VerifyOutcome
 ```
 
+Every Dafny file the pipeline checks has the same shape: `verifier.assemble` wraps the translated spec, the proof
+lemmas and the translated function in one module named by `verifier.module_name`, opening `PyLib` with no `include`
+line. The module name derives from the file path and qualname plus a hash, so all certificates verify together as one
+project.
+
 The project scope comes from `project.changed(repo_root, base)` and `project.call_graph(repo_root, functions)`; the
 sandbox builds on `sandbox.target_loader(function)` and `sandbox.strategies_source(function)`; prompts quote
 `pylib.signatures()`; `models.available_stages(config, router)` selects the prover stages. Every stub raises

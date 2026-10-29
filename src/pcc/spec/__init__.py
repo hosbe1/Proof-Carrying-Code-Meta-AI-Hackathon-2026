@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pcc.spec.check import check, spec_cases
+from pcc.spec.mutants import rule_mutants
 from pcc.spec.write import write
 
-__all__ = ["check", "spec_cases", "write"]
+__all__ = ["check", "rule_mutants", "spec_cases", "write"]
