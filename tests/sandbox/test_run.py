@@ -98,6 +98,47 @@ def test_forked_child_is_killed_with_the_group(tmp_path: Path) -> None:
     assert elapsed < 10
 
 
+@pytest.mark.skipif(not hasattr(os, "fork") or not hasattr(os, "setsid"), reason="needs os.fork and os.setsid")
+def test_setsid_grandchild_does_not_hold_pipes_open(tmp_path: Path) -> None:
+    script = (
+        "import os\n"
+        "import time\n"
+        "child = os.fork()\n"
+        "if child == 0:\n"
+        "    os.setsid()\n"
+        "    time.sleep(60)\n"
+        "else:\n"
+        "    print('parent done')\n"
+    )
+    start = time.monotonic()
+    outcome = run_python(script, cwd=tmp_path, timeout_seconds=10)
+    elapsed = time.monotonic() - start
+    assert outcome.ok is True
+    assert "parent done" in outcome.stdout
+    assert elapsed < 10
+
+
+@pytest.mark.skipif(not hasattr(os, "fork") or not hasattr(os, "setsid"), reason="needs os.fork and os.setsid")
+def test_setsid_timeout_still_returns(tmp_path: Path) -> None:
+    script = (
+        "import os\n"
+        "child = os.fork()\n"
+        "if child == 0:\n"
+        "    os.setsid()\n"
+        "    while True:\n"
+        "        pass\n"
+        "else:\n"
+        "    while True:\n"
+        "        pass\n"
+    )
+    start = time.monotonic()
+    outcome = run_python(script, cwd=tmp_path, timeout_seconds=1)
+    elapsed = time.monotonic() - start
+    assert outcome.timed_out is True
+    assert outcome.ok is False
+    assert elapsed < 10
+
+
 def test_missing_cwd_raises_tool_error(tmp_path: Path) -> None:
     with pytest.raises(ToolError):
         run_python("print(1)", cwd=tmp_path / "missing")
