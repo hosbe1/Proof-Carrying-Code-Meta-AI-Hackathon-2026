@@ -12,11 +12,13 @@ import ast
 import fnmatch
 import io
 import logging
+import os
 import re
 import subprocess
 import tokenize
 from pathlib import Path
 
+from pcc.context.github import github_evidence
 from pcc.core import Context, Evidence, FunctionRef, SourceKind
 
 logger = logging.getLogger(__name__)
@@ -54,6 +56,7 @@ def collect(function: FunctionRef, repo_root: Path) -> Context:
     evidence.extend(_call_sites(function, sources, short))
     evidence.extend(_commits(function, repo_root))
     evidence.extend(_docs(repo_root, short))
+    evidence.extend(github_evidence([item for item in evidence if item.kind is SourceKind.COMMIT], os.environ))
     return Context(function=function, evidence=tuple(evidence))
 
 
