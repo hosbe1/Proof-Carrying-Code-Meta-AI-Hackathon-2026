@@ -197,10 +197,9 @@ def test_verifier_signatures() -> None:
     )
     assert_raises(anti_cheat, sig)
 
-    sig = assert_sig(verifier_layout.method_name, [("function", POS, NoDefault)], str)
-    assert_raises(verifier_layout.method_name, sig)
-    sig = assert_sig(verifier_layout.module_name, [("function", POS, NoDefault)], str)
-    assert_raises(verifier_layout.module_name, sig)
+    # The layout bodies are implemented, so only their signatures stay locked here.
+    assert_sig(verifier_layout.method_name, [("function", POS, NoDefault)], str)
+    assert_sig(verifier_layout.module_name, [("function", POS, NoDefault)], str)
     sig = assert_sig(
         verifier_layout.assemble,
         [
@@ -212,7 +211,6 @@ def test_verifier_signatures() -> None:
         ],
         str,
     )
-    assert_raises(verifier_layout.assemble, sig)
 
     sig = assert_sig(
         verifier_dafny.resolve,
