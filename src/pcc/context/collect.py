@@ -259,7 +259,11 @@ def _tests(function: FunctionRef, sources: list[tuple[str, str]]) -> list[Eviden
 
 
 def _call_sites(function: FunctionRef, sources: list[tuple[str, str]], short: str) -> list[Evidence]:
-    """Each call outside the function: the calling line with two lines around it."""
+    """Each call outside the function: the calling line with two lines around it.
+
+    The window never overlaps the function's own lines in the same file, and a candidate whose
+    excerpt still contains the whole ``function.source`` is skipped, so the body cannot leak.
+    """
     start = function.lineno
     end = _end_lineno(function)
     matches: list[tuple[str, int, Evidence]] = []
@@ -284,7 +288,14 @@ def _call_sites(function: FunctionRef, sources: list[tuple[str, str]], short: st
                 continue
             first = max(node.lineno - CALL_SITE_CONTEXT_LINES, 1)
             last = min(node.lineno + CALL_SITE_CONTEXT_LINES, len(lines))
+            if rel == function.path:
+                if node.lineno > end:
+                    first = max(first, end + 1)
+                elif node.lineno < start:
+                    last = min(last, start - 1)
             excerpt = "\n".join(lines[first - 1 : last])
+            if function.source in excerpt:
+                continue
             matches.append((rel, node.lineno, Evidence(SourceKind.CALL_SITE, f"{rel}:{node.lineno}", _cut(excerpt))))
     matches.sort(key=lambda match: (match[0], match[1]))
     return [evidence for _, _, evidence in matches[:MAX_CALL_SITE_EVIDENCE]]
@@ -329,23 +340,49 @@ def _commits(function: FunctionRef, repo_root: Path) -> list[Evidence]:
         reason = detail[-1] if detail else f"exit code {proc.returncode}"
         logger.warning("git log -L for %s lines %d-%d failed: %s", function.path, start, end, reason)
         return []
-    return _parse_commits(proc.stdout)[:MAX_COMMIT_EVIDENCE]
+    valid = _commit_hashes(function, repo_root, start, end)
+    return _parse_commits(proc.stdout, valid)[:MAX_COMMIT_EVIDENCE]
 
 
-def _parse_commits(output: str) -> list[Evidence]:
+def _commit_hashes(function: FunctionRef, repo_root: Path, start: int, end: int) -> set[str] | None:
+    """The short hashes of the commits touching the function's lines, or None when unknown."""
+    try:
+        proc = subprocess.run(
+            ["git", "log", "-L", f"{start},{end}:{function.path}", "--format=%h", "--no-patch"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=_GIT_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    return {line.strip() for line in proc.stdout.splitlines() if _COMMIT_HASH_RE.fullmatch(line.strip())}
+
+
+def _is_commit_boundary(line: str, valid: set[str] | None) -> bool:
+    """Whether ``line`` starts a new commit block: a hash, restricted to known hashes when available."""
+    if not _COMMIT_HASH_RE.fullmatch(line):
+        return False
+    return valid is None or line in valid
+
+
+def _parse_commits(output: str, valid: set[str] | None = None) -> list[Evidence]:
     """Split ``git log --format=%h%n%s%n%b`` output into one evidence item per commit, newest first."""
     found: list[Evidence] = []
     lines = output.splitlines()
     index = 0
     while index < len(lines):
-        if not _COMMIT_HASH_RE.fullmatch(lines[index]):
+        if not _is_commit_boundary(lines[index], valid):
             index += 1
             continue
         short_hash = lines[index]
         subject = lines[index + 1] if index + 1 < len(lines) else ""
         body_lines: list[str] = []
         cursor = index + 2
-        while cursor < len(lines) and not _COMMIT_HASH_RE.fullmatch(lines[cursor]):
+        while cursor < len(lines) and not _is_commit_boundary(lines[cursor], valid):
             if lines[cursor].startswith("diff --git "):
                 break
             body_lines.append(lines[cursor])

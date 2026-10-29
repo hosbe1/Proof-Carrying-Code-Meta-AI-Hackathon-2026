@@ -160,6 +160,7 @@ def test_collect_without_git(tmp_path: Path) -> None:
 def test_collect_body_comment(tmp_path: Path) -> None:
     """Example 3: a body comment lands in COMMENT evidence without leaking the source."""
     repo = tmp_path
+    _init_repo(repo)
     _write(repo, "src/cart.py", CART_SOURCE)
     function = _ref(FUNC_SOURCE, "src/cart.py", "total", 3)
     context = collect(function, repo)
@@ -172,6 +173,7 @@ def test_collect_body_comment(tmp_path: Path) -> None:
 def test_common_word_matches_identifier_not_text(tmp_path: Path) -> None:
     """Edge case: a common word such as ``max`` only matches as an identifier (ast), not as text."""
     repo = tmp_path
+    _init_repo(repo)
     source = "def max(values: list[int]) -> int:\n    m = values[0]\n    return m\n"
     _write(repo, "src/m.py", source)
     _write(
@@ -189,6 +191,7 @@ def test_common_word_matches_identifier_not_text(tmp_path: Path) -> None:
 def test_common_word_identifier_match_is_found(tmp_path: Path) -> None:
     """The same common word used as a real identifier is collected."""
     repo = tmp_path
+    _init_repo(repo)
     source = "def max(values: list[int]) -> int:\n    m = values[0]\n    return m\n"
     _write(repo, "src/m.py", source)
     _write(repo, "tests/test_m.py", "def test_max():\n    assert max([3, 1]) == 3\n")
@@ -201,6 +204,7 @@ def test_common_word_identifier_match_is_found(tmp_path: Path) -> None:
 def test_own_lines_never_count_as_call_site(tmp_path: Path) -> None:
     """Edge case: a recursive call inside the function is not a call site; outside calls are."""
     repo = tmp_path
+    _init_repo(repo)
     source = "def fact(n: int) -> int:\n    if n <= 1:\n        return 1\n    return n * fact(n - 1)\n"
     _write(repo, "src/m.py", source + "\n\nvalue = fact(5)\n")
     function = _ref(source, "src/m.py", "fact", 1)
@@ -298,6 +302,7 @@ def test_comment_block_above_def_is_one_evidence(tmp_path: Path) -> None:
 
 def test_multiline_signature(tmp_path: Path) -> None:
     repo = tmp_path
+    _init_repo(repo)
     source = "def combine(\n    first: str,\n    second: str = 'x',\n) -> str:\n    return first + second\n"
     _write(repo, "src/m.py", source)
     function = _ref(source, "src/m.py", "combine", 1)
@@ -309,6 +314,7 @@ def test_multiline_signature(tmp_path: Path) -> None:
 
 def test_limits_are_enforced(tmp_path: Path) -> None:
     repo = tmp_path
+    _init_repo(repo)
     lines = ["def f() -> int:"]
     for number in range(12):
         lines.append(f"    # note {number}")
@@ -325,6 +331,7 @@ def test_limits_are_enforced(tmp_path: Path) -> None:
 
 def test_long_test_function_is_capped_at_40_lines(tmp_path: Path) -> None:
     repo = tmp_path
+    _init_repo(repo)
     source = "def f() -> int:\n    return 1\n"
     _write(repo, "src/m.py", source)
     body = "\n".join(f"    assert f() == 1  # line {number}" for number in range(60))
@@ -338,6 +345,7 @@ def test_long_test_function_is_capped_at_40_lines(tmp_path: Path) -> None:
 
 def test_long_excerpt_is_cut_off(tmp_path: Path) -> None:
     repo = tmp_path
+    _init_repo(repo)
     doc = "y" * 2500
     source = f'def f() -> int:\n    """{doc}"""\n    return 1\n'
     _write(repo, "src/m.py", source)
@@ -351,6 +359,7 @@ def test_long_excerpt_is_cut_off(tmp_path: Path) -> None:
 def test_signature_single_line_def(tmp_path: Path) -> None:
     """A single-line definition keeps only the header; the body never leaks into SIGNATURE."""
     repo = tmp_path
+    _init_repo(repo)
     source = "def f() -> int: return 1\n"
     _write(repo, "src/m.py", source)
     function = _ref(source, "src/m.py", "f", 1)
@@ -364,6 +373,7 @@ def test_signature_single_line_def(tmp_path: Path) -> None:
 def test_signature_def_line_trailing_comment(tmp_path: Path) -> None:
     """A trailing comment on the ``def`` line does not pull the body into SIGNATURE."""
     repo = tmp_path
+    _init_repo(repo)
     source = "def f() -> int:  # fast path\n    return 1\n"
     _write(repo, "src/m.py", source)
     function = _ref(source, "src/m.py", "f", 1)
@@ -377,6 +387,7 @@ def test_signature_def_line_trailing_comment(tmp_path: Path) -> None:
 def test_call_sites_include_calls_in_test_files(tmp_path: Path) -> None:
     """Calls inside test files are calls outside the function, so they are call sites."""
     repo = tmp_path
+    _init_repo(repo)
     source = "def double(x: int) -> int:\n    return x * 2\n"
     _write(repo, "src/m.py", source)
     _write(repo, "tests/test_m.py", "def test_double():\n    assert double(21) == 42\n")
@@ -390,6 +401,7 @@ def test_call_sites_include_calls_in_test_files(tmp_path: Path) -> None:
 def test_docs_match_whole_word_not_substring(tmp_path: Path) -> None:
     """A common-word name only matches whole words in docs, never a substring like ``maximum``."""
     repo = tmp_path
+    _init_repo(repo)
     source = "def max(values: list[int]) -> int:\n    m = values[0]\n    return m\n"
     _write(repo, "src/m.py", source)
     _write(repo, "README.md", "# Notes\n\nA paragraph about maximum effort.\n\nUse max for the largest value.\n")
@@ -397,3 +409,37 @@ def test_docs_match_whole_word_not_substring(tmp_path: Path) -> None:
     context = collect(function, repo)
     docs = [item for item in context.evidence if item.kind is SourceKind.DOCS]
     assert [item.excerpt for item in docs] == ["Use max for the largest value."]
+
+
+def test_call_site_adjacent_to_function_does_not_leak_source(tmp_path: Path) -> None:
+    """A call two lines below a short function keeps its context outside the function."""
+    repo = tmp_path
+    _init_repo(repo)
+    source = "def f() -> int: return 1\n"
+    _write(repo, "src/m.py", source + "\nvalue = f()\n")
+    function = _ref(source, "src/m.py", "f", 1)
+    context = collect(function, repo)
+    calls = [item for item in context.evidence if item.kind is SourceKind.CALL_SITE]
+    assert [item.ref for item in calls] == ["src/m.py:3"]
+    assert "value = f()" in calls[0].excerpt
+    for item in context.evidence:
+        assert function.source not in item.excerpt, (item.kind, item.ref)
+
+
+def test_commit_body_hex_line_does_not_split_commits(tmp_path: Path) -> None:
+    """A hex-like body line is not a commit boundary; only real short hashes split."""
+    repo = tmp_path
+    _init_repo(repo)
+    _write(repo, "src/a.py", "def f(x: int) -> int:\n    return x + 1\n")
+    _git(repo, "add", ".")
+    _commit(repo, "first subject", "abcdef0", dates=True)
+    _write(repo, "src/a.py", "def f(x: int) -> int:\n    return x + 2\n")
+    _git(repo, "add", ".")
+    _commit(repo, "second subject", "plain body", dates=True)
+    function = _ref("def f(x: int) -> int:\n    return x + 2\n", "src/a.py", "f", 1)
+    context = collect(function, repo)
+    commits = [item for item in context.evidence if item.kind is SourceKind.COMMIT]
+    assert len(commits) == 2
+    assert "abcdef0" in commits[1].excerpt
+    assert commits[0].ref.startswith("commit ")
+    assert commits[1].ref.startswith("commit ")
