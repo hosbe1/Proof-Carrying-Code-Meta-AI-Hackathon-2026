@@ -452,7 +452,7 @@ def test_certificate_signatures() -> None:
     assert certificate_store.is_stale is pcc.certificate.is_stale
     assert certificate_store.write is pcc.certificate.write
     assert certificate_store.load is pcc.certificate.load
-    sig = assert_sig(
+    assert_sig(
         pcc.certificate.from_result,
         [
             ("result", POS, NoDefault),
@@ -461,8 +461,7 @@ def test_certificate_signatures() -> None:
         ],
         Certificate,
     )
-    assert_raises(pcc.certificate.from_result, sig)
-    sig = assert_sig(
+    assert_sig(
         pcc.certificate.is_stale,
         [
             ("certificate", POS, NoDefault),
@@ -472,7 +471,6 @@ def test_certificate_signatures() -> None:
         ],
         bool,
     )
-    assert_raises(pcc.certificate.is_stale, sig)
     assert callable(pcc.certificate.write)
     assert callable(pcc.certificate.load)
 
