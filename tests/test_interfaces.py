@@ -197,10 +197,9 @@ def test_verifier_signatures() -> None:
     )
     assert_raises(anti_cheat, sig)
 
-    sig = assert_sig(verifier_layout.method_name, [("function", POS, NoDefault)], str)
-    assert_raises(verifier_layout.method_name, sig)
-    sig = assert_sig(verifier_layout.module_name, [("function", POS, NoDefault)], str)
-    assert_raises(verifier_layout.module_name, sig)
+    # The layout bodies are implemented, so only their signatures stay locked here.
+    assert_sig(verifier_layout.method_name, [("function", POS, NoDefault)], str)
+    assert_sig(verifier_layout.module_name, [("function", POS, NoDefault)], str)
     sig = assert_sig(
         verifier_layout.assemble,
         [
@@ -212,7 +211,6 @@ def test_verifier_signatures() -> None:
         ],
         str,
     )
-    assert_raises(verifier_layout.assemble, sig)
 
     sig = assert_sig(
         verifier_dafny.resolve,
@@ -264,8 +262,8 @@ def test_sandbox_signatures() -> None:
     assert sandbox_strategies.strategies_source is pcc.sandbox.strategies_source
     sig = assert_sig(sandbox_loader.target_loader, [("function", POS, NoDefault)], str)
     assert_raises(sandbox_loader.target_loader, sig)
-    sig = assert_sig(sandbox_strategies.strategies_source, [("function", POS, NoDefault)], str)
-    assert_raises(sandbox_strategies.strategies_source, sig)
+    # strategies_source is implemented (issue #17); only its signature is locked here.
+    assert_sig(sandbox_strategies.strategies_source, [("function", POS, NoDefault)], str)
     sig = assert_sig(
         run_python,
         [
@@ -282,8 +280,8 @@ def test_sandbox_signatures() -> None:
 def test_pylib_signatures() -> None:
     assert callable(pcc.pylib.signatures)
     assert "signatures" in pcc.pylib.__all__
-    sig = assert_sig(pcc.pylib.signatures, [], str)
-    assert_raises(pcc.pylib.signatures, sig)
+    # signatures is implemented (issue #11); only its signature is locked here.
+    assert_sig(pcc.pylib.signatures, [], str)
 
 
 def test_project_signatures() -> None:
@@ -454,7 +452,7 @@ def test_certificate_signatures() -> None:
     assert certificate_store.is_stale is pcc.certificate.is_stale
     assert certificate_store.write is pcc.certificate.write
     assert certificate_store.load is pcc.certificate.load
-    sig = assert_sig(
+    assert_sig(
         pcc.certificate.from_result,
         [
             ("result", POS, NoDefault),
@@ -463,8 +461,7 @@ def test_certificate_signatures() -> None:
         ],
         Certificate,
     )
-    assert_raises(pcc.certificate.from_result, sig)
-    sig = assert_sig(
+    assert_sig(
         pcc.certificate.is_stale,
         [
             ("certificate", POS, NoDefault),
@@ -474,7 +471,6 @@ def test_certificate_signatures() -> None:
         ],
         bool,
     )
-    assert_raises(pcc.certificate.is_stale, sig)
     assert callable(pcc.certificate.write)
     assert callable(pcc.certificate.load)
 
