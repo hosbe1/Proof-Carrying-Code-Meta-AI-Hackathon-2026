@@ -1,12 +1,13 @@
 """JSON round-trip for frozen dataclasses such as the core types in ``pcc.core.types`` and ``pcc.config.Config``.
 
-Supported field types: str, int, float, bool, None, StrEnum, nested frozen dataclasses, ``tuple[X, ...]`` and
-``X | None``. That is all the core types use; anything else raises ``TypeError`` so it is caught in review.
+Supported field types: str, int, float, bool, None, StrEnum, nested frozen dataclasses, ``tuple[X, ...]``, fixed
+``tuple[A, B]``, ``Mapping[str, V]`` and ``X | None``. That is all the core and config types use; anything else raises
+``TypeError`` so it is caught in review.
 
 Reading is strict: a bool is never an int or a float, a float is built only from a JSON number, a tuple only from a JSON
-list, unknown keys and unknown enum values are rejected, and NaN or infinity are rejected both ways. Missing fields take
-their defaults. Wrong types, unknown names and unknown values raise ``TypeError``; NaN, infinity and malformed JSON text
-raise ``ValueError``.
+list, a mapping only from a JSON object with string keys, unknown keys and unknown enum values are rejected, and NaN or
+infinity are rejected both ways. Missing fields take their defaults. Wrong types, unknown names and unknown values raise
+``TypeError``; NaN, infinity and malformed JSON text raise ``ValueError``.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ import functools
 import json
 import types
 import typing
+from collections.abc import Mapping
 from enum import Enum
 from typing import Any, NoReturn
 
@@ -28,6 +30,10 @@ def to_data(value: Any) -> Any:
         return value.value
     if isinstance(value, tuple):
         return [to_data(v) for v in value]
+    if isinstance(value, Mapping):
+        if not all(isinstance(key, str) for key in value):
+            raise TypeError("only mappings with string keys are serializable")
+        return {key: to_data(item) for key, item in value.items()}
     if value is None or isinstance(value, str | int | float | bool):
         return value
     raise TypeError(f"not serializable: {type(value).__name__}")
@@ -61,12 +67,20 @@ def _build(tp: Any, data: Any) -> Any:
             raise TypeError(f"unsupported union: {tp}")
         return _build(args[0], data)
     if origin is tuple:
-        (item, ellipsis) = typing.get_args(tp)
-        if ellipsis is not Ellipsis:
-            raise TypeError(f"only tuple[X, ...] is supported, got {tp}")
-        if not isinstance(data, list):
-            raise TypeError(f"expected a list for {tp}, got {type(data).__name__}")
-        return tuple(_build(item, d) for d in data)
+        tuple_args = typing.get_args(tp)
+        if len(tuple_args) == 2 and tuple_args[1] is Ellipsis:
+            (item, _) = tuple_args
+            if not isinstance(data, list):
+                raise TypeError(f"expected a list for {tp}, got {type(data).__name__}")
+            return tuple(_build(item, entry) for entry in data)
+        if not isinstance(data, list) or len(data) != len(tuple_args):
+            raise TypeError(f"expected a list of length {len(tuple_args)} for {tp}, got {data!r}")
+        return tuple(_build(item_tp, entry) for item_tp, entry in zip(tuple_args, data, strict=True))
+    if origin is dict or origin is Mapping:
+        (key_tp, value_tp) = typing.get_args(tp)
+        if not isinstance(data, dict):
+            raise TypeError(f"expected an object for {tp}, got {type(data).__name__}")
+        return {_build(key_tp, key): _build(value_tp, item) for key, item in data.items()}
     if isinstance(tp, type) and issubclass(tp, Enum):
         try:
             return tp(data)

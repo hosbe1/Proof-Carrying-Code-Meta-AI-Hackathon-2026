@@ -110,7 +110,7 @@ def test_missing_optional_fields_take_defaults() -> None:
 
 def test_unsupported_values_are_rejected() -> None:
     with pytest.raises(TypeError):
-        to_data({"a": 1})
+        to_data({"a": {1, 2}})
     with pytest.raises(TypeError):
         from_data(FunctionRef, {**to_data(FN), "lineno": "12"})
 
