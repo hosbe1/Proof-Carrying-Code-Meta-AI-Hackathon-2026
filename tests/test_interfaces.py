@@ -262,11 +262,11 @@ def test_sandbox_signatures() -> None:
 
     assert sandbox_loader.target_loader is pcc.sandbox.target_loader
     assert sandbox_strategies.strategies_source is pcc.sandbox.strategies_source
-    sig = assert_sig(sandbox_loader.target_loader, [("function", POS, NoDefault)], str)
-    assert_raises(sandbox_loader.target_loader, sig)
+    # target_loader and run_python are implemented; only their signatures are locked here.
+    assert_sig(sandbox_loader.target_loader, [("function", POS, NoDefault)], str)
     sig = assert_sig(sandbox_strategies.strategies_source, [("function", POS, NoDefault)], str)
     assert_raises(sandbox_strategies.strategies_source, sig)
-    sig = assert_sig(
+    assert_sig(
         run_python,
         [
             ("script", POS, NoDefault),
@@ -276,7 +276,6 @@ def test_sandbox_signatures() -> None:
         ],
         RunOutcome,
     )
-    assert_raises(run_python, sig)
 
 
 def test_pylib_signatures() -> None:
