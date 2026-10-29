@@ -63,7 +63,12 @@ class Task:
 
 @dataclass(frozen=True, slots=True)
 class _DatasetSpec:
-    """How to fetch one dataset: URL, pinned revision, sha256 of the cached bytes and the cache file name."""
+    """How to fetch one dataset: URL, revision, sha256 of the cached bytes and the cache file name.
+
+    For ``jsonl`` the revision is enforced because it is part of the resolve URL. The rows API offers no
+    revision selector, so for ``rows`` the revision records the dataset commit the rows were observed at
+    and the sha256 of the canonical rows is the effective pin: drifted upstream rows fail the hash check.
+    """
 
     name: str
     url: str
@@ -164,7 +169,9 @@ def fetch(name: str, cache_dir: Path | None = None) -> Path:
     """Download dataset ``name`` into ``cache_dir`` (created when missing) and return the cache file path.
 
     A cache file that already verifies against its pinned sha256 is reused without any download. A network
-    failure or a hash mismatch raises a ``ToolError``.
+    failure or a hash mismatch raises a ``ToolError``. The rows API offers no revision selector, so for the
+    rows-API dataset the sha256 of the canonical rows is the pin: the mismatch error names the recorded
+    revision alongside the URL and the cache file.
     """
     spec = _spec(name)
     directory = _resolve_cache_dir(cache_dir)

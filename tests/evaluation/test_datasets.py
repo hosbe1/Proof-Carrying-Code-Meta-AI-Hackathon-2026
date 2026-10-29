@@ -152,6 +152,8 @@ def test_fetch_hash_mismatch_raises_tool_error_naming_the_file(
     with pytest.raises(ToolError) as excinfo:
         fetch("humanevalfix", fixture_env)
     assert "humanevalfix.json" in str(excinfo.value)
+    # The rows API offers no revision selector, so the drift error names the recorded revision too.
+    assert "fixture" in str(excinfo.value)
 
 
 def test_corrupt_cache_raises_tool_error_naming_the_file(fixture_env: Path) -> None:
