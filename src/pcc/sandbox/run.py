@@ -157,8 +157,7 @@ def run_python(script: str, *, cwd: Path, timeout_seconds: float = 60.0, memory_
                 timed_out = False
                 # The main process exited; kill the group so a forked child cannot hold the pipes open.
                 _kill_tree(proc.pid)
-            stop_pumps.set()
-            _join_bounded(stdout_pump, stderr_pump, proc)
+            _join_bounded(stdout_pump, stderr_pump, proc, stop_pumps)
             with drain_lock:
                 stdout_bytes = drained.get("stdout", b"")
                 stderr_bytes = drained.get("stderr", b"")
@@ -228,10 +227,24 @@ def _wait_bounded(proc: subprocess.Popen[bytes], grace_seconds: float) -> int:
             return -signal.SIGKILL
 
 
-def _join_bounded(first: threading.Thread, second: threading.Thread, proc: subprocess.Popen[bytes]) -> None:
-    """Wait for the output pumps; close the pipes instead of blocking on a detached descendant."""
+def _join_bounded(
+    first: threading.Thread,
+    second: threading.Thread,
+    proc: subprocess.Popen[bytes],
+    stop_pumps: threading.Event,
+) -> None:
+    """Wait for the output pumps without hanging on a detached descendant.
+
+    The first grace window lets the pumps drain buffered output naturally. Only if a pump is still
+    alive (a detached descendant holds the pipes open) are the pumps told to stop; only if they still
+    do not finish are the pipes closed and waited on once more.
+    """
     first.join(timeout=_DRAIN_GRACE_SECONDS)
     second.join(timeout=_DRAIN_GRACE_SECONDS)
+    if first.is_alive() or second.is_alive():
+        stop_pumps.set()
+        first.join(timeout=_DRAIN_GRACE_SECONDS)
+        second.join(timeout=_DRAIN_GRACE_SECONDS)
     if first.is_alive() or second.is_alive():
         with contextlib.suppress(Exception):
             if proc.stdout is not None:
