@@ -262,8 +262,8 @@ def test_sandbox_signatures() -> None:
     assert sandbox_strategies.strategies_source is pcc.sandbox.strategies_source
     sig = assert_sig(sandbox_loader.target_loader, [("function", POS, NoDefault)], str)
     assert_raises(sandbox_loader.target_loader, sig)
-    sig = assert_sig(sandbox_strategies.strategies_source, [("function", POS, NoDefault)], str)
-    assert_raises(sandbox_strategies.strategies_source, sig)
+    # strategies_source is implemented (issue #17); only its signature is locked here.
+    assert_sig(sandbox_strategies.strategies_source, [("function", POS, NoDefault)], str)
     sig = assert_sig(
         run_python,
         [
