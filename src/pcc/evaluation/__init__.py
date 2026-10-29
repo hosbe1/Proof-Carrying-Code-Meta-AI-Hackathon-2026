@@ -11,4 +11,6 @@ def run(dataset: str, split: str, out_dir: Path) -> Path:
     raise NotImplementedError
 
 
-__all__ = ["run"]
+from pcc.evaluation.datasets import Task, fetch, load, make_splits, split
+
+__all__ = ["Task", "fetch", "load", "make_splits", "run", "split"]
