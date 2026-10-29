@@ -71,7 +71,7 @@ def _swap_boolop(new_op: type[ast.boolop]) -> Callable[[ast.AST], ast.AST | None
     return mutate
 
 
-def _set_constant(value: object) -> Callable[[ast.AST], ast.AST | None]:
+def _set_constant(value: bool | int) -> Callable[[ast.AST], ast.AST | None]:
     def mutate(node: ast.AST) -> ast.AST | None:
         assert isinstance(node, ast.Constant)
         node.value = value
@@ -99,7 +99,9 @@ def _collect(root: ast.AST) -> list[_Mutation]:
     """Every candidate single-node edit in the tree, before ordering and limiting."""
     mutations: list[_Mutation] = []
 
-    def add(node: ast.AST, path: tuple[tuple[str, int | None], ...], mutate: Callable[[ast.AST], ast.AST | None]) -> None:
+    def add(
+        node: ast.AST, path: tuple[tuple[str, int | None], ...], mutate: Callable[[ast.AST], ast.AST | None]
+    ) -> None:
         mutations.append(_Mutation(_position_of(node), len(mutations), path, mutate))
 
     def visit(node: ast.AST, path: tuple[tuple[str, int | None], ...]) -> None:
@@ -126,11 +128,11 @@ def _collect(root: ast.AST) -> list[_Mutation]:
             add(node, path, _remove_not)
         for field, value in ast.iter_fields(node):
             if isinstance(value, ast.AST):
-                visit(value, path + ((field, None),))
+                visit(value, (*path, (field, None)))
             elif isinstance(value, list):
                 for item_index, item in enumerate(value):
                     if isinstance(item, ast.AST):
-                        visit(item, path + ((field, item_index),))
+                        visit(item, (*path, (field, item_index)))
 
     visit(root, ())
     return mutations
