@@ -186,7 +186,8 @@ def test_verifier_signatures() -> None:
     assert verifier_dafny.verify is verify
     assert verifier_dafny.build_python is build_python
 
-    sig = assert_sig(
+    # The anti-cheat body is implemented, so only its signature stays locked here.
+    assert_sig(
         anti_cheat,
         [
             ("dafny_code", POS, NoDefault),
@@ -195,7 +196,6 @@ def test_verifier_signatures() -> None:
         ],
         tuple[str, ...],
     )
-    assert_raises(anti_cheat, sig)
 
     # The layout bodies are implemented, so only their signatures stay locked here.
     assert_sig(verifier_layout.method_name, [("function", POS, NoDefault)], str)
