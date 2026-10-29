@@ -74,10 +74,7 @@ class _DatasetSpec:
 _DATASETS: dict[str, _DatasetSpec] = {
     HUMANEVALFIX: _DatasetSpec(
         name=HUMANEVALFIX,
-        url=(
-            "https://datasets-server.huggingface.co/rows"
-            "?dataset=bigcode%2Fhumanevalpack&config=python&split=test"
-        ),
+        url=("https://datasets-server.huggingface.co/rows?dataset=bigcode%2Fhumanevalpack&config=python&split=test"),
         revision="9a41762f73a8cb23bb5811b73d5aab164efcf378",
         sha256="e831c02d4b304c2adca8afb9dec7699cd34c59b47429a091d0b85f92fc9a536b",
         cache_filename="humanevalfix.json",
@@ -116,7 +113,8 @@ def _http_get(url: str) -> bytes:
     try:
         request = urllib.request.Request(url, headers={"User-Agent": "pcc-evaluation/1"})
         with urllib.request.urlopen(request, timeout=_DOWNLOAD_TIMEOUT_SECONDS) as response:
-            return response.read()
+            data: bytes = response.read()
+            return data
     except (urllib.error.URLError, OSError) as exc:
         raise ToolError(f"could not download {url}: {exc}") from exc
 

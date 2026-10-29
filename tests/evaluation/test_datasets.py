@@ -108,9 +108,7 @@ def test_fetch_downloads_verifies_and_caches(fixture_env: Path) -> None:
     assert second.read_bytes() == VERICODING_BYTES
 
 
-def test_fetch_reuses_a_valid_cache_without_downloading(
-    fixture_env: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_fetch_reuses_a_valid_cache_without_downloading(fixture_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = fetch("humanevalfix", fixture_env)
 
     def no_network(url: str) -> bytes:
@@ -120,9 +118,7 @@ def test_fetch_reuses_a_valid_cache_without_downloading(
     assert fetch("humanevalfix", fixture_env) == path
 
 
-def test_fetch_paginates_rows_api(
-    fixture_env: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_fetch_paginates_rows_api(fixture_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     real_fake = datasets._http_get
     seen_lengths: list[int] = []
 
@@ -140,9 +136,7 @@ def test_fetch_paginates_rows_api(
     assert seen_lengths == [4, 4, 4]
 
 
-def test_fetch_network_failure_raises_tool_error(
-    fixture_env: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_fetch_network_failure_raises_tool_error(fixture_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     def broken(url: str) -> bytes:
         raise ToolError(f"could not download {url}: connection refused")
 
@@ -205,12 +199,12 @@ def test_split_test_and_train(fixture_env: Path, fixture_splits: Path) -> None:
     test_tasks = split("humanevalfix", "test", fixture_env, fixture_splits)
     assert [task.id for task in test_tasks] == ["humanevalfix/Python/5", "humanevalfix/Python/8"]
     train_tasks = split("humanevalfix", "train", fixture_env, fixture_splits)
-    assert [task.id for task in train_tasks] == [i for i in HUMANEVALFIX_IDS if "Python/5" not in i and "Python/8" not in i]
+    assert [task.id for task in train_tasks] == [
+        i for i in HUMANEVALFIX_IDS if "Python/5" not in i and "Python/8" not in i
+    ]
 
 
-def test_split_train_excludes_test_source_tasks_of_other_datasets(
-    fixture_env: Path, fixture_splits: Path
-) -> None:
+def test_split_train_excludes_test_source_tasks_of_other_datasets(fixture_env: Path, fixture_splits: Path) -> None:
     train_tasks = split("vericoding", "train", fixture_env, fixture_splits)
     assert [task.id for task in train_tasks] == [
         "vericoding/DA0002",
@@ -219,9 +213,9 @@ def test_split_train_excludes_test_source_tasks_of_other_datasets(
         "vericoding/DH0001",
         "vericoding/DH0007",
     ]
-    test_source_tasks = {
-        task.source_task for task in split("humanevalfix", "test", fixture_env, fixture_splits)
-    } | {task.source_task for task in split("vericoding", "test", fixture_env, fixture_splits)}
+    test_source_tasks = {task.source_task for task in split("humanevalfix", "test", fixture_env, fixture_splits)} | {
+        task.source_task for task in split("vericoding", "test", fixture_env, fixture_splits)
+    }
     assert "humaneval/HumanEval/5" in test_source_tasks
     assert all(task.source_task not in test_source_tasks for task in train_tasks)
 
@@ -239,9 +233,7 @@ def test_split_missing_split_file_raises_tool_error(fixture_env: Path, tmp_path:
 
 def test_make_splits_writes_sorted_files(fixture_env: Path, tmp_path: Path) -> None:
     splits_dir = tmp_path / "out"
-    first, second = make_splits(
-        fixture_env, splits_dir, humanevalfix_test_size=3, vericoding_test_fraction=0.25
-    )
+    first, second = make_splits(fixture_env, splits_dir, humanevalfix_test_size=3, vericoding_test_fraction=0.25)
     assert first == splits_dir / "humanevalfix_test.txt"
     assert second == splits_dir / "vericoding_test.txt"
     for path, expected_count in ((first, 3), (second, 1)):
@@ -300,13 +292,11 @@ def test_live_downloads_both_datasets_and_checks_counts(tmp_path: Path) -> None:
     vericoding_tasks = load("vericoding", cache_dir)
     assert len(humanevalfix_tasks) == 164
     assert len(vericoding_tasks) == 2857
-    assert {task.source_task for task in humanevalfix_tasks} == {
-        f"humaneval/HumanEval/{n}" for n in range(164)
-    }
+    assert {task.source_task for task in humanevalfix_tasks} == {f"humaneval/HumanEval/{n}" for n in range(164)}
     assert len(split("humanevalfix", "test", cache_dir)) == 40
     assert len(split("vericoding", "test", cache_dir)) == 571
     vericoding_train = split("vericoding", "train", cache_dir)
-    test_source_tasks = {
-        task.source_task for task in split("humanevalfix", "test", cache_dir)
-    } | {task.source_task for task in split("vericoding", "test", cache_dir)}
+    test_source_tasks = {task.source_task for task in split("humanevalfix", "test", cache_dir)} | {
+        task.source_task for task in split("vericoding", "test", cache_dir)
+    }
     assert all(task.source_task not in test_source_tasks for task in vericoding_train)
