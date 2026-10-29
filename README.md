@@ -29,3 +29,5 @@ and follows the process in AGENTS.md.
 ## License
 
 [AGPL-3.0](LICENSE).
+
+Third-party datasets, demo sources and models are listed in [THIRD_PARTY.md](THIRD_PARTY.md).
