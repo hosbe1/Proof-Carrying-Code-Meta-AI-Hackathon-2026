@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from pcc.core import EquivalenceReport, FunctionRef, Translation
+from pcc.equivalence.spec_check import check_spec
 from pcc.models import ModelClient
 
 
@@ -25,4 +26,4 @@ def check(
     raise NotImplementedError
 
 
-__all__ = ["check"]
+__all__ = ["check", "check_spec"]
