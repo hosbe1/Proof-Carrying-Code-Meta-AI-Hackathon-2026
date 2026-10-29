@@ -20,7 +20,7 @@ CHEAT_FIXTURES = sorted(path.name for path in CHEATS_DIR.glob("*.dfy"))
 
 
 def test_allowlist_has_exactly_the_documented_names() -> None:
-    assert ALLOWED_ATTRIBUTES == {
+    assert {
         "trigger",
         "induction",
         "fuel",
@@ -29,7 +29,7 @@ def test_allowlist_has_exactly_the_documented_names() -> None:
         "split_here",
         "isolate_assertions",
         "IsolateAssertions",
-    }
+    } == ALLOWED_ATTRIBUTES
 
 
 @pytest.mark.parametrize("fixture", CHEAT_FIXTURES)
@@ -50,11 +50,7 @@ def test_example_assume() -> None:
 def test_example_frozen_spec_reindented_with_comment_passes() -> None:
     frozen_spec = "lemma Add(x: int) returns (r: int)\nensures r >= x"
     dafny_code = (
-        "lemma   Add(x: int) returns (r: int)\n"
-        "  // the sum is bigger than each summand\n"
-        "  ensures r >= x\n"
-        "{\n"
-        "}"
+        "lemma   Add(x: int) returns (r: int)\n  // the sum is bigger than each summand\n  ensures r >= x\n{\n}"
     )
     assert anti_cheat(dafny_code, frozen_spec) == ()
 
@@ -80,8 +76,7 @@ def test_example_selective_checking() -> None:
 
 def test_example_old_at_label_is_not_an_attribute() -> None:
     code = (
-        "class C { var v: int }\n"
-        "method m(c: C) modifies c { label L: c.v := c.v + 1; assert old@L(c.v) + 1 == c.v; }"
+        "class C { var v: int }\nmethod m(c: C) modifies c { label L: c.v := c.v + 1; assert old@L(c.v) + 1 == c.v; }"
     )
     assert anti_cheat(code, "") == ()
 
@@ -131,9 +126,7 @@ def test_only_brace_form_has_no_extra_attribute_violation() -> None:
 
 
 def test_verify_false_has_no_extra_attribute_violation() -> None:
-    assert anti_cheat("lemma {:verify false} L(x: int) ensures false {\n}", "") == (
-        "line 1: verify false",
-    )
+    assert anti_cheat("lemma {:verify false} L(x: int) ensures false {\n}", "") == ("line 1: verify false",)
 
 
 def test_extern_body_less_method() -> None:
@@ -156,9 +149,7 @@ def test_decreases_multiplication_is_no_violation() -> None:
 
 
 def test_termination_false() -> None:
-    assert anti_cheat("function {:termination false} F(n: int): int { n }", "") == (
-        "line 1: termination false",
-    )
+    assert anti_cheat("function {:termination false} F(n: int): int { n }", "") == ("line 1: termination false",)
 
 
 def test_resource_limit_fixture_reports_every_form() -> None:
@@ -184,12 +175,7 @@ def test_allowed_attributes_pass() -> None:
 
 
 def test_assume_and_expect_in_string_and_comment_are_no_violation() -> None:
-    code = (
-        '// assume false; expect false;\n'
-        'method M() {\n'
-        '  var s := "assume expect {:axiom} decreases *";\n'
-        "}"
-    )
+    code = '// assume false; expect false;\nmethod M() {\n  var s := "assume expect {:axiom} decreases *";\n}'
     assert anti_cheat(code, "") == ()
 
 
