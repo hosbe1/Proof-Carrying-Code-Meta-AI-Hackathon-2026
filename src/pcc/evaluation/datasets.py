@@ -165,21 +165,20 @@ def _download(spec: _DatasetSpec) -> bytes:
     return raw
 
 
-def fetch(name: str, cache_dir: Path | None = None) -> Path:
+def fetch(name: str, cache_dir: Path = DEFAULT_CACHE_DIR) -> Path:
     """Download dataset ``name`` into ``cache_dir`` (created when missing) and return the cache file path.
 
-    A cache file that already verifies against its pinned sha256 is reused without any download. A network
-    failure or a hash mismatch raises a ``ToolError``. The rows API offers no revision selector, so for the
-    rows-API dataset the sha256 of the canonical rows is the pin: the mismatch error names the recorded
-    revision alongside the URL and the cache file.
+    ``cache_dir`` defaults to ``~/.cache/pcc/datasets``. A cache file that already verifies against its
+    pinned sha256 is reused without any download. A network failure or a hash mismatch raises a ``ToolError``.
+    The rows API offers no revision selector, so for the rows-API dataset the sha256 of the canonical rows is
+    the pin: the mismatch error names the recorded revision alongside the URL and the cache file.
     """
     spec = _spec(name)
-    directory = _resolve_cache_dir(cache_dir)
-    path = directory / spec.cache_filename
+    path = cache_dir / spec.cache_filename
     if path.is_file():
         _check_sha256(path.read_bytes(), spec.sha256, str(path))
         return path
-    directory.mkdir(parents=True, exist_ok=True)
+    cache_dir.mkdir(parents=True, exist_ok=True)
     path.write_bytes(_download(spec))
     return path
 
@@ -247,7 +246,7 @@ def _parse_vericoding(data: bytes) -> tuple[Task, ...]:
 def load(name: str, cache_dir: Path | None = None) -> tuple[Task, ...]:
     """All tasks of dataset ``name`` from its cache, sorted by ID (fetching first when the cache is missing)."""
     spec = _spec(name)
-    raw = fetch(name, cache_dir).read_bytes()
+    raw = fetch(name, _resolve_cache_dir(cache_dir)).read_bytes()
     if spec.kind == "jsonl":
         return _parse_vericoding(raw)
     return _parse_humanevalfix(raw)
@@ -261,12 +260,23 @@ def _read_test_ids(name: str, splits_dir: Path | None) -> frozenset[str]:
     return frozenset(line for line in path.read_text(encoding="utf-8").splitlines() if line)
 
 
+def _checked_test_ids(name: str, tasks: tuple[Task, ...], splits_dir: Path | None) -> frozenset[str]:
+    """The committed test IDs for ``name``; a ``ToolError`` names any ID with no matching task."""
+    test_ids = _read_test_ids(name, splits_dir)
+    unknown = sorted(test_ids - {task.id for task in tasks})
+    if unknown:
+        shown = ", ".join(unknown[:5]) + ("..." if len(unknown) > 5 else "")
+        raise ToolError(f"unknown task ID(s) in {name}_test.txt: {shown}")
+    return test_ids
+
+
 def _test_source_tasks(cache_dir: Path | None, splits_dir: Path | None) -> set[str]:
     """The source tasks of every test split of every dataset, for train-split deduplication."""
     blocked: set[str] = set()
     for name in _DATASETS:
-        test_ids = _read_test_ids(name, splits_dir)
-        blocked.update(task.source_task for task in load(name, cache_dir) if task.id in test_ids)
+        tasks = load(name, cache_dir)
+        test_ids = _checked_test_ids(name, tasks, splits_dir)
+        blocked.update(task.source_task for task in tasks if task.id in test_ids)
     return blocked
 
 
@@ -280,12 +290,13 @@ def split(
 
     The test split holds exactly the task IDs of the committed ``<name>_test.txt`` file. Train holds every other
     task except those whose ``source_task`` appears in any test split of any dataset, so no benchmark task leaks
-    from a test split into training through another dataset.
+    from a test split into training through another dataset. A test ID with no matching task raises a
+    ``ToolError`` instead of silently shrinking the test split.
     """
     if which not in ("test", "train"):
         raise ValueError(f"unknown split {which!r}; expected 'test' or 'train'")
     tasks = load(name, cache_dir)
-    test_ids = _read_test_ids(name, splits_dir)
+    test_ids = _checked_test_ids(name, tasks, splits_dir)
     if which == "test":
         return tuple(task for task in tasks if task.id in test_ids)
     blocked = _test_source_tasks(cache_dir, splits_dir)
@@ -302,10 +313,12 @@ def make_splits(
     """Draw both test splits with ``random.Random(2026)`` and write them sorted, one ID per line.
 
     Forty of the 164 HumanEvalFix tasks and twenty percent of the Vericoding tasks go to test; the rest,
-    minus cross-dataset test source tasks, is train (see :func:`split`). Returns the two split file paths.
+    minus cross-dataset test source tasks, is train (see :func:`split`). One ``random.Random(2026)`` stream
+    draws HumanEvalFix first and Vericoding second, so both committed files come from a single deterministic
+    sequence. Returns the two split file paths.
     """
     for name in _DATASETS:
-        fetch(name, cache_dir)
+        fetch(name, _resolve_cache_dir(cache_dir))
     rng = random.Random(_SPLIT_SEED)
     humanevalfix_ids = sorted(task.id for task in load(HUMANEVALFIX, cache_dir))
     humanevalfix_test = sorted(rng.sample(humanevalfix_ids, humanevalfix_test_size))

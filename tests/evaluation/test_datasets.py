@@ -7,6 +7,7 @@ monkeypatched. The live test downloads both datasets for real and checks the cou
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import urllib.parse
 from collections.abc import Iterator, Sequence
@@ -95,6 +96,11 @@ def fixture_splits(tmp_path: Path) -> Path:
     )
     (splits_dir / "vericoding_test.txt").write_text("vericoding/DA0003\n", encoding="utf-8")
     return splits_dir
+
+
+def test_fetch_default_cache_dir_is_the_ticketed_cache() -> None:
+    default = inspect.signature(fetch).parameters["cache_dir"].default
+    assert default == Path.home() / ".cache/pcc/datasets"
 
 
 def test_fetch_downloads_verifies_and_caches(fixture_env: Path) -> None:
@@ -220,6 +226,21 @@ def test_split_train_excludes_test_source_tasks_of_other_datasets(fixture_env: P
     }
     assert "humaneval/HumanEval/5" in test_source_tasks
     assert all(task.source_task not in test_source_tasks for task in train_tasks)
+
+
+def test_split_test_rejects_unknown_test_ids(fixture_env: Path, tmp_path: Path) -> None:
+    bad_dir = tmp_path / "bad-splits"
+    bad_dir.mkdir()
+    (bad_dir / "humanevalfix_test.txt").write_text("humanevalfix/Python/5\nhumanevalfix/Python/999\n", encoding="utf-8")
+    (bad_dir / "vericoding_test.txt").write_text("vericoding/DA0003\n", encoding="utf-8")
+    with pytest.raises(ToolError) as excinfo:
+        split("humanevalfix", "test", fixture_env, bad_dir)
+    assert "humanevalfix/Python/999" in str(excinfo.value)
+    assert "humanevalfix_test.txt" in str(excinfo.value)
+    # The train split reads every test file for deduplication, so it fails too instead of
+    # silently keeping a task whose test twin lost its ID.
+    with pytest.raises(ToolError):
+        split("humanevalfix", "train", fixture_env, bad_dir)
 
 
 def test_split_rejects_unknown_split(fixture_env: Path, fixture_splits: Path) -> None:
