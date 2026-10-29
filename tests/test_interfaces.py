@@ -481,8 +481,8 @@ def test_certificate_signatures() -> None:
 
 def test_report_signatures() -> None:
     assert report_render.render is pcc.report.render
-    sig = assert_sig(pcc.report.render, [("results", POS, NoDefault), ("stale", KWO, ())], str)
-    assert_raises(pcc.report.render, sig)
+    # ``render`` is implemented, so only its signature is locked here; its behavior is tested in ``tests/report/``.
+    assert_sig(pcc.report.render, [("results", POS, NoDefault), ("stale", KWO, ())], str)
 
 
 def test_pipeline_signatures() -> None:
