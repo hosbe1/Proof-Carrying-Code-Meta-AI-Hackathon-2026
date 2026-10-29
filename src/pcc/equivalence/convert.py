@@ -13,8 +13,6 @@ The module imports nothing from ``pcc`` and only the standard library at the top
 to code ``dafny build`` generates, so it is imported inside the functions that need it.
 """
 
-from __future__ import annotations
-
 import typing
 from typing import Any
 
