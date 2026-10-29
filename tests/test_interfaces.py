@@ -280,8 +280,8 @@ def test_sandbox_signatures() -> None:
 def test_pylib_signatures() -> None:
     assert callable(pcc.pylib.signatures)
     assert "signatures" in pcc.pylib.__all__
-    sig = assert_sig(pcc.pylib.signatures, [], str)
-    assert_raises(pcc.pylib.signatures, sig)
+    # signatures is implemented (issue #11); only its signature is locked here.
+    assert_sig(pcc.pylib.signatures, [], str)
 
 
 def test_project_signatures() -> None:
