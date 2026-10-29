@@ -8,6 +8,7 @@ from pcc.config import Config, EquivalenceConfig, ProofConfig, ProverStage
 from pcc.core import (
     Assumption,
     AssumptionKind,
+    Certificate,
     CheckKind,
     CheckRecord,
     Claim,
@@ -15,6 +16,7 @@ from pcc.core import (
     Contradiction,
     Counterexample,
     DafnyError,
+    Dependency,
     Evidence,
     FunctionRef,
     Intent,
@@ -62,7 +64,7 @@ def failed_result() -> Result:
         function=FN,
         state=State.COUNTEREXAMPLE,
         reason="the spec breaks on an empty cart",
-        counterexample=Counterexample("[]", "0", "1", "def test_x(): ..."),
+        counterexample=Counterexample("[]", "0", "1", "def test_x(): ...", "xs.remove(0)"),
         proof=ProofOutcome(
             False,
             "module M {}",
@@ -74,6 +76,33 @@ def failed_result() -> Result:
     )
 
 
+def full_certificate() -> Certificate:
+    return Certificate(
+        function=FN,
+        dafny_source="module M {}",
+        spec_python="def spec(xs, result): ...",
+        spec_dafny="ensures ...",
+        function_path=TranslationPath.TRANSPILER,
+        spec_path=TranslationPath.TRANSPILER,
+        translation_checks=(CheckRecord(CheckKind.DIFFERENTIAL, True, "10000/10000", 10000, 10000),),
+        assumptions=(Assumption(AssumptionKind.LIBRARY_CONTRACT, "json.loads", "returns parsed JSON"),),
+        dafny_version="4.11.0",
+        pylib_sha256="abc123",
+        pcc_version="0.1.0",
+        dependency_hashes=(Dependency("pcc.pylib", "aaa"), Dependency("proj.pricing", "bbb")),
+    )
+
+
+def full_spec() -> Spec:
+    return Spec(
+        FN,
+        "def spec(xs, result): ...",
+        "def pre(xs): ...",
+        (CheckRecord(CheckKind.MUTANTS, True, "12/12", 12),),
+        (Claim("Empty cart totals 0.", (EVIDENCE,)),),
+    )
+
+
 def test_round_trip_of_a_full_result() -> None:
     result = full_result()
     assert loads(Result, dumps(result)) == result
@@ -82,6 +111,34 @@ def test_round_trip_of_a_full_result() -> None:
 def test_round_trip_of_a_counterexample_result() -> None:
     result = failed_result()
     assert loads(Result, dumps(result)) == result
+
+
+def test_round_trip_of_a_certificate_with_dependencies() -> None:
+    certificate = full_certificate()
+    assert loads(Certificate, dumps(certificate)) == certificate
+
+
+def test_round_trip_of_a_spec_with_precondition_sources() -> None:
+    spec = full_spec()
+    assert loads(Spec, dumps(spec)) == spec
+
+
+def test_old_counterexample_json_without_suggested_fix_still_loads() -> None:
+    data = {"arguments": "[]", "expected": "0", "actual": "1", "test": "def test_x(): ..."}
+    assert from_data(Counterexample, data) == Counterexample("[]", "0", "1", "def test_x(): ...")
+
+
+def test_old_certificate_json_without_dependency_hashes_still_loads() -> None:
+    data = to_data(full_certificate())
+    del data["dependency_hashes"]
+    assert from_data(Certificate, data).dependency_hashes == ()
+
+
+def test_old_check_record_json_without_inputs_total_still_loads() -> None:
+    data = {**to_data(CheckRecord(CheckKind.MUTANTS, True, "12/12", 12)), "inputs_total": None}
+    assert from_data(CheckRecord, data).inputs_total is None
+    minimal = {"kind": "mutants", "passed": True}
+    assert from_data(CheckRecord, minimal).inputs_total is None
 
 
 def test_context_round_trip() -> None:
