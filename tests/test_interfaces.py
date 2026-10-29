@@ -260,11 +260,11 @@ def test_sandbox_signatures() -> None:
 
     assert sandbox_loader.target_loader is pcc.sandbox.target_loader
     assert sandbox_strategies.strategies_source is pcc.sandbox.strategies_source
-    sig = assert_sig(sandbox_loader.target_loader, [("function", POS, NoDefault)], str)
-    assert_raises(sandbox_loader.target_loader, sig)
+    # target_loader and run_python are implemented (issue #9); only their signatures are locked here.
+    assert_sig(sandbox_loader.target_loader, [("function", POS, NoDefault)], str)
     # strategies_source is implemented (issue #17); only its signature is locked here.
     assert_sig(sandbox_strategies.strategies_source, [("function", POS, NoDefault)], str)
-    sig = assert_sig(
+    assert_sig(
         run_python,
         [
             ("script", POS, NoDefault),
@@ -274,7 +274,6 @@ def test_sandbox_signatures() -> None:
         ],
         RunOutcome,
     )
-    assert_raises(run_python, sig)
 
 
 def test_pylib_signatures() -> None:
@@ -477,8 +476,8 @@ def test_certificate_signatures() -> None:
 
 def test_report_signatures() -> None:
     assert report_render.render is pcc.report.render
-    sig = assert_sig(pcc.report.render, [("results", POS, NoDefault), ("stale", KWO, ())], str)
-    assert_raises(pcc.report.render, sig)
+    # ``render`` is implemented, so only its signature is locked here; its behavior is tested in ``tests/report/``.
+    assert_sig(pcc.report.render, [("results", POS, NoDefault), ("stale", KWO, ())], str)
 
 
 def test_pipeline_signatures() -> None:
