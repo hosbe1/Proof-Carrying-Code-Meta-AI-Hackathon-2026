@@ -1,0 +1,58 @@
+"""Serve Glimmer with vLLM on Modal.
+
+Deploy from the repository root with the settings exported::
+
+    export PCC_GLIMMER_API_KEY="$(openssl rand -hex 32)"
+    modal secret create pcc-glimmer-api PCC_GLIMMER_API_KEY="$PCC_GLIMMER_API_KEY"
+    modal deploy deploy/modal_glimmer.py
+
+See ``docs/deploy.md`` for the full procedure. Never import this module in
+tests: Modal is an optional dependency that is not installed in CI.
+"""
+
+import os
+
+import modal  # type: ignore[import-not-found]  # optional, not a dev dependency
+
+from deploy.glimmer_settings import (
+    SCALEDOWN_WINDOW_SECONDS,
+    SECRET_NAME,
+    VOLUME_MOUNT_PATH,
+    VOLUME_NAME,
+    check_volume_paths,
+    load_settings,
+    vllm_server_args,
+)
+
+VLLM_PORT = 8000
+
+_SETTINGS = load_settings()
+
+app = modal.App("pcc-glimmer")
+volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
+image = modal.Image.debian_slim(python_version="3.12").pip_install("vllm", "huggingface_hub")
+
+
+@app.function(
+    image=image,
+    gpu=_SETTINGS.gpu,
+    volumes={VOLUME_MOUNT_PATH: volume},
+    secrets=[modal.Secret.from_name(SECRET_NAME)],
+    scaledown_window=SCALEDOWN_WINDOW_SECONDS,
+)
+@modal.web_server(port=VLLM_PORT, startup_timeout=20 * 60)
+def serve() -> list[str]:
+    """Start vLLM's OpenAI-compatible server for the baked-in settings."""
+    check_volume_paths(_SETTINGS.adapters)
+    return [
+        "vllm",
+        "serve",
+        _SETTINGS.base_model,
+        "--host",
+        "0.0.0.0",
+        "--port",
+        str(VLLM_PORT),
+        *vllm_server_args(_SETTINGS),
+        "--api-key",
+        os.environ["PCC_GLIMMER_API_KEY"],
+    ]
