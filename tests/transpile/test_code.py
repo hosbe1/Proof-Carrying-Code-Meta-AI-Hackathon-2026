@@ -342,7 +342,7 @@ def test_unsupported_operators() -> None:
 
 
 def test_unsupported_calls() -> None:
-    check_unsupported("def f(a: int) -> int:\n    return f(a)\n", "call f", lineno=2)
+    check_unsupported("def f(a: int) -> int:\n    return g(a)\n", "call g", lineno=2)
     check_unsupported("def f(s: str) -> str:\n    return s.upper()\n", "call upper", lineno=2)
     check_unsupported("def f(a: int) -> int:\n    return abs(a)\n", "call abs", lineno=2)
 
