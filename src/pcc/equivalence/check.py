@@ -129,17 +129,17 @@ def _require_convertible_hints(function: FunctionRef) -> None:
     namespace: dict[str, object] = {"typing": typing, "list": list, "tuple": tuple}
     for source in [*hints, return_hint]:
         try:
-            py_type = eval(source, {"__builtins__": {}}, namespace)  # noqa: S307 -- hint sources from the local AST
+            py_type = eval(source, {"__builtins__": {}}, namespace)  # hint sources from the local AST
         except Exception:
             raise UnsupportedConstruct(f"type {source}") from None
         origin = typing.get_origin(py_type)
         args = typing.get_args(py_type)
         if py_type in (int, bool, str):
             continue
-        if origin in (list, typing.List if hasattr(typing, "List") else list) and len(args) == 1:
+        if origin is list and len(args) == 1:
             _require_nested(args[0])
             continue
-        if origin in (tuple, getattr(typing, "Tuple", tuple)):
+        if origin is tuple:
             if len(args) == 2 and args[1] is Ellipsis:
                 _require_nested(args[0])
                 continue
@@ -307,9 +307,7 @@ def _valid_call_source(source: str, arity: int, names: set[str]) -> bool:
     for keyword in call.keywords:
         if keyword.arg is None or keyword.arg not in names:
             return False
-    if len(call.args) > arity:
-        return False
-    return True
+    return len(call.args) <= arity
 
 
 def _eval_script(
@@ -440,7 +438,10 @@ def _eval_script(
         "        _first = {'arguments': _src, 'orig': _orig, 'trans': _trans}",
         f"    if _idx % {_PROGRESS_EVERY} == 0:",
         f"        print({_MARKER_PROGRESS!r} + json.dumps({{'idx': _idx}}), flush=True)",
-        f"print({_MARKER_DONE!r} + json.dumps({{'tried': _tried, 'total': len(_INPUTS), 'mismatch': _first}}), flush=True)",
+        "print(",
+        f"    {_MARKER_DONE!r} + json.dumps({{'tried': _tried, 'total': len(_INPUTS), 'mismatch': _first}}),",
+        "    flush=True,",
+        ")",
         "",
     ]
     _ = dafny_module  # the wrapper already imports the compiled module; kept for signature clarity
@@ -513,7 +514,9 @@ def _test_source(
     expected original outcome is asserted, the actual translation outcome is quoted in a comment.
     """
     chunks = [target_loader(function), "import pytest"]
-    expected_comment = f"# original {_describe(orig_kind, orig_payload)}, translation {_describe(trans_kind, trans_payload)}"
+    expected_comment = (
+        f"# original {_describe(orig_kind, orig_payload)}, translation {_describe(trans_kind, trans_payload)}"
+    )
     if orig_kind == "raises":
         chunks.append(
             f"{expected_comment}\n"
@@ -618,11 +621,16 @@ def check(
         trans = mismatch.get("trans")
         if not isinstance(arguments, str) or not isinstance(orig, list) or not isinstance(trans, list):
             raise ToolError(f"equivalence script returned a malformed mismatch: {done!r}")
-        detail = f"{arguments} -> original {_describe(str(orig[0]), str(orig[1]))}, translation {_describe(str(trans[0]), str(trans[1]))}"
+        detail = (
+            f"{arguments} -> original {_describe(str(orig[0]), str(orig[1]))}, "
+            f"translation {_describe(str(trans[0]), str(trans[1]))}"
+        )
         record = CheckRecord(CheckKind.DIFFERENTIAL, False, detail, tried, total)
         return EquivalenceReport(
             records=(record,),
-            mismatch=_mismatch_counterexample(function, arguments, [str(orig[0]), str(orig[1])], [str(trans[0]), str(trans[1])]),
+            mismatch=_mismatch_counterexample(
+                function, arguments, [str(orig[0]), str(orig[1])], [str(trans[0]), str(trans[1])]
+            ),
         )
 
 
@@ -639,7 +647,7 @@ def _timeout_report(
 
     last = _progress_index(stdout)
     if last is None:
-        candidates = combined[: _PROGRESS_EVERY] if combined else []
+        candidates = combined[:_PROGRESS_EVERY] if combined else []
     else:
         candidates = combined[last : last + _PROGRESS_EVERY]
     hanging = _pinpoint_hanging(function, wrapper, built, candidates, repo_root, pre_name)
@@ -683,7 +691,9 @@ def _probe_original(function: FunctionRef, source: str, repo_root: Path) -> tupl
     """Run ``source`` against the original only; timeouts become ``("timeout", "timeout")``."""
     from pcc.sandbox import run_python
 
-    outcome = run_python(_original_probe_script(function, source), cwd=repo_root, timeout_seconds=_PINPOINT_TIMEOUT_SECONDS)
+    outcome = run_python(
+        _original_probe_script(function, source), cwd=repo_root, timeout_seconds=_PINPOINT_TIMEOUT_SECONDS
+    )
     payload = _marker_payload(outcome.stdout, "PCC_EQUIV_ORIG ")
     if payload is not None:
         kind = payload.get("kind")
@@ -695,4 +705,4 @@ def _probe_original(function: FunctionRef, source: str, repo_root: Path) -> tupl
     return ("timeout", _DETAIL_TIMEOUT)
 
 
-__all__ = ["STEP", "SCHEMA", "check"]
+__all__ = ["SCHEMA", "STEP", "check"]

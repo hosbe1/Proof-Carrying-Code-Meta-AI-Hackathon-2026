@@ -63,14 +63,15 @@ def wrapper_source(function: FunctionRef, module_name: str) -> str:
     for param in params:
         if param.annotation is None:
             raise UnsupportedConstruct("no types")
-    hint_sources = [_hint_source(param.annotation) for param in params]  # type: ignore[arg-type]
+    hint_sources = [_hint_source(param.annotation) for param in params if param.annotation is not None]
     return_hint = _hint_source(definition.returns)
 
     pos_params = [*args.posonlyargs, *args.args]
     defaults = [None] * (len(pos_params) - len(args.defaults)) + list(args.defaults)
     parts: list[str] = []
     for param, default in zip(pos_params, defaults, strict=True):
-        piece = f"{param.arg}: {_hint_source(param.annotation)}"  # type: ignore[arg-type]
+        assert param.annotation is not None  # checked above
+        piece = f"{param.arg}: {_hint_source(param.annotation)}"
         if default is not None:
             piece += f" = {ast.unparse(default)}"
         parts.append(piece)
@@ -78,8 +79,9 @@ def wrapper_source(function: FunctionRef, module_name: str) -> str:
         parts.insert(len(args.posonlyargs), "/")
     if args.kwonlyargs:
         parts.append("*")
-        for param, default in zip(args.kwonlyargs, args.kwonly_defaults, strict=True):
-            piece = f"{param.arg}: {_hint_source(param.annotation)}"  # type: ignore[arg-type]
+        for param, default in zip(args.kwonlyargs, args.kw_defaults, strict=True):
+            assert param.annotation is not None  # checked above
+            piece = f"{param.arg}: {_hint_source(param.annotation)}"
             if default is not None:
                 piece += f" = {ast.unparse(default)}"
             parts.append(piece)
@@ -93,8 +95,6 @@ def wrapper_source(function: FunctionRef, module_name: str) -> str:
         f"    _dafny_{param.arg} = to_dafny({param.arg}, {hint})"
         for param, hint in zip(params, hint_sources, strict=True)
     )
-    ordered_names = ", ".join(param.arg for param in params)
-    _ = ordered_names  # positional order is the signature order; kept for clarity
     lines = [
         "import typing",
         converter_source,
