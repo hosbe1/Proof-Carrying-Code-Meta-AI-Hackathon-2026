@@ -307,7 +307,8 @@ def test_spec_signatures() -> None:
     assert spec_write.write is pcc.spec.write
     assert spec_check.check is pcc.spec.check
     assert spec_check.spec_cases is pcc.spec.spec_cases
-    sig = assert_sig(
+    # write is implemented (issue #26); only its signature is locked here.
+    assert_sig(
         pcc.spec.write,
         [
             ("intent", POS, NoDefault),
@@ -317,7 +318,6 @@ def test_spec_signatures() -> None:
         ],
         Spec,
     )
-    assert_raises(pcc.spec.write, sig)
     sig = assert_sig(
         pcc.spec.check,
         [
