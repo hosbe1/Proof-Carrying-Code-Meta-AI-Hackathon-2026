@@ -126,7 +126,14 @@ def _require_convertible_hints(function: FunctionRef) -> None:
     import typing
 
     hints, return_hint = _hint_sources(function)
-    namespace: dict[str, object] = {"typing": typing, "list": list, "tuple": tuple}
+    namespace: dict[str, object] = {
+        "typing": typing,
+        "list": list,
+        "tuple": tuple,
+        "int": int,
+        "bool": bool,
+        "str": str,
+    }
     for source in [*hints, return_hint]:
         try:
             py_type = eval(source, {"__builtins__": {}}, namespace)  # hint sources from the local AST
