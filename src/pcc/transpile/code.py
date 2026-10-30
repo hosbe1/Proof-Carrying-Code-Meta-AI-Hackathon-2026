@@ -1,11 +1,11 @@
-"""Step 4: the rule-based transpiler, code mode and spec mode. Filled in by a later ticket."""
+"""Step 4: the rule-based transpiler, code mode. Spec mode lives in ``pcc.transpile.spec``."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from types import MappingProxyType
 
-from pcc.core import FunctionRef, Spec
+from pcc.core import FunctionRef
 
 
 def transpile_function(function: FunctionRef, *, callees: Mapping[str, str] = MappingProxyType({})) -> str:
@@ -17,9 +17,4 @@ def transpile_function(function: FunctionRef, *, callees: Mapping[str, str] = Ma
     raise NotImplementedError
 
 
-def transpile_spec(spec: Spec) -> str:
-    """Spec mode: logical Dafny (``forall``/``exists`` instead of loops) as ``requires``/``ensures`` clauses."""
-    raise NotImplementedError
-
-
-__all__ = ["transpile_function", "transpile_spec"]
+__all__ = ["transpile_function"]
