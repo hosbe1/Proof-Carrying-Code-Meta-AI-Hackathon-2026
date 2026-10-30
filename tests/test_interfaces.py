@@ -218,7 +218,8 @@ def test_verifier_signatures() -> None:
         [("dafny_code", POS, NoDefault), ("timeout_seconds", KWO, 120.0)],
         tuple[DafnyError, ...],
     )
-    sig = assert_sig(
+    # verify is implemented (issue #20); only its signature stays locked here.
+    assert_sig(
         verify,
         [
             ("dafny_code", POS, NoDefault),
@@ -229,7 +230,6 @@ def test_verifier_signatures() -> None:
         ],
         VerifyOutcome,
     )
-    assert_raises(verify, sig)
     sig = assert_sig(
         build_python,
         [("dafny_code", POS, NoDefault), ("out_dir", POS, NoDefault)],
@@ -287,18 +287,17 @@ def test_project_signatures() -> None:
 
     assert project_diff.changed is pcc.project.changed
     assert project_calls.call_graph is pcc.project.call_graph
-    sig = assert_sig(
+    # ``changed`` and ``call_graph`` are implemented (issue #22); only their signatures stay locked here.
+    assert_sig(
         pcc.project.changed,
         [("repo_root", POS, NoDefault), ("base", POS, NoDefault)],
         tuple[FunctionRef, ...],
     )
-    assert_raises(pcc.project.changed, sig)
-    sig = assert_sig(
+    assert_sig(
         pcc.project.call_graph,
         [("repo_root", POS, NoDefault), ("functions", POS, NoDefault)],
         Mapping[FunctionRef, frozenset[FunctionRef]],
     )
-    assert_raises(pcc.project.call_graph, sig)
     assert callable(discover)
     assert callable(affected)
     assert callable(call_order)
@@ -308,7 +307,8 @@ def test_spec_signatures() -> None:
     assert spec_write.write is pcc.spec.write
     assert spec_check.check is pcc.spec.check
     assert spec_check.spec_cases is pcc.spec.spec_cases
-    sig = assert_sig(
+    # write is implemented (issue #26); only its signature is locked here.
+    assert_sig(
         pcc.spec.write,
         [
             ("intent", POS, NoDefault),
@@ -318,7 +318,6 @@ def test_spec_signatures() -> None:
         ],
         Spec,
     )
-    assert_raises(pcc.spec.write, sig)
     sig = assert_sig(
         pcc.spec.check,
         [
