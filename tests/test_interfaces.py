@@ -201,7 +201,7 @@ def test_verifier_signatures() -> None:
     # The layout bodies are implemented, so only their signatures stay locked here.
     assert_sig(verifier_layout.method_name, [("function", POS, NoDefault)], str)
     assert_sig(verifier_layout.module_name, [("function", POS, NoDefault)], str)
-    sig = assert_sig(
+    assert_sig(
         verifier_layout.assemble,
         [
             ("function", POS, NoDefault),
@@ -219,7 +219,8 @@ def test_verifier_signatures() -> None:
         [("dafny_code", POS, NoDefault), ("timeout_seconds", KWO, 120.0)],
         tuple[DafnyError, ...],
     )
-    sig = assert_sig(
+    # verify is implemented (issue #20); only its signature stays locked here.
+    assert_sig(
         verify,
         [
             ("dafny_code", POS, NoDefault),
@@ -230,13 +231,12 @@ def test_verifier_signatures() -> None:
         ],
         VerifyOutcome,
     )
-    assert_raises(verify, sig)
-    sig = assert_sig(
+    # build_python is implemented (issue #29); only its signature stays locked here.
+    assert_sig(
         build_python,
         [("dafny_code", POS, NoDefault), ("out_dir", POS, NoDefault)],
         Path,
     )
-    assert_raises(build_python, sig)
 
     # The ghost bodies are implemented, so only their signatures stay locked here.
     assert_sig(
@@ -288,18 +288,17 @@ def test_project_signatures() -> None:
 
     assert project_diff.changed is pcc.project.changed
     assert project_calls.call_graph is pcc.project.call_graph
-    sig = assert_sig(
+    # ``changed`` and ``call_graph`` are implemented (issue #22); only their signatures stay locked here.
+    assert_sig(
         pcc.project.changed,
         [("repo_root", POS, NoDefault), ("base", POS, NoDefault)],
         tuple[FunctionRef, ...],
     )
-    assert_raises(pcc.project.changed, sig)
-    sig = assert_sig(
+    assert_sig(
         pcc.project.call_graph,
         [("repo_root", POS, NoDefault), ("functions", POS, NoDefault)],
         Mapping[FunctionRef, frozenset[FunctionRef]],
     )
-    assert_raises(pcc.project.call_graph, sig)
     assert callable(discover)
     assert callable(affected)
     assert callable(call_order)
@@ -309,7 +308,8 @@ def test_spec_signatures() -> None:
     assert spec_write.write is pcc.spec.write
     assert spec_check.check is pcc.spec.check
     assert spec_check.spec_cases is pcc.spec.spec_cases
-    sig = assert_sig(
+    # write is implemented (issue #26); only its signature is locked here.
+    assert_sig(
         pcc.spec.write,
         [
             ("intent", POS, NoDefault),
@@ -319,8 +319,8 @@ def test_spec_signatures() -> None:
         ],
         Spec,
     )
-    assert_raises(pcc.spec.write, sig)
-    sig = assert_sig(
+    # check is implemented (issue #54); only its signature is locked here.
+    assert_sig(
         pcc.spec.check,
         [
             ("spec", POS, NoDefault),
@@ -332,8 +332,8 @@ def test_spec_signatures() -> None:
         ],
         Spec,
     )
-    assert_raises(pcc.spec.check, sig)
-    sig = assert_sig(
+    # spec_cases is implemented (issue #54); only its signature is locked here.
+    assert_sig(
         pcc.spec.spec_cases,
         [
             ("spec", POS, NoDefault),
@@ -343,7 +343,6 @@ def test_spec_signatures() -> None:
         ],
         tuple[tuple[str, str], ...],
     )
-    assert_raises(pcc.spec.spec_cases, sig)
 
 
 def test_equivalence_signatures() -> None:
@@ -366,12 +365,13 @@ def test_equivalence_signatures() -> None:
 def test_transpile_signatures() -> None:
     assert transpile_code.transpile_function is pcc.transpile.transpile_function
     assert transpile_spec_module.transpile_spec is pcc.transpile.transpile_spec
-    sig = assert_sig(
+    assert_sig(
         pcc.transpile.transpile_function,
         [("function", POS, NoDefault), ("callees", KWO, MappingProxyType({}))],
         str,
     )
-    assert_raises(pcc.transpile.transpile_function, sig)
+    # transpile_function is implemented (issue #23); only its signature is locked here.
+    assert pcc.transpile.translate_expr is transpile_code.translate_expr
     # transpile_spec is implemented (issue #30), so only its signature stays locked here.
     assert_sig(transpile_spec_module.transpile_spec, [("spec", POS, NoDefault)], str)
 

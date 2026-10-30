@@ -10,9 +10,11 @@ The output is the frozen spec the prover uses directly. Anything outside ``SPEC_
 from __future__ import annotations
 
 import ast
+from dataclasses import dataclass
 
 from pcc.core import Spec, UnsupportedConstruct
-from pcc.transpile.types import function_parameters, function_return_type, rename
+from pcc.transpile.code import RESERVED
+from pcc.transpile.types import dafny_type
 
 #: The constructs spec mode supports. The translator below implements exactly these; anything else raises
 #: ``UnsupportedConstruct``. Expression rules: comparisons, ``and``/``or``/``not``, ``+``/``-``/``*``,
@@ -432,13 +434,13 @@ def _emit_quantifier(node: ast.GeneratorExp, scope: Scope, types: dict[str, str]
     # Dafny names already spoken for: the parameters, ``result`` and every bound or index variable so far.
     # Index variables come from here (never shadowing a parameter), and a generator variable that collides is
     # suffixed, so the emitted binder can never capture a name the body resolves to an outer scope.
-    taken = {rename(name) for name in types}
+    taken = {_rename(name) for name in types}
     bound: list[str] = []
     variables: list[str] = []
     for generator in node.generators:
         assert isinstance(generator.target, ast.Name)
         variable = generator.target.id
-        renamed = rename(variable)
+        renamed = _rename(variable)
         while renamed in taken:
             renamed += "_"
         taken.add(renamed)
@@ -516,16 +518,66 @@ def _single_return(source: str, kind: str) -> ast.expr:
     return body[0].value
 
 
+#: The code-mode rename map without the ``result`` entry: spec parameters colliding
+#: with a Dafny keyword are renamed to ``<name>_``, while ``result`` keeps its name.
+_SPEC_RESERVED = RESERVED - {"result"}
+
+
+def _rename(name: str) -> str:
+    """``name`` with ``_`` appended when it collides with a Dafny keyword, unchanged otherwise."""
+    return f"{name}_" if name in _SPEC_RESERVED else name
+
+
+@dataclass(frozen=True, slots=True)
+class _Parameter:
+    """One function parameter: its Python name, its Dafny name and its Dafny type."""
+
+    python: str  # as written in the function signature
+    dafny: str  # ``_rename(python)``
+    dafny_type: str  # ``dafny_type`` of the annotation
+
+
+def _function_parameters(source: str) -> tuple[_Parameter, ...]:
+    """The positional and keyword-only parameters of the function ``source``, with Dafny names and types.
+
+    A parameter without an annotation raises ``UnsupportedConstruct("no types")``; ``*args`` and ``**kwargs``
+    raise ``UnsupportedConstruct("parameter *<name>")``.
+    """
+    (definition,) = ast.parse(source).body
+    assert isinstance(definition, ast.FunctionDef)
+    args = definition.args
+    if args.vararg is not None:
+        raise UnsupportedConstruct(f"parameter *{args.vararg.arg}")
+    if args.kwarg is not None:
+        raise UnsupportedConstruct(f"parameter **{args.kwarg.arg}")
+    parameters: list[_Parameter] = []
+    for argument in (*args.posonlyargs, *args.args, *args.kwonlyargs):
+        tag = dafny_type(argument.annotation, lineno=argument.lineno)
+        parameters.append(_Parameter(argument.arg, _rename(argument.arg), tag))
+    return tuple(parameters)
+
+
+def _function_return_type(source: str) -> str:
+    """The Dafny type of the return annotation of the function ``source``.
+
+    A missing return annotation raises ``UnsupportedConstruct("no types")``.
+    """
+    (definition,) = ast.parse(source).body
+    assert isinstance(definition, ast.FunctionDef)
+    return dafny_type(definition.returns, lineno=definition.lineno)
+
+
 def transpile_spec(spec: Spec) -> str:
     """Spec mode: logical Dafny (``forall``/``exists`` instead of loops) as ``requires``/``ensures`` clauses.
 
     Returns ``predicate pre(<params>) { ... }`` (``true`` when there is no precondition) followed by
     ``predicate spec(<params>, result: <T>) requires pre(<params>) { ... }``. Parameter types come from the
-    function's hints; parameters that are Dafny keywords are renamed to ``<name>_``, while ``result`` keeps its
-    name. Anything outside ``SPEC_CONSTRUCTS`` raises ``UnsupportedConstruct``.
+    function's hints through ``pcc.transpile.types``; parameters colliding with a Dafny keyword are renamed to
+    ``<name>_`` (the code-mode rename map without the ``result`` entry), while ``result`` keeps its name.
+    Anything outside ``SPEC_CONSTRUCTS`` raises ``UnsupportedConstruct``.
     """
-    parameters = function_parameters(spec.function.source)
-    result_type = function_return_type(spec.function.source)
+    parameters = _function_parameters(spec.function.source)
+    result_type = _function_return_type(spec.function.source)
     names = ", ".join(f"{parameter.dafny}: {parameter.dafny_type}" for parameter in parameters)
     arguments = ", ".join(parameter.dafny for parameter in parameters)
     pre_scope = {parameter.python: parameter.dafny for parameter in parameters}

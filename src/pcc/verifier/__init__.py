@@ -7,7 +7,7 @@ anti-cheat scan. Other modules never call dafny directly.
 from __future__ import annotations
 
 from pcc.verifier.anti_cheat import anti_cheat
-from pcc.verifier.dafny import VerifyOutcome, build_python, resolve, verify
+from pcc.verifier.dafny import VerifyOutcome, build_python, python_name, resolve, verify
 from pcc.verifier.errors import parse_errors
 from pcc.verifier.ghost import executable_part, same_executable
 from pcc.verifier.layout import assemble, method_name, module_name
@@ -21,6 +21,7 @@ __all__ = [
     "method_name",
     "module_name",
     "parse_errors",
+    "python_name",
     "resolve",
     "same_executable",
     "verify",
