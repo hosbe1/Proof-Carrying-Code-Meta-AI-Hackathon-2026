@@ -395,7 +395,8 @@ def test_translate_ai_signatures() -> None:
 def test_counterexample_signatures() -> None:
     assert counterexample_search.search is pcc.counterexample.search
     assert counterexample_build.build is pcc.counterexample.build
-    sig = assert_sig(
+    # search is implemented (issue #33); only its signature is locked here.
+    assert_sig(
         pcc.counterexample.search,
         [
             ("function", POS, NoDefault),
@@ -408,8 +409,8 @@ def test_counterexample_signatures() -> None:
         ],
         Counterexample | None,
     )
-    assert_raises(pcc.counterexample.search, sig)
-    sig = assert_sig(
+    # build is implemented (issue #33); only its signature is locked here.
+    assert_sig(
         pcc.counterexample.build,
         [
             ("function", POS, NoDefault),
@@ -419,7 +420,6 @@ def test_counterexample_signatures() -> None:
         ],
         Counterexample,
     )
-    assert_raises(pcc.counterexample.build, sig)
 
 
 def test_prove_signatures() -> None:
