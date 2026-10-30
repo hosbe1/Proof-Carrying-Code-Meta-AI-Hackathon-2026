@@ -8,10 +8,11 @@ from pathlib import Path
 import pytest
 
 from pcc.context.search import STEP, search_further
-from pcc.core import Context, SourceKind
+from pcc.core import Context, Evidence, SourceKind
 from pcc.core.errors import ToolError
 from pcc.models import Completion, FakeClient, Message, ModelClient
 from tests.context.helpers import FUNCTION_SOURCE, action_answer, all_prompt_text, make_context
+from tests.helpers import function_ref
 
 
 def make_repo(tmp_path: Path) -> Path:
@@ -102,9 +103,7 @@ def test_evidence_with_the_function_source_is_dropped(tmp_path: Path) -> None:
 
 def test_evidence_with_an_unknown_kind_is_dropped(tmp_path: Path) -> None:
     repo_root = make_repo(tmp_path)
-    client = FakeClient(
-        [action_answer("done", "", [{"kind": "rumor", "ref": "x:1", "excerpt": "some gossip"}])]
-    )
+    client = FakeClient([action_answer("done", "", [{"kind": "rumor", "ref": "x:1", "excerpt": "some gossip"}])])
     result = search_further(make_context(), repo_root, client=client, model="muse-spark-1.3")
 
     assert result.evidence == ()
@@ -163,10 +162,6 @@ def test_unknown_action_raises_value_error(tmp_path: Path) -> None:
 
 
 def test_existing_evidence_is_kept(tmp_path: Path) -> None:
-    from pcc.core import Evidence
-
-    from tests.helpers import function_ref
-
     repo_root = make_repo(tmp_path)
     function = function_ref(source=FUNCTION_SOURCE, path="src/shop.py", qualname="maximum", lineno=3)
     base = Context(

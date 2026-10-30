@@ -104,7 +104,13 @@ def test_git_log_returns_at_most_20_commits(tmp_path: Path) -> None:
     for index in range(25):
         target.write_text(target.read_text() + f"# change {index}\n")
         subprocess.run(["git", "add", "src/shop.py"], cwd=repo_root, check=True, capture_output=True)
-        subprocess.run(["git", "commit", "-m", f"change {index}"], cwd=repo_root, check=True, capture_output=True)
+        # --no-verify: fixture commits must not depend on ambient commit-msg hooks.
+        subprocess.run(
+            ["git", "commit", "--no-verify", "-m", f"change {index}"],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+        )
     result = tools.git_log(repo_root, "src/shop.py", function)  # type: ignore[arg-type]
     assert len(result.splitlines()) <= 20
     assert FUNCTION_SOURCE not in result
@@ -120,7 +126,7 @@ def test_missing_repo_root_raises_tool_error(tmp_path: Path) -> None:
     missing = tmp_path / "no-such-repo"
     function = function_ref(source=FUNCTION_SOURCE, path="src/shop.py", qualname="maximum", lineno=3)
     try:
-        tools.read_file(missing, "src/shop.py", function)  # type: ignore[arg-type]
+        tools.read_file(missing, "src/shop.py", function)
     except ToolError:
         pass
     else:

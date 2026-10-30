@@ -1,4 +1,4 @@
-"""Read-only search tools for the context agent (issue #32).
+"""Test helpers for the context search agent tests (issue #32).
 
 The tools never return the function body: lines of the function under check are replaced with
 ``OMITTED`` in every result, and paths are confined to ``repo_root``.
