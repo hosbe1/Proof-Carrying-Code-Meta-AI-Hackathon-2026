@@ -1,0 +1,6 @@
+C:\proj\main.dfy(2,11): Error: unresolved identifier: UndefinedName
+  |
+2 |   var x := UndefinedName;
+  |            ^^^^^^^^^^^^^
+
+1 resolution/type errors detected in C:\proj\main.dfy
