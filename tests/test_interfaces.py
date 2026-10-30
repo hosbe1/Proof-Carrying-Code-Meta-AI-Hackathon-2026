@@ -237,13 +237,13 @@ def test_verifier_signatures() -> None:
     )
     assert_raises(build_python, sig)
 
-    sig = assert_sig(
+    # The ghost bodies are implemented, so only their signatures stay locked here.
+    assert_sig(
         verifier_ghost.executable_part,
         [("dafny_method", POS, NoDefault), ("lemma_names", KWO, NoDefault)],
         str,
     )
-    assert_raises(verifier_ghost.executable_part, sig)
-    sig = assert_sig(
+    assert_sig(
         verifier_ghost.same_executable,
         [
             ("original", POS, NoDefault),
@@ -252,7 +252,6 @@ def test_verifier_signatures() -> None:
         ],
         bool,
     )
-    assert_raises(verifier_ghost.same_executable, sig)
 
 
 def test_sandbox_signatures() -> None:
