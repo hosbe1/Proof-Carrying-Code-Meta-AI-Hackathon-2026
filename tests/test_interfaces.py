@@ -36,6 +36,7 @@ import pcc.spec
 import pcc.translate_ai
 import pcc.transpile
 import pcc.transpile.code as transpile_code
+import pcc.transpile.spec as transpile_spec_module
 import pcc.verifier
 import pcc.verifier.dafny as verifier_dafny
 import pcc.verifier.ghost as verifier_ghost
@@ -363,16 +364,16 @@ def test_equivalence_signatures() -> None:
 
 def test_transpile_signatures() -> None:
     assert transpile_code.transpile_function is pcc.transpile.transpile_function
-    assert transpile_code.transpile_spec is pcc.transpile.transpile_spec
-    sig = assert_sig(
+    assert transpile_spec_module.transpile_spec is pcc.transpile.transpile_spec
+    assert_sig(
         pcc.transpile.transpile_function,
         [("function", POS, NoDefault), ("callees", KWO, MappingProxyType({}))],
         str,
     )
     # transpile_function is implemented (issue #23); only its signature is locked here.
     assert pcc.transpile.translate_expr is transpile_code.translate_expr
-    sig = assert_sig(transpile_code.transpile_spec, [("spec", POS, NoDefault)], str)
-    assert_raises(transpile_code.transpile_spec, sig)
+    # transpile_spec is implemented (issue #30), so only its signature stays locked here.
+    assert_sig(transpile_spec_module.transpile_spec, [("spec", POS, NoDefault)], str)
 
 
 def test_translate_ai_signatures() -> None:
