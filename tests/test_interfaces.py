@@ -424,7 +424,7 @@ def test_counterexample_signatures() -> None:
 
 def test_prove_signatures() -> None:
     assert prove_agent.prove is pcc.prove.prove
-    sig = assert_sig(
+    assert_sig(
         pcc.prove.prove,
         [
             ("translation", POS, NoDefault),
@@ -438,7 +438,7 @@ def test_prove_signatures() -> None:
         ],
         ProofOutcome,
     )
-    assert_raises(pcc.prove.prove, sig)
+    # prove is implemented (issue #31); only its signature is locked here.
     hints = get_type_hints(pcc.prove.prove)
     assert hints["assumptions"] == Sequence[Assumption]
     assert hints["translation"] is Translation
