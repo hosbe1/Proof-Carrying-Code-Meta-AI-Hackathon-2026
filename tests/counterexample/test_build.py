@@ -98,6 +98,21 @@ def test_keyword_arguments_stay_valid_python(tmp_path: Path) -> None:
     assert "**_kwargs" in found.test
 
 
+ANSWER_SOURCE = "def answer() -> int:\n    return 41\n"
+ANSWER_PREDICATE = "def spec(result):\n    return result == 42\n"
+
+
+def test_no_arguments_call_without_parentheses_content(tmp_path: Path) -> None:
+    write_module(tmp_path, "answer.py", ANSWER_SOURCE)
+    function = function_ref(source=ANSWER_SOURCE, path="answer.py", qualname="answer", lineno=1)
+    found = build(function, make_spec(function, ANSWER_PREDICATE), tmp_path, "")
+
+    assert found.arguments == ""
+    assert found.actual == "41"
+    assert "assert spec(result)" in found.test
+    assert run_test_file(tmp_path, "test_answer_breaks.py", found.test) != 0
+
+
 def test_missing_repo_root_raises_tool_error(tmp_path: Path) -> None:
     function = function_ref(source=ADD_SOURCE, path="adder.py", qualname="add", lineno=1)
     with pytest.raises(ToolError):

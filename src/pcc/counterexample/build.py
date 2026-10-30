@@ -85,7 +85,8 @@ def _test_source(function: FunctionRef, spec: Spec, arguments: str) -> str:
     precondition source when there is one) and a single test named after the qualname. Without keyword
     arguments the test calls ``result = target(arguments)`` and asserts ``assert spec(arguments, result)``;
     with a keyword argument ``assert spec(arguments, result)`` would not stay valid Python, so the test binds
-    through ``_split`` and asserts ``assert spec(*_args, result, **_kwargs)`` instead.
+    through ``_split`` and asserts ``assert spec(*_args, result, **_kwargs)`` instead. With no arguments at
+    all the test calls ``target()`` and asserts ``spec(result)``.
     """
     chunks = [target_loader(function), spec.predicate]
     if spec.precondition is not None:
@@ -98,12 +99,14 @@ def _test_source(function: FunctionRef, spec: Spec, arguments: str) -> str:
             "    result = target(*_args, **_kwargs)\n"
             "    assert spec(*_args, result, **_kwargs)\n"
         )
-    else:
+    elif arguments.strip():
         chunks.append(
             f"def {_test_name(function.qualname)}():\n"
             f"    result = target({arguments})\n"
             f"    assert spec({arguments}, result)\n"
         )
+    else:
+        chunks.append(f"def {_test_name(function.qualname)}():\n    result = target()\n    assert spec(result)\n")
     return "\n".join(chunk.rstrip("\n") for chunk in chunks) + "\n"
 
 
