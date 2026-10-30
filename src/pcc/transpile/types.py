@@ -1,4 +1,4 @@
-"""Step 4, code mode: the Python to Dafny type mapping.
+"""Step 4: the Python to Dafny type mapping.
 
 Supported annotations and their Dafny type:
 
