@@ -117,3 +117,32 @@ def test_missing_repo_root_raises_tool_error(tmp_path: Path) -> None:
     function = function_ref(source=ADD_SOURCE, path="adder.py", qualname="add", lineno=1)
     with pytest.raises(ToolError):
         build(function, make_spec(function, ADD_PREDICATE), tmp_path / "missing", "3, 4")
+
+
+BUGGY_PICK_SOURCE = "def pick(xs: list[int], key: int | None) -> int:\n    return xs[0]\n"
+
+
+def test_positional_key_after_result_inserts_result(tmp_path: Path) -> None:
+    write_module(tmp_path, "picker.py", BUGGY_PICK_SOURCE)
+    function = function_ref(source=BUGGY_PICK_SOURCE, path="picker.py", qualname="pick", lineno=1)
+    found = build(function, make_spec(function, PICK_PREDICATE), tmp_path, "[3, -1], 1")
+
+    assert found.actual == "3"
+    assert "spec([3, -1], result, 1)" in found.test
+    ast.parse(found.test)
+    assert run_test_file(tmp_path, "test_picker_breaks.py", found.test) != 0
+
+
+BUGGY_GET_SOURCE = "def get(xs: list[int], key: int | None) -> int:\n    return xs[0]\n"
+GET_RESULT_LAST_PREDICATE = "def spec(xs, key, result):\n    return result == (xs[0] if key is None else xs[key])\n"
+
+
+def test_result_last_with_kwargs_uses_keyword_result(tmp_path: Path) -> None:
+    write_module(tmp_path, "getter.py", BUGGY_GET_SOURCE)
+    function = function_ref(source=BUGGY_GET_SOURCE, path="getter.py", qualname="get", lineno=1)
+    found = build(function, make_spec(function, GET_RESULT_LAST_PREDICATE), tmp_path, "[3, -1], key=1")
+
+    assert found.actual == "3"
+    assert "result=result" in found.test
+    ast.parse(found.test)
+    assert run_test_file(tmp_path, "test_getter_breaks.py", found.test) != 0

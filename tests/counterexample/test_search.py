@@ -265,3 +265,48 @@ def test_model_prompt_includes_failed_clause_and_precondition(tmp_path: Path) ->
     assert PALINDROME_PREDICATE in prompt
     assert PRE_NONEMPTY in prompt
     assert PALINDROME_CLAUSE in prompt
+
+
+ADD_BUGGY_SOURCE = "def add(a: int, b: int) -> int:\n    return a - b\n"
+ADD_BUGGY_PREDICATE = "def spec(a, b, result):\n    return result == a + b\n"
+
+
+def test_hypothesis_multi_parameter_winner_has_no_parens(tmp_path: Path) -> None:
+    write_module(tmp_path, "adder.py", ADD_BUGGY_SOURCE)
+    function = function_ref(source=ADD_BUGGY_SOURCE, path="adder.py", qualname="add", lineno=1)
+    spec = Spec(function=function, predicate=ADD_BUGGY_PREDICATE)
+    client = FakeClient([json.dumps({"inputs": ["'unused'"]})])
+
+    found = search(
+        function, spec, tmp_path, failed_clause=None, client=client, model="test-model", config=make_config()
+    )
+
+    assert found is not None
+    assert client.calls == []
+    assert not found.arguments.startswith("(")
+    assert not found.arguments.endswith(")")
+    assert "," in found.arguments
+    assert run_test_file(tmp_path, "test_adder_breaks.py", found.test) != 0
+
+
+def test_broken_module_raises_tool_error(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "badmod.py",
+        "import definitely_missing_module_xyz\ndef f(x: int) -> int:\n    return x\n",
+    )
+    function = function_ref(source="def f(x: int) -> int:\n    return x\n", path="badmod.py", qualname="f", lineno=2)
+    spec = Spec(function=function, predicate="def spec(x, result):\n    return result == x\n")
+    client = FakeClient([json.dumps({"inputs": ["'unused'"]})])
+
+    with pytest.raises(ToolError):
+        search(
+            function,
+            spec,
+            tmp_path,
+            failed_clause=None,
+            client=client,
+            model="test-model",
+            config=make_config(20),
+        )
+    assert client.calls == []

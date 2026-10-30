@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 
 from pcc.config import CounterexampleConfig
-from pcc.core import Counterexample, FunctionRef, Spec
+from pcc.core import Counterexample, FunctionRef, Spec, ToolError
 from pcc.counterexample.build import build
 from pcc.models import Message, ModelClient
 from pcc.sandbox import run_python, strategies_source, target_loader
@@ -34,45 +34,62 @@ def _hypothesis_script(function: FunctionRef, spec: Spec, max_examples: int) -> 
     does, then defines ``spec`` (and ``pre`` when the spec has a precondition). ``_breaks`` holds only when the
     precondition holds (or there is none) and the spec is violated: a ``target`` that raises on a pre-holding
     input counts as a break, while a ``spec`` (or ``pre``) that raises counts as no break (or as not holding).
-    ``hypothesis.find`` prints the winner with ``repr(args[0])`` for a single parameter and ``repr(args)``
-    otherwise; a ``NoSuchExample`` (nothing found) prints nothing, so the caller moves on to the model phase.
+    Calls go through ``inspect`` so ``result`` may sit anywhere in the spec signature and keyword-only
+    parameters work: positional-only parameters travel positionally, everything else by keyword. The winner is
+    encoded as comma-separated ``repr`` values without the tuple parentheses, so ``(3, 4)`` becomes ``"3, 4"``;
+    a ``NoSuchExample`` (nothing found) prints nothing, so the caller moves on to the model phase.
     """
     chunks = [strategies_source(function), target_loader(function), spec.predicate]
     if spec.precondition is not None:
         chunks.append(spec.precondition)
-        breaks = (
-            "def _breaks(_args):\n"
+    chunks.append(
+        "import hypothesis\n"
+        "import inspect\n"
+        "import json\n"
+        "from hypothesis.errors import NoSuchExample\n"
+        "_t_sig = inspect.signature(target)\n"
+        "_s_sig = inspect.signature(spec)\n"
+        + ("_p_sig = inspect.signature(pre)\n" if spec.precondition is not None else "")
+        + "def _call_bound(_fn, _sig, _binding):\n"
+        "    _posonly = [n for n, p in _sig.parameters.items()"
+        " if p.kind is inspect.Parameter.POSITIONAL_ONLY]\n"
+        "    _pos = tuple(_binding[n] for n in _posonly)\n"
+        "    _kw = {n: v for n, v in _binding.items() if n not in _posonly and n in _sig.parameters}\n"
+        "    return _fn(*_pos, **_kw)\n"
+        "def _func_names():\n"
+        "    return [n for n, p in _t_sig.parameters.items() if p.kind in"
+        " (inspect.Parameter.POSITIONAL_ONLY,"
+        " inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)]\n"
+        "def _target_at(_args):\n"
+        "    return _call_bound(target, _t_sig, dict(zip(_func_names(), _args)))\n"
+        "def _spec_at(_args, _result):\n"
+        "    _binding = dict(zip(_func_names(), _args))\n"
+        "    _binding['result'] = _result\n"
+        "    return _call_bound(spec, _s_sig, _binding)\n"
+        + (
+            "def _pre_at(_args):\n    return _call_bound(pre, _p_sig, dict(zip(_func_names(), _args)))\n"
+            if spec.precondition is not None
+            else ""
+        )
+        + "def _breaks(_args):\n"
+        + (
             "    try:\n"
-            "        _holds = pre(*_args)\n"
+            "        _holds = _pre_at(_args)\n"
             "    except Exception:\n"
             "        return False\n"
             "    if not _holds:\n"
             "        return False\n"
-            "    try:\n"
-            "        _result = target(*_args)\n"
-            "    except Exception:\n"
-            "        return True\n"
-            "    try:\n"
-            "        return not spec(*_args, _result)\n"
-            "    except Exception:\n"
-            "        return False\n"
+            if spec.precondition is not None
+            else ""
         )
-    else:
-        breaks = (
-            "def _breaks(_args):\n"
-            "    try:\n"
-            "        _result = target(*_args)\n"
-            "    except Exception:\n"
-            "        return True\n"
-            "    try:\n"
-            "        return not spec(*_args, _result)\n"
-            "    except Exception:\n"
-            "        return False\n"
-        )
-    chunks.append(
-        breaks + "import hypothesis\n"
-        "import json\n"
-        "from hypothesis.errors import NoSuchExample\n"
+        + "    try:\n"
+        "        _result = _target_at(_args)\n"
+        "    except Exception:\n"
+        "        return True\n"
+        "    try:\n"
+        "        return not _spec_at(_args, _result)\n"
+        "    except Exception:\n"
+        "        return False\n"
         "try:\n"
         "    _winner = hypothesis.find(\n"
         "        args_strategy, _breaks, settings=hypothesis.settings(\n"
@@ -85,7 +102,7 @@ def _hypothesis_script(function: FunctionRef, spec: Spec, max_examples: int) -> 
         "    elif len(_winner) == 1:\n"
         "        _winner_arguments = repr(_winner[0])\n"
         "    else:\n"
-        "        _winner_arguments = repr(_winner)\n"
+        "        _winner_arguments = ', '.join(repr(_value) for _value in _winner)\n"
         f"    print({_MARKER!r} + json.dumps({{'arguments': _winner_arguments}}))\n"
     )
     return "\n".join(chunk.rstrip("\n") for chunk in chunks) + "\n"
@@ -115,25 +132,39 @@ def _probe_script(function: FunctionRef, spec: Spec, candidate: str) -> str:
     the spec has a precondition). Arguments bind through ``_split`` (as in the generated test), so keyword
     arguments stay valid Python. The marker payload carries ``pre_holds`` and ``breaks``: a ``target`` that
     raises on a pre-holding input breaks, while a ``spec`` (or ``pre``) that raises means no break (or a
-    pre that does not hold).
+    pre that does not hold). The script always prints exactly one marker line: a candidate whose own
+    evaluation raises is reported as no break, so a missing marker means the sandbox setup itself failed.
+    The spec is called through ``inspect`` so ``result`` may sit anywhere in its signature.
     """
     chunks = [target_loader(function), spec.predicate]
     if spec.precondition is not None:
         chunks.append(spec.precondition)
-        pre_check = (
-            "try:\n"
-            f"    _pos, _kw = _split({candidate})\n"
-            "    _pre_holds = bool(pre(*_pos, **_kw))\n"
-            "except Exception:\n"
-            "    _pre_holds = False\n"
-        )
-    else:
-        pre_check = f"_pos, _kw = _split({candidate})\n_pre_holds = True\n"
     chunks.append(
+        "import inspect\n"
         "import json\n"
         "def _split(*args, **kwargs):\n"
         "    return args, kwargs\n"
-        + pre_check
+        "def _call_bound(_fn, _sig, _binding):\n"
+        "    _posonly = [n for n, p in _sig.parameters.items()"
+        " if p.kind is inspect.Parameter.POSITIONAL_ONLY]\n"
+        "    _pos = tuple(_binding[n] for n in _posonly)\n"
+        "    _kw = {n: v for n, v in _binding.items() if n not in _posonly and n in _sig.parameters}\n"
+        "    return _fn(*_pos, **_kw)\n"
+        "_t_sig = inspect.signature(target)\n"
+        "_s_sig = inspect.signature(spec)\n"
+        "_t_pos = [n for n, p in _t_sig.parameters.items() if p.kind in"
+        " (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)]\n"
+        "def _spec_at(_pos, _kw, _result):\n"
+        "    _binding = dict(zip(_t_pos, _pos))\n"
+        "    _binding.update(_kw)\n"
+        "    _binding['result'] = _result\n"
+        "    return _call_bound(spec, _s_sig, _binding)\n"
+        "try:\n"
+        f"    _pos, _kw = _split({candidate})\n"
+        + ("    _pre_holds = bool(pre(*_pos, **_kw))\n" if spec.precondition is not None else "    _pre_holds = True\n")
+        + "except Exception:\n"
+        + "    _pos, _kw = (), {}\n"
+        + "    _pre_holds = False\n"
         + "if not _pre_holds:\n"
         + f"    print({_MARKER!r} + json.dumps({{'pre_holds': False, 'breaks': False}}))\n"
         + "else:\n"
@@ -143,13 +174,18 @@ def _probe_script(function: FunctionRef, spec: Spec, candidate: str) -> str:
         + f"        print({_MARKER!r} + json.dumps({{'pre_holds': True, 'breaks': True}}))\n"
         + "    else:\n"
         + "        try:\n"
-        + "            _probe_ok = spec(*_pos, _probe_result, **_kw)\n"
+        + "            _probe_ok = _spec_at(_pos, _kw, _probe_result)\n"
         + "        except Exception:\n"
         + f"            print({_MARKER!r} + json.dumps({{'pre_holds': True, 'breaks': False}}))\n"
         + "        else:\n"
         + f"            print({_MARKER!r} + json.dumps({{'pre_holds': True, 'breaks': bool(not _probe_ok)}}))\n"
     )
     return "\n".join(chunk.rstrip("\n") for chunk in chunks) + "\n"
+
+
+def _has_marker(stdout: str) -> bool:
+    """Whether ``stdout`` holds at least one marker line."""
+    return any(line.startswith(_MARKER) for line in stdout.splitlines())
 
 
 def _parse_probe(stdout: str) -> tuple[bool, bool]:
@@ -240,22 +276,36 @@ def search(
 
     Hypothesis runs first in a single sandbox script (``cwd=repo_root``) with ``config.hypothesis_examples``
     examples drawn from ``pcc.sandbox.strategies_source``. When it finds a break, that winner is built into a
-    counterexample immediately and the model is never called (first break wins). Otherwise the model is asked
+    counterexample immediately and the model is never called (first break wins). A Hypothesis script that
+    crashes (a missing marker with a non-zero exit or a timeout) raises ``ToolError`` instead of silently
+    moving on; a clean run with no winner moves on to the model phase. Otherwise the model is asked
     exactly once for up to ``config.model_inputs`` suspicious argument tuples; each is validated with
     ``ast.parse`` (unparseable proposals are skipped) and replayed in its own sandbox run, and the first one
-    where ``pre`` holds and ``spec`` is false wins. A ``ToolError`` from the sandbox or the client passes
+    where ``pre`` holds and ``spec`` is false wins. A probe script that produces no marker means the sandbox
+    setup itself failed and raises ``ToolError``. A ``ToolError`` from the sandbox or the client passes
     through.
     """
     outcome = run_python(_hypothesis_script(function, spec, config.hypothesis_examples), cwd=repo_root)
     winner = _parse_winner(outcome.stdout)
     if winner is not None:
         return build(function, spec, repo_root, winner)
+    if outcome.returncode != 0 or outcome.timed_out:
+        raise ToolError(
+            "counterexample Hypothesis run produced no result "
+            f"(exit {outcome.returncode}, timed out {outcome.timed_out}): {outcome.stderr.strip()}"
+        )
     for candidate in _model_candidates(function, spec, failed_clause, client, model, config):
         try:
             ast.parse(f"target({candidate})", mode="eval")
         except SyntaxError:
             continue
-        pre_holds, breaks = _parse_probe(run_python(_probe_script(function, spec, candidate), cwd=repo_root).stdout)
+        probe = run_python(_probe_script(function, spec, candidate), cwd=repo_root)
+        if not _has_marker(probe.stdout):
+            raise ToolError(
+                "counterexample probe produced no result "
+                f"(exit {probe.returncode}, timed out {probe.timed_out}): {probe.stderr.strip()}"
+            )
+        pre_holds, breaks = _parse_probe(probe.stdout)
         if pre_holds and breaks:
             return build(function, spec, repo_root, candidate)
     return None
