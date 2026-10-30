@@ -218,7 +218,8 @@ def test_verifier_signatures() -> None:
         [("dafny_code", POS, NoDefault), ("timeout_seconds", KWO, 120.0)],
         tuple[DafnyError, ...],
     )
-    sig = assert_sig(
+    # verify is implemented (issue #20); only its signature stays locked here.
+    assert_sig(
         verify,
         [
             ("dafny_code", POS, NoDefault),
@@ -229,7 +230,6 @@ def test_verifier_signatures() -> None:
         ],
         VerifyOutcome,
     )
-    assert_raises(verify, sig)
     sig = assert_sig(
         build_python,
         [("dafny_code", POS, NoDefault), ("out_dir", POS, NoDefault)],
