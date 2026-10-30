@@ -17,7 +17,7 @@ from pcc.transpile.types import function_parameters, function_return_type, renam
 #: The constructs spec mode supports. The translator below implements exactly these; anything else raises
 #: ``UnsupportedConstruct``. Expression rules: comparisons, ``and``/``or``/``not``, ``+``/``-``/``*``,
 #: ``//``/``%`` (through ``py_floordiv``/``py_mod``), ``a if c else b``, ``len``, indexing, ``[::-1]`` (through
-#: ``py_reversed``), ``in`` on lists, ``len`` and calls to ``all``/``any``/``range`` only as quantifiers.
+#: ``py_reversed``), ``in`` on lists, and calls to ``all``/``any``/``range`` only as quantifiers.
 SPEC_CONSTRUCTS = frozenset(
     {
         "FunctionDef",
@@ -82,6 +82,19 @@ _CMP_SYMBOLS: dict[type[ast.cmpop], str] = {
     ast.LtE: "<=",
     ast.Gt: ">",
     ast.GtE: ">=",
+    ast.In: "in",
+    ast.NotIn: "not in",
+    ast.Is: "is",
+    ast.IsNot: "is not",
+}
+
+_BINOP_SYMBOLS: dict[type[ast.operator], str] = {
+    ast.BitAnd: "&",
+    ast.BitOr: "|",
+    ast.BitXor: "^",
+    ast.LShift: "<<",
+    ast.RShift: ">>",
+    ast.MatMult: "@",
 }
 
 _PURE_COMPARE = (ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE)
@@ -284,7 +297,8 @@ def _emit_binop(node: ast.BinOp, scope: Scope, types: dict[str, str]) -> str:
     elif isinstance(node.op, ast.Pow):
         raise UnsupportedConstruct("operator **")
     else:
-        raise UnsupportedConstruct(f"operator {ast.unparse(node.op)}")
+        symbol = _BINOP_SYMBOLS.get(type(node.op), type(node.op).__name__)
+        raise UnsupportedConstruct(f"operator {symbol}")
     left = _emit(node.left, scope, types)
     if _precedence(node.left) < level:
         left = f"({left})"
@@ -316,7 +330,8 @@ def _emit_compare(node: ast.Compare, scope: Scope, types: dict[str, str]) -> str
         return _emit_membership(node, scope, types)
     if any(not isinstance(op, _PURE_COMPARE) for op in node.ops):
         bad = next(op for op in node.ops if not isinstance(op, _PURE_COMPARE))
-        raise UnsupportedConstruct(f"operator {_CMP_SYMBOLS.get(type(bad), ast.unparse(bad))}")
+        symbol = _CMP_SYMBOLS.get(type(bad), type(bad).__name__)
+        raise UnsupportedConstruct(f"operator {symbol}")
     parts = [_comparison_operand(node.left, scope, types)]
     for op, comparator in zip(node.ops, node.comparators, strict=True):
         assert isinstance(op, _PURE_COMPARE)
@@ -341,7 +356,7 @@ def _emit_membership(node: ast.Compare, scope: Scope, types: dict[str, str]) -> 
 
 
 def _branch_text(node: ast.AST, scope: Scope, types: dict[str, str]) -> str:
-    """A branch of ``if``/``forall``/``exists``: parentheses unless it is one atomic expression."""
+    """One part of an ``if``-expression: parentheses unless it is one atomic expression."""
     text = _emit(node, scope, types)
     if not _is_atomic(node) or _is_quantifier(node):
         return f"({text})"

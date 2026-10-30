@@ -162,6 +162,21 @@ def test_membership_not_in_on_list() -> None:
     )
 
 
+def test_is_comparison_raises_operator() -> None:
+    predicate = "def spec(xs, result):\n    return result is None\n"
+    with pytest.raises(UnsupportedConstruct) as excinfo:
+        transpile_spec(make_spec(ALL_FUNCTION, predicate))
+    assert excinfo.value.construct == "operator is"
+
+
+def test_bitwise_operator_raises() -> None:
+    predicate = "def spec(a, b, result):\n    return result == (a & b)\n"
+    function = "def f(a: int, b: int) -> int:\n    return a & b\n"
+    with pytest.raises(UnsupportedConstruct) as excinfo:
+        transpile_spec(make_spec(function, predicate))
+    assert excinfo.value.construct == "operator &"
+
+
 def test_sorted_call_raises() -> None:
     predicate = "def spec(xs, result):\n    return result == sorted(xs)\n"
     with pytest.raises(UnsupportedConstruct) as excinfo:
