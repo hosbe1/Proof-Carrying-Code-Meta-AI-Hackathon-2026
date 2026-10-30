@@ -1,8 +1,8 @@
 """What Dafny 4.11 does with each cheat form that the anti-cheat scan must catch.
 
-This documents Dafny's behaviour, not ``pcc.verifier.anti_cheat``, which is not built yet. The fixtures in ``cheats/``
-are the inputs its tests will use. Exit code 0 means verified; 2 means only warnings, which are not verified without
-``--allow-warnings`` (never passed); 4 means verification errors.
+This documents Dafny's behaviour; ``pcc.verifier.anti_cheat`` must catch every form below.
+The fixtures in ``cheats/`` are the inputs its tests use. Exit code 0 means verified; 2 means only warnings, which are
+not verified without ``--allow-warnings`` (never passed); 4 means verification errors.
 """
 
 from __future__ import annotations
@@ -30,6 +30,11 @@ CHEATS_DIR = Path(__file__).parent / "cheats"
         ("verify_false.dfy", 2),  # {:verify false}: warning only
         ("only.dfy", 2),  # {:only}: warning only
         ("extern.dfy", 2),  # {:extern} on a body-less method: warning only
+        ("expect.dfy", 0),  # expect is only checked at run time; verifies silently
+        ("decreases_star.dfy", 0),  # decreases *: no termination check; verifies silently
+        ("termination_false.dfy", 0),  # {:termination false} on terminating code verifies; only the scan catches it
+        ("resource_limit.dfy", 0),  # resource limit overrides verify; only the scan catches them
+        ("selective_checking.dfy", 0),  # {:selective_checking} verifies with exit 0; only the scan catches it
     ],
 )
 def test_dafny_exit_code_for_each_cheat_form(fixture: str, exit_code: int) -> None:

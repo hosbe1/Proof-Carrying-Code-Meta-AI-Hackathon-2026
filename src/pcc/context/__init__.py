@@ -2,16 +2,8 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
+from pcc.context.collect import collect
+from pcc.context.github import github_evidence
 from pcc.context.search import search_further
-from pcc.core import Context, FunctionRef
 
-
-def collect(function: FunctionRef, repo_root: Path) -> Context:
-    """Fixed collector: name, signature, type hints, docstring, comments, tests, call sites, commit history,
-    pull request description, linked issues, README and docs. Deterministic, no model calls."""
-    raise NotImplementedError
-
-
-__all__ = ["collect", "search_further"]
+__all__ = ["collect", "github_evidence", "search_further"]

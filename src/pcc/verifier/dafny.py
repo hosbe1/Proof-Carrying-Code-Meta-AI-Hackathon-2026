@@ -1,12 +1,35 @@
-"""Running the Dafny CLI: verifying, compiling back to Python, parsing errors. Filled in by a later ticket."""
+"""Running the Dafny CLI: resolving, verifying, compiling back to Python.
+
+``resolve`` and the run helper below are used now; ``verify`` and ``build_python`` are filled in by
+later tickets.
+"""
 
 from __future__ import annotations
 
+import re
+import shutil
+import subprocess
+import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from pcc.core import DafnyError
+from pcc.config import Config
+from pcc.core import DafnyError, ToolError
+from pcc.pylib import PYLIB_FILE
+from pcc.verifier.errors import parse_errors
+
+#: ``dafny_code`` is written to this file in the temporary directory ``dafny resolve`` runs in.
+_MAIN_NAME = "main.dfy"
+
+#: ``PyLib.dfy`` is copied under this name next to it, so the checked code can include it.
+_PYLIB_NAME = "PyLib.dfy"
+
+#: Bound on ``dafny --version``: it must answer quickly or the CLI is broken.
+_VERSION_TIMEOUT_SECONDS = 60.0
+
+#: Cap on the fallback error text when ``dafny resolve`` fails without parseable errors.
+_MAX_FALLBACK_CHARS = 500
 
 
 @dataclass(frozen=True, slots=True)
@@ -17,8 +40,32 @@ class VerifyOutcome:
 
 
 def resolve(dafny_code: str, *, timeout_seconds: float = 120.0) -> tuple[DafnyError, ...]:
-    """Parse the errors Dafny reports for ``dafny_code``, without deciding verified or not."""
-    raise NotImplementedError
+    """Run ``dafny resolve`` on ``dafny_code`` with a copy of ``PyLib.dfy`` and parse the errors.
+
+    ``dafny_code`` is written to ``main.dfy`` in a temporary directory next to a copy of
+    ``PyLib.dfy``, and ``dafny resolve main.dfy PyLib.dfy`` runs there. An empty result means the
+    code resolves. A process stopped by the timeout gives
+    ``(DafnyError(0, 0, "timeout after <n> s"),)``. When Dafny fails without parseable errors, the
+    result is a single ``DafnyError`` at (0, 0) with Dafny's output, so a failure never looks like a
+    clean resolve.
+
+    Raises ``ToolError`` when the dafny CLI is not on ``PATH`` or ``dafny --version`` does not
+    report ``Config().dafny.version``.
+    """
+    _require_dafny()
+    with tempfile.TemporaryDirectory(prefix="pcc-resolve-") as tmp:
+        root = Path(tmp)
+        (root / _MAIN_NAME).write_text(dafny_code, encoding="utf-8")
+        shutil.copy(PYLIB_FILE, root / _PYLIB_NAME)
+        try:
+            proc = _run_dafny(["resolve", _MAIN_NAME, _PYLIB_NAME], timeout_seconds=timeout_seconds, cwd=root)
+        except subprocess.TimeoutExpired:
+            return (DafnyError(0, 0, f"timeout after {timeout_seconds:g} s"),)
+        errors = parse_errors(proc.stdout)
+        if proc.returncode != 0 and not errors:
+            detail = (proc.stderr or proc.stdout).strip() or (f"dafny resolve exited with code {proc.returncode}")
+            errors = (DafnyError(0, 0, detail[:_MAX_FALLBACK_CHARS]),)
+        return errors
 
 
 def verify(
@@ -51,6 +98,45 @@ def verify(
 def build_python(dafny_code: str, out_dir: Path) -> Path:
     """Compile ``dafny_code`` with ``dafny build --target:py`` into ``out_dir`` and return the module directory."""
     raise NotImplementedError
+
+
+def _run_dafny(args: Sequence[str], *, timeout_seconds: float | None, cwd: Path) -> subprocess.CompletedProcess[str]:
+    """Run ``dafny <args>`` in ``cwd`` and return the completed process.
+
+    The shared helper for ``resolve`` now and ``verify`` (issue #20) later: Dafny's diagnostics are
+    decoded as UTF-8 with replacement, and ``timeout_seconds`` bounds the whole run.
+    """
+    return subprocess.run(
+        ["dafny", *args],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout_seconds,
+        cwd=str(cwd),
+        check=False,
+    )
+
+
+def _require_dafny() -> None:
+    """Raise ``ToolError`` unless ``dafny --version`` reports ``Config().dafny.version``."""
+    expected = Config().dafny.version
+    try:
+        proc = _run_dafny(["--version"], timeout_seconds=_VERSION_TIMEOUT_SECONDS, cwd=Path.cwd())
+    except OSError as error:
+        raise ToolError(f"dafny CLI is not on PATH; install Dafny {expected}") from error
+    except subprocess.TimeoutExpired as error:
+        raise ToolError(f"dafny --version timed out; install Dafny {expected}") from error
+    reported = _release_of(proc.stdout) if proc.returncode == 0 else None
+    if reported != expected:
+        shown = (proc.stdout or proc.stderr).strip() or "no output"
+        raise ToolError(f"dafny --version reports {shown!r}, expected Dafny {expected}; install Dafny {expected}")
+
+
+def _release_of(output: str) -> str | None:
+    """The release number in ``dafny --version`` output, without a build suffix such as ``+abc123``."""
+    match = re.search(r"(\d+(?:\.\d+)+)(?:\+\S*)?", output)
+    return match.group(1) if match else None
 
 
 __all__ = ["VerifyOutcome", "build_python", "resolve", "verify"]

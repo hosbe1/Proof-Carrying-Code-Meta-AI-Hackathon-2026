@@ -5,10 +5,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from pcc.evaluation.datasets import Task, fetch, load, make_splits, split
+
 
 def run(dataset: str, split: str, out_dir: Path) -> Path:
     """Run the pipeline on one dataset split and write a metrics report; return its path."""
     raise NotImplementedError
 
 
-__all__ = ["run"]
+__all__ = ["Task", "fetch", "load", "make_splits", "run", "split"]
