@@ -1,10 +1,9 @@
-"""Running the Dafny CLI: resolving, verifying, compiling back to Python.
-
-``resolve`` and ``verify`` run the Dafny CLI; ``build_python`` is filled in by a later ticket.
-"""
+"""Running the Dafny CLI: resolving, verifying, compiling back to Python."""
 
 from __future__ import annotations
 
+import builtins
+import keyword
 import re
 import shutil
 import subprocess
@@ -15,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from pcc.config import Config
-from pcc.core import DafnyError, ToolError
+from pcc.core import DafnyError, NotCheckable, ToolError
 from pcc.pylib import PYLIB_FILE
 from pcc.verifier.anti_cheat import anti_cheat
 from pcc.verifier.errors import parse_errors
@@ -34,6 +33,12 @@ _VERSION_TIMEOUT_SECONDS = 60.0
 
 #: Cap on the fallback error text when ``dafny resolve`` fails without parseable errors.
 _MAX_FALLBACK_CHARS = 500
+
+#: Names the Dafny Python backend escapes by appending ``_``: Python keywords and builtins.
+_PYTHON_RESERVED = frozenset(keyword.kwlist) | frozenset(dir(builtins))
+
+#: The fixed output stem for ``build_python`` inside ``out_dir``.
+_BUILD_STEM = "m"
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,9 +155,78 @@ def _cheat_errors(dafny_code: str, assumptions_module: str) -> tuple[DafnyError,
     return tuple(found)
 
 
+def python_name(dafny_name: str) -> str:
+    """The Python name the Dafny ``--target:py`` backend emits for ``dafny_name``.
+
+    Every ``_`` becomes ``__`` and every ``'`` becomes ``_k``; a result that is a Python keyword
+    or builtin then gets a trailing ``_``. A compiled method is reached as
+    ``<module_name>.default__.<python_name(method)>``, where both names are escaped this way.
+    """
+
+    escaped = dafny_name.replace("_", "__").replace("'", "_k")
+    if escaped in _PYTHON_RESERVED:
+        return escaped + "_"
+    return escaped
+
+
 def build_python(dafny_code: str, out_dir: Path) -> Path:
-    """Compile ``dafny_code`` with ``dafny build --target:py`` into ``out_dir`` and return the module directory."""
-    raise NotImplementedError
+    """Compile ``dafny_code`` with ``dafny build --target:py`` and return the generated module directory.
+
+    ``dafny_code`` is written to ``main.dfy`` in a temporary directory next to a copy of
+    ``PyLib.dfy``, and ``dafny build --target:py --no-verify --output <out_dir>/m main.dfy
+    PyLib.dfy`` runs there. ``--no-verify`` means code that does not verify still compiles.
+    The result is ``<out_dir>/m-py``, the directory holding the generated modules, ready to put
+    on ``sys.path``.
+
+    ``out_dir`` is created when missing; when it exists and is not empty, it is cleared first.
+    A compiled method is reached as ``<module_name>.default__.<python_name(method)>``.
+
+    Raises ``NotCheckable("translation does not compile: <first error>")`` when the build
+    fails, where ``<first error>`` is the first parsed Dafny diagnostic. Only a missing or
+    wrong-version ``dafny`` raises ``ToolError``.
+    """
+    _require_dafny()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    _clear_dir(out_dir)
+    output = out_dir / _BUILD_STEM
+    with tempfile.TemporaryDirectory(prefix="pcc-build-python-") as tmp:
+        root = Path(tmp)
+        (root / _MAIN_NAME).write_text(dafny_code, encoding="utf-8")
+        shutil.copy(PYLIB_FILE, root / _PYLIB_NAME)
+        proc = _run_dafny(
+            [
+                "build",
+                "--target:py",
+                "--no-verify",
+                "--output",
+                str(output.resolve()),
+                _MAIN_NAME,
+                _PYLIB_NAME,
+            ],
+            timeout_seconds=None,
+            cwd=root,
+        )
+    if proc.returncode != 0:
+        errors = parse_errors(proc.stdout)
+        if errors:
+            first = errors[0]
+            detail = f"line {first.line}, column {first.column}: {first.message}"
+        else:
+            detail = (proc.stderr or proc.stdout).strip() or f"dafny build exited with code {proc.returncode}"
+            detail = detail[:_MAX_FALLBACK_CHARS]
+        raise NotCheckable(f"translation does not compile: {detail}")
+    return out_dir / f"{_BUILD_STEM}-py"
+
+
+def _clear_dir(path: Path) -> None:
+    """Remove every entry inside ``path`` without removing ``path`` itself."""
+    for child in path.iterdir():
+        if child.is_symlink() or child.is_file():
+            child.unlink()
+        elif child.is_dir():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
 
 
 def _run_dafny(args: Sequence[str], *, timeout_seconds: float | None, cwd: Path) -> subprocess.CompletedProcess[str]:
@@ -194,4 +268,4 @@ def _release_of(output: str) -> str | None:
     return match.group(1) if match else None
 
 
-__all__ = ["VerifyOutcome", "build_python", "resolve", "verify"]
+__all__ = ["VerifyOutcome", "build_python", "python_name", "resolve", "verify"]
