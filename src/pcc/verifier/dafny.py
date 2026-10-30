@@ -104,7 +104,11 @@ def verify(
       unverified, even when Dafny exits 0 (Dafny 4.11 verifies ``{:axiom}`` and ``@Axiom`` silently).
     - When Dafny exits non-zero without parseable errors, the result is a single ``DafnyError`` at (0, 0) with
       Dafny's output, so a failure never looks like a clean verify.
-    - ``extra_modules`` is reserved for callee modules (a later ticket); it is accepted but not used here.
+    - ``extra_modules`` holds complete, already-checked callee modules. Each entry is written to ``dep<i>.dfy``
+      (``dep0.dfy``, ``dep1.dfy``, ...) in the same directory and passed to Dafny after ``main.dfy`` and
+      ``PyLib.dfy``, in order. The caller's ``imports`` entries name the modules declared there, so Dafny links the
+      caller against the proven callee specs. ``anti_cheat`` still runs on ``dafny_code`` only, because the extra
+      modules are already-checked certificates.
     - ``seconds`` is the elapsed wall-clock time of this invocation, including the subprocess and the anti-cheat scan.
 
     Raises ``ToolError`` when the dafny CLI is not on ``PATH`` or ``dafny --version`` does not
@@ -112,10 +116,13 @@ def verify(
     """
     started = time.perf_counter()
     _require_dafny()
+    dep_names = [f"dep{i}.dfy" for i in range(len(extra_modules))]
     with tempfile.TemporaryDirectory(prefix="pcc-verify-") as tmp:
         root = Path(tmp)
         (root / _MAIN_NAME).write_text(dafny_code, encoding="utf-8")
         shutil.copy(PYLIB_FILE, root / _PYLIB_NAME)
+        for dep_name, module_text in zip(dep_names, extra_modules, strict=True):
+            (root / dep_name).write_text(module_text, encoding="utf-8")
         try:
             proc = _run_dafny(
                 [
@@ -126,6 +133,7 @@ def verify(
                     "0",
                     _MAIN_NAME,
                     _PYLIB_NAME,
+                    *dep_names,
                 ],
                 timeout_seconds=timeout_seconds,
                 cwd=root,

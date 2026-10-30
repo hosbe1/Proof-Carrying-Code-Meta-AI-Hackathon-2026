@@ -2,8 +2,8 @@
 
 Every Dafny file the pipeline produces has the same shape: one module named after the function, opening ``PyLib``,
 with the translated spec, the proof lemmas and the translated function. The module name is unique per function, so all
-certificates verify together as one project. ``imports`` stays empty until callees land; it only keeps the signature
-stable for them.
+certificates verify together as one project. ``imports`` holds the callee module names the caller uses; each one
+becomes an ``import <name>`` line after ``import opened PyLib``.
 """
 
 from __future__ import annotations
@@ -60,12 +60,17 @@ def assemble(
 ) -> str:
     """The complete Dafny source that ``dafny verify`` checks for ``function``.
 
-    The file holds one module named by :func:`module_name` that opens ``PyLib``, then the translated spec, the proof
-    lemmas (skipped when empty, so no blank lemma section remains) and the translated function, each indented by two
-    spaces. There is no ``include`` line: ``PyLib.dfy`` is passed to Dafny as a second file.
+    The file holds one module named by :func:`module_name` that opens ``PyLib``, then one ``import <name>`` line
+    per entry of ``imports`` (deduplicated, order-preserving), then the translated spec, the proof lemmas (skipped
+    when empty, so no blank lemma section remains) and the translated function, each indented by two spaces. There is
+    no ``include`` line: ``PyLib.dfy`` is passed to Dafny as a second file.
     """
-    _ = imports  # Callee modules fill this in; until then the file only opens PyLib.
     parts = [f"module {module_name(function)} {{", "  import opened PyLib"]
+    seen: set[str] = set()
+    for name in imports:
+        if name not in seen:
+            seen.add(name)
+            parts.append(f"  import {name}")
     for block in (dafny_spec, lemmas, dafny_function):
         if block:
             parts.append(_indent(block))
