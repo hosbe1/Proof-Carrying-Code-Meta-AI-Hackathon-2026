@@ -3,8 +3,8 @@
 What the transpiler supports, it translates exactly; anything else raises
 ``UnsupportedConstruct`` and the pipeline falls back to AI translation.
 
-Supported subset (this ticket; spec mode, project calls, loops and mutated
-lists live in later tickets):
+Supported subset (this ticket; project calls, loops and mutated lists live in later
+tickets; spec mode lives in ``pcc.transpile.spec``):
 
 - Types: ``int`` to ``int``, ``bool`` to ``bool``, ``str`` to ``string``, ``list[T]``
   and ``typing.List[T]`` to ``seq<T>`` (only when never mutated; see below). ``tuple``
@@ -50,7 +50,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 
-from pcc.core import FunctionRef, Spec, UnsupportedConstruct
+from pcc.core import FunctionRef, UnsupportedConstruct
 from pcc.transpile.types import dafny_type
 from pcc.verifier.layout import method_name
 
@@ -1562,9 +1562,4 @@ def transpile_function(function: FunctionRef, *, callees: Mapping[str, str] = Ma
     return "\n".join([*header, *body, "}"])
 
 
-def transpile_spec(spec: Spec) -> str:
-    """Spec mode: logical Dafny (``forall``/``exists`` instead of loops) as ``requires``/``ensures`` clauses."""
-    raise NotImplementedError
-
-
-__all__ = ["MUTATING_METHODS", "RESERVED", "translate_expr", "transpile_function", "transpile_spec"]
+__all__ = ["MUTATING_METHODS", "RESERVED", "translate_expr", "transpile_function"]
