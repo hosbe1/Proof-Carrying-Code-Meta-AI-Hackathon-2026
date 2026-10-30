@@ -98,7 +98,7 @@ class DafnyConfig:  # step 5: the Dafny release CI verifies with
 @dataclass(frozen=True, slots=True)
 class PipelineConfig:  # pipeline: how steps 1-7 run, including the step 1 search agent
     workers: int = 4  # pipeline: parallel workers over functions
-    search_agent: bool = False  # step 1: let the agent search further when the intent is unclear
+    search_agent: bool = True  # step 1: let the agent search further when the intent is unclear
 
 
 @dataclass(frozen=True, slots=True)
