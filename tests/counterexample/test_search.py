@@ -32,6 +32,11 @@ PALINDROME_CLAUSE = "result == (s == s[::-1])"
 GREET_SOURCE = 'def greet(name: str) -> str:\n    return "hi " + name if name != "boom" else "BANG"\n'
 GREET_PREDICATE = 'def spec(name, result):\n    return result == "hi " + name\n'
 
+#: A greeter whose only spec break needs a 32-character name, beyond the 20-character
+#: Hypothesis strategy: the Hypothesis phase can never win, so the model phase always decides.
+LONG_GREET_SOURCE = 'def greet(name: str) -> str:\n    return "hi " + name if name != "boom" * 8 else "BANG"\n'
+LONG_BREAK = "'boom' * 8"
+
 PRE_NONEMPTY = "def pre(s):\n    return len(s) > 0\n"
 
 
@@ -113,24 +118,25 @@ def test_buggy_function_found_via_hypothesis_without_model_call(tmp_path: Path) 
 
 
 def test_unparseable_model_proposal_is_skipped(tmp_path: Path) -> None:
-    write_module(tmp_path, "greeter.py", GREET_SOURCE)
-    function = function_ref(source=GREET_SOURCE, path="greeter.py", qualname="greet", lineno=1)
+    write_module(tmp_path, "greeter.py", LONG_GREET_SOURCE)
+    function = function_ref(source=LONG_GREET_SOURCE, path="greeter.py", qualname="greet", lineno=1)
     spec = Spec(function=function, predicate=GREET_PREDICATE)
-    client = FakeClient([json.dumps({"inputs": ["convincing but ((", "'boom'"]})])
+    client = FakeClient([json.dumps({"inputs": ["convincing but ((", LONG_BREAK]})])
 
     found = search(
         function, spec, tmp_path, failed_clause=None, client=client, model="test-model", config=make_config(20)
     )
 
     assert found is not None
-    assert found.arguments == "'boom'"
+    assert found.arguments == LONG_BREAK
+    assert len(client.calls) == 1
 
 
 def test_model_inputs_truncates_candidates(tmp_path: Path) -> None:
-    write_module(tmp_path, "greeter.py", GREET_SOURCE)
-    function = function_ref(source=GREET_SOURCE, path="greeter.py", qualname="greet", lineno=1)
+    write_module(tmp_path, "greeter.py", LONG_GREET_SOURCE)
+    function = function_ref(source=LONG_GREET_SOURCE, path="greeter.py", qualname="greet", lineno=1)
     spec = Spec(function=function, predicate=GREET_PREDICATE)
-    client = FakeClient([json.dumps({"inputs": ["'aaa'", "'bbb'", "'boom'"]})])
+    client = FakeClient([json.dumps({"inputs": ["'aaa'", "'bbb'", LONG_BREAK]})])
 
     found = search(
         function,
@@ -143,6 +149,7 @@ def test_model_inputs_truncates_candidates(tmp_path: Path) -> None:
     )
 
     assert found is None
+    assert len(client.calls) == 1
 
 
 @pytest.mark.parametrize(
@@ -155,13 +162,16 @@ def test_model_inputs_truncates_candidates(tmp_path: Path) -> None:
     ],
 )
 def test_malformed_model_answer_raises_value_error(tmp_path: Path, answer: str) -> None:
-    write_module(tmp_path, "greeter.py", GREET_SOURCE)
-    function = function_ref(source=GREET_SOURCE, path="greeter.py", qualname="greet", lineno=1)
-    spec = Spec(function=function, predicate=GREET_PREDICATE)
+    # The correct palindrome never breaks the spec, so Hypothesis can never win and the
+    # model phase (which raises ValueError on the malformed answer) is always reached.
+    write_module(tmp_path, "strings/palindrome.py", CORRECT_PALINDROME)
+    function = make_palindrome(buggy=False)
+    spec = Spec(function=function, predicate=PALINDROME_PREDICATE)
     client = FakeClient([answer])
 
     with pytest.raises(ValueError):
-        search(function, spec, tmp_path, failed_clause=None, client=client, model="test-model", config=make_config(20))
+        search(function, spec, tmp_path, failed_clause=None, client=client, model="test-model", config=make_config())
+    assert len(client.calls) == 1
 
 
 def test_tool_error_from_client_passes_through(tmp_path: Path) -> None:
