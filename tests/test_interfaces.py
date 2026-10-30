@@ -318,7 +318,8 @@ def test_spec_signatures() -> None:
         ],
         Spec,
     )
-    sig = assert_sig(
+    # check is implemented (issue #54); only its signature is locked here.
+    assert_sig(
         pcc.spec.check,
         [
             ("spec", POS, NoDefault),
@@ -330,8 +331,8 @@ def test_spec_signatures() -> None:
         ],
         Spec,
     )
-    assert_raises(pcc.spec.check, sig)
-    sig = assert_sig(
+    # spec_cases is implemented (issue #54); only its signature is locked here.
+    assert_sig(
         pcc.spec.spec_cases,
         [
             ("spec", POS, NoDefault),
@@ -341,7 +342,6 @@ def test_spec_signatures() -> None:
         ],
         tuple[tuple[str, str], ...],
     )
-    assert_raises(pcc.spec.spec_cases, sig)
 
 
 def test_equivalence_signatures() -> None:
