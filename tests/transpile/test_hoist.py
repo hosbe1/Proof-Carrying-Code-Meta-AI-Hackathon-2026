@@ -157,6 +157,30 @@ def test_call_in_shortcircuit_nested_in_binop_under_return_raises() -> None:
     )
 
 
+def test_nested_or_under_and_raises() -> None:
+    check_unsupported(
+        "def f(x: bool, y: bool) -> bool:\n    return (x or f(x, y)) and y\n",
+        "call in short-circuit",
+        lineno=2,
+    )
+
+
+def test_nested_and_under_or_raises() -> None:
+    check_unsupported(
+        "def f(x: bool, y: bool) -> bool:\n    return (x and f(x, y)) or y\n",
+        "call in short-circuit",
+        lineno=2,
+    )
+
+
+def test_nested_boolop_in_ifexp_condition_raises() -> None:
+    check_unsupported(
+        "def f(x: bool, y: bool) -> bool:\n    return True if (x and f(x, y)) else False\n",
+        "call in short-circuit",
+        lineno=2,
+    )
+
+
 def test_other_project_call_still_rejected() -> None:
     check_unsupported("def f(a: int) -> int:\n    return other(a)\n", "call other", lineno=2)
 

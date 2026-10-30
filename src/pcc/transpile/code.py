@@ -998,7 +998,9 @@ def _emit_and_list(
     first = values[0]
     rest = values[1:]
     if _has_sc_self_call(first, st.func_name, ctx.renames):
-        return _emit_and_left_complex(first, rest, stmt, ctx, st, return_tag, depth=depth)
+        # A nested ``and``/``or``/conditional inside the first operand is not
+        # directly under ``return``, so it is rejected instead of expanded.
+        raise _fail(stmt, "call in short-circuit")
     pre: list[str] = []
     hoisted = _hoist_expr(first, ctx, st, pre)
     if _need(hoisted.tag, first) != _BOOL:
@@ -1011,78 +1013,6 @@ def _emit_and_list(
     lines.extend(_indent(["return false;"], depth + 1))
     lines.append(f"{indented}}}")
     return lines
-
-
-def _emit_and_left_complex(
-    first: ast.expr,
-    rest: list[ast.expr],
-    stmt: ast.Return | ast.If,
-    ctx: _Ctx,
-    st: _HoistState,
-    return_tag: str,
-    *,
-    depth: int,
-) -> list[str]:
-    """``return (complex) and rest`` pushing ``rest`` into the branches of ``first``."""
-    indented = "  " * (depth + 1)
-    if isinstance(first, ast.BoolOp):
-        if isinstance(first.op, ast.Or):
-            inner = list(first.values)
-            if _has_sc_self_call(inner[0], st.func_name, ctx.renames):
-                raise _fail(stmt, "call in short-circuit")
-            pre: list[str] = []
-            head = _hoist_expr(inner[0], ctx, st, pre)
-            if _need(head.tag, inner[0]) != _BOOL:
-                raise _fail(stmt, "non-bool logic")
-            lines = _indent(pre, depth)
-            lines.append(f"{indented}if {head.code} {{")
-            lines.extend(_emit_and_list(rest, stmt, ctx, st, return_tag, depth=depth + 1))
-            lines.append(f"{indented}}} else {{")
-            combined = [*inner[1:], *rest]
-            if len(combined) == 1:
-                lines.extend(_return_expr_lines(combined[0], stmt, ctx, st, return_tag, depth=depth + 1))
-            else:
-                lines.extend(_emit_and_list(combined, stmt, ctx, st, return_tag, depth=depth + 1))
-            lines.append(f"{indented}}}")
-            return lines
-        inner_and = list(first.values)
-        if _has_sc_self_call(inner_and[0], st.func_name, ctx.renames):
-            raise _fail(stmt, "call in short-circuit")
-        pre_and: list[str] = []
-        head_and = _hoist_expr(inner_and[0], ctx, st, pre_and)
-        if _need(head_and.tag, inner_and[0]) != _BOOL:
-            raise _fail(stmt, "non-bool logic")
-        lines_and = _indent(pre_and, depth)
-        lines_and.append(f"{indented}if {head_and.code} {{")
-        combined_and = [*inner_and[1:], *rest]
-        lines_and.extend(_emit_and_list(combined_and, stmt, ctx, st, return_tag, depth=depth + 1))
-        lines_and.append(f"{indented}}} else {{")
-        lines_and.extend(_indent(["return false;"], depth + 1))
-        lines_and.append(f"{indented}}}")
-        return lines_and
-    if isinstance(first, ast.IfExp):
-        if _has_sc_self_call(first.test, st.func_name, ctx.renames):
-            raise _fail(stmt, "call in short-circuit")
-        pre_c: list[str] = []
-        cond = _hoist_expr(first.test, ctx, st, pre_c)
-        if _need(cond.tag, first.test) != _BOOL:
-            raise _fail(stmt, "non-bool condition")
-        lines_c = _indent(pre_c, depth)
-        lines_c.append(f"{indented}if {cond.code} {{")
-        then_combined = [first.body, *rest]
-        if len(then_combined) == 1:
-            lines_c.extend(_return_expr_lines(then_combined[0], stmt, ctx, st, return_tag, depth=depth + 1))
-        else:
-            lines_c.extend(_emit_and_list(then_combined, stmt, ctx, st, return_tag, depth=depth + 1))
-        lines_c.append(f"{indented}}} else {{")
-        else_combined = [first.orelse, *rest]
-        if len(else_combined) == 1:
-            lines_c.extend(_return_expr_lines(else_combined[0], stmt, ctx, st, return_tag, depth=depth + 1))
-        else:
-            lines_c.extend(_emit_and_list(else_combined, stmt, ctx, st, return_tag, depth=depth + 1))
-        lines_c.append(f"{indented}}}")
-        return lines_c
-    raise _fail(stmt, "call in short-circuit")
 
 
 def _emit_or_list(
@@ -1102,7 +1032,9 @@ def _emit_or_list(
     first = values[0]
     rest = values[1:]
     if _has_sc_self_call(first, st.func_name, ctx.renames):
-        return _emit_or_left_complex(first, rest, stmt, ctx, st, return_tag, depth=depth)
+        # A nested ``and``/``or``/conditional inside the first operand is not
+        # directly under ``return``, so it is rejected instead of expanded.
+        raise _fail(stmt, "call in short-circuit")
     pre: list[str] = []
     hoisted = _hoist_expr(first, ctx, st, pre)
     if _need(hoisted.tag, first) != _BOOL:
@@ -1117,81 +1049,6 @@ def _emit_or_list(
     return lines
 
 
-def _emit_or_left_complex(
-    first: ast.expr,
-    rest: list[ast.expr],
-    stmt: ast.Return | ast.If,
-    ctx: _Ctx,
-    st: _HoistState,
-    return_tag: str,
-    *,
-    depth: int,
-) -> list[str]:
-    """``return (complex) or rest`` pushing ``rest`` into the branches of ``first``."""
-    indented = "  " * (depth + 1)
-    if isinstance(first, ast.BoolOp):
-        if isinstance(first.op, ast.Or):
-            inner = list(first.values)
-            if _has_sc_self_call(inner[0], st.func_name, ctx.renames):
-                raise _fail(stmt, "call in short-circuit")
-            pre: list[str] = []
-            head = _hoist_expr(inner[0], ctx, st, pre)
-            if _need(head.tag, inner[0]) != _BOOL:
-                raise _fail(stmt, "non-bool logic")
-            lines = _indent(pre, depth)
-            lines.append(f"{indented}if {head.code} {{")
-            lines.extend(_indent(["return true;"], depth + 1))
-            lines.append(f"{indented}}} else {{")
-            combined = [*inner[1:], *rest]
-            if len(combined) == 1:
-                lines.extend(_return_expr_lines(combined[0], stmt, ctx, st, return_tag, depth=depth + 1))
-            else:
-                lines.extend(_emit_or_list(combined, stmt, ctx, st, return_tag, depth=depth + 1))
-            lines.append(f"{indented}}}")
-            return lines
-        inner_and = list(first.values)
-        if _has_sc_self_call(inner_and[0], st.func_name, ctx.renames):
-            raise _fail(stmt, "call in short-circuit")
-        pre_and: list[str] = []
-        head_and = _hoist_expr(inner_and[0], ctx, st, pre_and)
-        if _need(head_and.tag, inner_and[0]) != _BOOL:
-            raise _fail(stmt, "non-bool logic")
-        lines_and = _indent(pre_and, depth)
-        lines_and.append(f"{indented}if {head_and.code} {{")
-        combined_then = [*inner_and[1:], *rest]
-        if len(combined_then) == 1:
-            lines_and.extend(_return_expr_lines(combined_then[0], stmt, ctx, st, return_tag, depth=depth + 1))
-        else:
-            lines_and.extend(_emit_or_list(combined_then, stmt, ctx, st, return_tag, depth=depth + 1))
-        lines_and.append(f"{indented}}} else {{")
-        lines_and.extend(_emit_or_list(rest, stmt, ctx, st, return_tag, depth=depth + 1))
-        lines_and.append(f"{indented}}}")
-        return lines_and
-    if isinstance(first, ast.IfExp):
-        if _has_sc_self_call(first.test, st.func_name, ctx.renames):
-            raise _fail(stmt, "call in short-circuit")
-        pre_c: list[str] = []
-        cond = _hoist_expr(first.test, ctx, st, pre_c)
-        if _need(cond.tag, first.test) != _BOOL:
-            raise _fail(stmt, "non-bool condition")
-        lines_c = _indent(pre_c, depth)
-        lines_c.append(f"{indented}if {cond.code} {{")
-        then_combined = [first.body, *rest]
-        if len(then_combined) == 1:
-            lines_c.extend(_return_expr_lines(then_combined[0], stmt, ctx, st, return_tag, depth=depth + 1))
-        else:
-            lines_c.extend(_emit_or_list(then_combined, stmt, ctx, st, return_tag, depth=depth + 1))
-        lines_c.append(f"{indented}}} else {{")
-        else_combined = [first.orelse, *rest]
-        if len(else_combined) == 1:
-            lines_c.extend(_return_expr_lines(else_combined[0], stmt, ctx, st, return_tag, depth=depth + 1))
-        else:
-            lines_c.extend(_emit_or_list(else_combined, stmt, ctx, st, return_tag, depth=depth + 1))
-        lines_c.append(f"{indented}}}")
-        return lines_c
-    raise _fail(stmt, "call in short-circuit")
-
-
 def _emit_ifexp(
     node: ast.IfExp,
     stmt: ast.Return | ast.If,
@@ -1203,7 +1060,9 @@ def _emit_ifexp(
 ) -> list[str]:
     """``return a if c else b`` with short-circuit branches expanded."""
     if _has_sc_self_call(node.test, st.func_name, ctx.renames):
-        return _emit_ifexp_complex_cond(node, stmt, ctx, st, return_tag, depth=depth)
+        # A short-circuit call inside the condition is not directly under
+        # ``return``, so it is rejected instead of expanded.
+        raise _fail(stmt, "call in short-circuit")
     pre: list[str] = []
     cond = _hoist_expr(node.test, ctx, st, pre)
     if _need(cond.tag, node.test) != _BOOL:
@@ -1216,77 +1075,6 @@ def _emit_ifexp(
     lines.extend(_return_expr_lines(node.orelse, stmt, ctx, st, return_tag, depth=depth + 1))
     lines.append(f"{indented}}}")
     return lines
-
-
-def _emit_ifexp_complex_cond(
-    node: ast.IfExp,
-    stmt: ast.Return | ast.If,
-    ctx: _Ctx,
-    st: _HoistState,
-    return_tag: str,
-    *,
-    depth: int,
-) -> list[str]:
-    """``return a if (complex) else b`` pushing the branches into the condition."""
-    cond = node.test
-    indented = "  " * (depth + 1)
-    if isinstance(cond, ast.BoolOp):
-        parts = list(cond.values)
-        if _has_sc_self_call(parts[0], st.func_name, ctx.renames):
-            raise _fail(stmt, "call in short-circuit")
-        pre: list[str] = []
-        head = _hoist_expr(parts[0], ctx, st, pre)
-        if _need(head.tag, parts[0]) != _BOOL:
-            raise _fail(stmt, "non-bool logic")
-        lines = _indent(pre, depth)
-        if isinstance(cond.op, ast.And):
-            lines.append(f"{indented}if {head.code} {{")
-            inner: ast.expr = (
-                ast.BoolOp(op=ast.And(), values=parts[1:])
-                if len(parts) > 2
-                else parts[1]
-                if len(parts) == 2
-                else parts[0]
-            )
-            inner_if = ast.IfExp(test=inner, body=node.body, orelse=node.orelse)
-            # Preserve evaluation order: ``A if (X and Y) else B`` is
-            # ``(A if Y else B)`` when ``X`` holds, else ``B``.
-            ast.copy_location(inner_if, node)
-            lines.extend(_return_expr_lines(inner_if, stmt, ctx, st, return_tag, depth=depth + 1))
-            lines.append(f"{indented}}} else {{")
-            lines.extend(_return_expr_lines(node.orelse, stmt, ctx, st, return_tag, depth=depth + 1))
-            lines.append(f"{indented}}}")
-            return lines
-        lines.append(f"{indented}if {head.code} {{")
-        lines.extend(_return_expr_lines(node.body, stmt, ctx, st, return_tag, depth=depth + 1))
-        lines.append(f"{indented}}} else {{")
-        inner_or: ast.expr = (
-            ast.BoolOp(op=ast.Or(), values=parts[1:]) if len(parts) > 2 else parts[1] if len(parts) == 2 else parts[0]
-        )
-        inner_or_if = ast.IfExp(test=inner_or, body=node.body, orelse=node.orelse)
-        ast.copy_location(inner_or_if, node)
-        lines.extend(_return_expr_lines(inner_or_if, stmt, ctx, st, return_tag, depth=depth + 1))
-        lines.append(f"{indented}}}")
-        return lines
-    if isinstance(cond, ast.IfExp):
-        if _has_sc_self_call(cond.test, st.func_name, ctx.renames):
-            raise _fail(stmt, "call in short-circuit")
-        pre_c: list[str] = []
-        inner_cond = _hoist_expr(cond.test, ctx, st, pre_c)
-        if _need(inner_cond.tag, cond.test) != _BOOL:
-            raise _fail(stmt, "non-bool condition")
-        lines_c = _indent(pre_c, depth)
-        lines_c.append(f"{indented}if {inner_cond.code} {{")
-        then_if = ast.IfExp(test=cond.body, body=node.body, orelse=node.orelse)
-        ast.copy_location(then_if, node)
-        lines_c.extend(_return_expr_lines(then_if, stmt, ctx, st, return_tag, depth=depth + 1))
-        lines_c.append(f"{indented}}} else {{")
-        else_if = ast.IfExp(test=cond.orelse, body=node.body, orelse=node.orelse)
-        ast.copy_location(else_if, node)
-        lines_c.extend(_return_expr_lines(else_if, stmt, ctx, st, return_tag, depth=depth + 1))
-        lines_c.append(f"{indented}}}")
-        return lines_c
-    raise _fail(stmt, "call in short-circuit")
 
 
 def _assign_target(
