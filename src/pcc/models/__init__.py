@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from pcc.models.client import Completion, Message, ModelClient, Role
 from pcc.models.fake import Call, FakeClient
+from pcc.models.openai_compat import OpenAICompatClient
 from pcc.models.router import Router, available_stages
 
 __all__ = [
@@ -16,6 +17,7 @@ __all__ = [
     "FakeClient",
     "Message",
     "ModelClient",
+    "OpenAICompatClient",
     "Role",
     "Router",
     "available_stages",
