@@ -31,4 +31,48 @@ module PyLib {
   {
     a - b * py_floordiv(a, b)
   }
+
+  // len(xs) in Python: the number of elements; the empty sequence has length 0, so there is no error case.
+  function py_len<T>(xs: seq<T>): int
+    ensures py_len(xs) == |xs|
+  {
+    |xs|
+  }
+
+  // xs[i] in Python: negative indices count from the end; indices outside [-|xs|, |xs|) raise IndexError.
+  function py_index<T>(xs: seq<T>, i: int): T
+    requires -|xs| <= i < |xs|
+    ensures i >= 0 ==> py_index(xs, i) == xs[i]
+    ensures i < 0 ==> py_index(xs, i) == xs[|xs| + i]
+  {
+    if i >= 0 then xs[i] else xs[|xs| + i]
+  }
+
+  // xs[start:stop] in Python with step 1: negative bounds count from the end and are clamped to [0, |xs|].
+  function py_slice<T>(xs: seq<T>, start: int, stop: int): seq<T>
+    ensures var loRaw := if start < 0 then start + |xs| else start;
+      var hiRaw := if stop < 0 then stop + |xs| else stop;
+      var lo := if loRaw < 0 then 0 else if loRaw > |xs| then |xs| else loRaw;
+      var hi := if hiRaw < 0 then 0 else if hiRaw > |xs| then |xs| else hiRaw;
+      |py_slice(xs, start, stop)| == (if hi <= lo then 0 else hi - lo)
+    ensures var loRaw := if start < 0 then start + |xs| else start;
+      var hiRaw := if stop < 0 then stop + |xs| else stop;
+      var lo := if loRaw < 0 then 0 else if loRaw > |xs| then |xs| else loRaw;
+      var hi := if hiRaw < 0 then 0 else if hiRaw > |xs| then |xs| else hiRaw;
+      forall i :: 0 <= i < |py_slice(xs, start, stop)| ==> py_slice(xs, start, stop)[i] == xs[lo + i]
+  {
+    var loRaw := if start < 0 then start + |xs| else start;
+    var hiRaw := if stop < 0 then stop + |xs| else stop;
+    var lo := if loRaw < 0 then 0 else if loRaw > |xs| then |xs| else loRaw;
+    var hi := if hiRaw < 0 then 0 else if hiRaw > |xs| then |xs| else hiRaw;
+    if hi <= lo then [] else xs[lo..hi]
+  }
+
+  // xs[::-1] in Python: the elements in reverse order; the empty sequence reverses to itself.
+  function py_reversed<T>(xs: seq<T>): seq<T>
+    ensures |py_reversed(xs)| == |xs|
+    ensures forall i :: 0 <= i < |xs| ==> py_reversed(xs)[i] == xs[|xs| - 1 - i]
+  {
+    seq(|xs|, i requires 0 <= i < |xs| => xs[|xs| - 1 - i])
+  }
 }
