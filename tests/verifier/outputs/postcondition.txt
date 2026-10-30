@@ -1,0 +1,12 @@
+post.dfy(3,0): Error: a postcondition could not be proved on this return path
+  |
+3 | {
+  | ^
+
+post.dfy(2,12): Related location: this is the postcondition that could not be proved
+  |
+2 |   ensures r > x
+  |             ^
+
+
+Dafny program verifier finished with 0 verified, 1 error

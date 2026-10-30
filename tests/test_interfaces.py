@@ -212,12 +212,12 @@ def test_verifier_signatures() -> None:
         str,
     )
 
-    sig = assert_sig(
+    # resolve is implemented (issue #18); only its signature stays locked here.
+    assert_sig(
         verifier_dafny.resolve,
         [("dafny_code", POS, NoDefault), ("timeout_seconds", KWO, 120.0)],
         tuple[DafnyError, ...],
     )
-    assert_raises(verifier_dafny.resolve, sig)
     sig = assert_sig(
         verify,
         [
