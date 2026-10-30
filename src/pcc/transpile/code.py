@@ -3,8 +3,8 @@
 What the transpiler supports, it translates exactly; anything else raises
 ``UnsupportedConstruct`` and the pipeline falls back to AI translation.
 
-Supported subset (this ticket; recursion, project calls, loops and mutated lists live
-in later tickets; spec mode lives in ``pcc.transpile.spec``):
+Supported subset (this ticket; project calls, loops and mutated lists live in later
+tickets; spec mode lives in ``pcc.transpile.spec``):
 
 - Types: ``int`` to ``int``, ``bool`` to ``bool``, ``str`` to ``string``, ``list[T]``
   and ``typing.List[T]`` to ``seq<T>`` (only when never mutated; see below). ``tuple``
@@ -31,10 +31,16 @@ in later tickets; spec mode lives in ``pcc.transpile.spec``):
   (including ``+=``), calls to mutating methods (``append``, ``extend``, ``insert``,
   ``pop``, ``remove``, ``clear``, ``sort``, ``reverse``) and aliasing a list-typed
   value into another name raise ``"mutated list"``.
+- Recursive calls to the function itself are hoisted into fresh locals
+  ``var pcc_t1 := f(...);``, ``pcc_t2``, ... in evaluation order before the
+  statement that uses them. Under ``return``, a call in the right operand of
+  ``and``/``or`` or in a branch of ``a if c else b`` is expanded into an ``if``
+  statement preserving short-circuit order; elsewhere it raises
+  ``"call in short-circuit"``.
 
 Not supported: ``<`` (and friends) on strings, anything on ``float``, ``/``,
-arithmetic on bools, string methods, loops, calls, ``raise``, ``try``, ``with``,
-``yield``, ``await``, ``global`` and ``nonlocal``.
+arithmetic on bools, string methods, loops, non-recursive calls, ``raise``, ``try``,
+``with``, ``yield``, ``await``, ``global`` and ``nonlocal``.
 """
 
 from __future__ import annotations
@@ -123,6 +129,75 @@ class _Ctx:
     def tag_of(self, python_name: str) -> str | None:
         """The Dafny type tag of ``python_name``, or ``None`` when unknown."""
         return self.types.get(python_name)
+
+
+class _HoistState:
+    """Hoisting state: fresh ``pcc_tN`` names plus the recursive callee."""
+
+    __slots__ = ("callee", "counter", "func_name", "return_tag", "used")
+
+    def __init__(self, func_name: str, callee: str, return_tag: str, used: set[str]) -> None:
+        self.func_name = func_name
+        self.callee = callee
+        self.return_tag = return_tag
+        self.counter = 1
+        self.used = set(used)
+
+    def fresh(self) -> str:
+        """A fresh ``pcc_tN`` name that collides with no user name."""
+        while f"pcc_t{self.counter}" in self.used:
+            self.counter += 1
+        name = f"pcc_t{self.counter}"
+        self.used.add(name)
+        self.counter += 1
+        return name
+
+
+def _is_self_call(node: ast.Call, func_name: str, renames: Mapping[str, str]) -> bool:
+    """Whether ``node`` calls the function itself (shadowing excluded)."""
+    func = node.func
+    return isinstance(func, ast.Name) and func.id == func_name and func.id not in renames
+
+
+def _contains_self_call(node: ast.AST, func_name: str, renames: Mapping[str, str]) -> bool:
+    """Whether ``node`` contains a call to the function itself."""
+    if func_name in renames:
+        return False
+    return any(isinstance(child, ast.Call) and _is_self_call(child, func_name, renames) for child in ast.walk(node))
+
+
+def _has_sc_self_call(node: ast.expr, func_name: str, renames: Mapping[str, str]) -> bool:
+    """Whether a self-call sits in short-circuit position (right of ``and``/``or`` or branch of ``if``)."""
+
+    def visit(expr: ast.AST, in_sc: bool) -> bool:
+        if isinstance(expr, ast.Call) and _is_self_call(expr, func_name, renames):
+            return in_sc
+        if isinstance(expr, ast.BoolOp):
+            return any(visit(value, in_sc or index > 0) for index, value in enumerate(expr.values))
+        if isinstance(expr, ast.IfExp):
+            if visit(expr.test, in_sc):
+                return True
+            return visit(expr.body, True) or visit(expr.orelse, True)
+        return any(visit(child, in_sc) for child in ast.iter_child_nodes(expr))
+
+    if func_name in renames:
+        return False
+    return visit(node, False)
+
+
+def _has_call_inside_boolop(node: ast.AST, func_name: str, renames: Mapping[str, str]) -> bool:
+    """Whether a self-call sits anywhere inside ``and``/``or`` or a conditional."""
+
+    def visit(expr: ast.AST, inside: bool) -> bool:
+        if isinstance(expr, ast.Call) and _is_self_call(expr, func_name, renames):
+            return inside
+        if isinstance(expr, (ast.BoolOp, ast.IfExp)):
+            return any(visit(child, True) for child in ast.iter_child_nodes(expr))
+        return any(visit(child, inside) for child in ast.iter_child_nodes(expr))
+
+    if func_name in renames:
+        return False
+    return visit(node, False)
 
 
 def _fail(node: ast.stmt | ast.expr, construct: str) -> UnsupportedConstruct:
@@ -499,6 +574,244 @@ def _list_display(node: ast.List, ctx: _Ctx) -> _Typed:
     return _Typed(f"[{', '.join(elt.code for elt in elts)}]", f"seq<{tags[0]}>")
 
 
+def _hoist_expr(node: ast.expr, ctx: _Ctx, st: _HoistState, pre: list[str]) -> _Typed:
+    """Translate ``node``, hoisting self-calls into ``pre`` in evaluation order."""
+    if isinstance(node, ast.Constant):
+        return _constant(node)
+    if isinstance(node, ast.Name):
+        return _Typed(ctx.name(node.id), ctx.tag_of(node.id))
+    if isinstance(node, ast.BinOp):
+        return _hoist_binop(node, ctx, st, pre)
+    if isinstance(node, ast.UnaryOp):
+        return _hoist_unaryop(node, ctx, st, pre)
+    if isinstance(node, ast.BoolOp):
+        return _hoist_boolop(node, ctx, st, pre)
+    if isinstance(node, ast.Compare):
+        return _hoist_compare(node, ctx, st, pre)
+    if isinstance(node, ast.Call):
+        return _hoist_call(node, ctx, st, pre)
+    if isinstance(node, ast.Subscript):
+        return _hoist_subscript(node, ctx, st, pre)
+    if isinstance(node, ast.IfExp):
+        return _hoist_ifexp(node, ctx, st, pre)
+    if isinstance(node, ast.List):
+        return _hoist_list_display(node, ctx, st, pre)
+    return _expr(node, ctx)
+
+
+def _hoist_binop(node: ast.BinOp, ctx: _Ctx, st: _HoistState, pre: list[str]) -> _Typed:
+    """``+``/``-``/``*``/``//``/``%`` with hoisted operands."""
+    op = node.op
+    if isinstance(op, ast.Div):
+        raise _fail(node, "operator /")
+    if isinstance(op, ast.Pow):
+        raise _fail(node, "operator **")
+    if isinstance(op, ast.BitAnd):
+        raise _fail(node, "operator &")
+    if isinstance(op, ast.BitOr):
+        raise _fail(node, "operator |")
+    if isinstance(op, ast.BitXor):
+        raise _fail(node, "operator ^")
+    if isinstance(op, ast.LShift):
+        raise _fail(node, "operator <<")
+    if isinstance(op, ast.RShift):
+        raise _fail(node, "operator >>")
+    if isinstance(op, ast.MatMult):
+        raise _fail(node, "operator @")
+    left = _hoist_expr(node.left, ctx, st, pre)
+    right = _hoist_expr(node.right, ctx, st, pre)
+    left_tag = _need(left.tag, node.left)
+    right_tag = _need(right.tag, node.right)
+    if left_tag == _BOOL or right_tag == _BOOL:
+        raise _fail(node, "bool arithmetic")
+    symbol = "+" if isinstance(op, ast.Add) else ("-" if isinstance(op, ast.Sub) else "*")
+    code = f"{_operand(left.code, node.left)} {symbol} {_operand(right.code, node.right)}"
+    if isinstance(op, ast.Add):
+        if left_tag == _INT and right_tag == _INT:
+            return _Typed(code, _INT)
+        if left_tag == _STR and right_tag == _STR:
+            return _Typed(code, _STR)
+        if _is_seq(left_tag) and left_tag == right_tag:
+            return _Typed(code, left_tag)
+        raise _fail(node, "operand types")
+    if isinstance(op, (ast.Sub, ast.Mult)):
+        if left_tag == _INT and right_tag == _INT:
+            return _Typed(code, _INT)
+        raise _fail(node, "operand types")
+    if isinstance(op, ast.FloorDiv):
+        if left_tag == _INT and right_tag == _INT:
+            return _Typed(f"py_floordiv({left.code}, {right.code})", _INT)
+        raise _fail(node, "operand types")
+    if left_tag == _INT and right_tag == _INT:
+        return _Typed(f"py_mod({left.code}, {right.code})", _INT)
+    raise _fail(node, "operand types")
+
+
+def _hoist_unaryop(node: ast.UnaryOp, ctx: _Ctx, st: _HoistState, pre: list[str]) -> _Typed:
+    """Unary minus and ``not`` with a hoisted operand."""
+    op = node.op
+    if isinstance(op, ast.UAdd):
+        raise _fail(node, "unary +")
+    if isinstance(op, ast.Invert):
+        raise _fail(node, "unary ~")
+    operand = _hoist_expr(node.operand, ctx, st, pre)
+    tag = _need(operand.tag, node.operand)
+    if isinstance(op, ast.USub):
+        if tag == _BOOL:
+            raise _fail(node, "bool arithmetic")
+        if tag != _INT:
+            raise _fail(node, "operand types")
+        return _Typed(f"-{_operand(operand.code, node.operand)}", _INT)
+    if tag != _BOOL:
+        raise _fail(node, "non-bool logic")
+    return _Typed(f"!{_maybe_paren(operand.code, node.operand)}", _BOOL)
+
+
+def _hoist_boolop(node: ast.BoolOp, ctx: _Ctx, st: _HoistState, pre: list[str]) -> _Typed:
+    """``and``/``or`` on bool operands with hoisted values."""
+    parts = [_hoist_expr(value, ctx, st, pre) for value in node.values]
+    for value, part in zip(node.values, parts, strict=True):
+        if _need(part.tag, value) != _BOOL:
+            raise _fail(node, "non-bool logic")
+    joiner = " && " if isinstance(node.op, ast.And) else " || "
+    codes = [_maybe_paren(part.code, value) for part, value in zip(parts, node.values, strict=True)]
+    return _Typed(joiner.join(codes), _BOOL)
+
+
+def _hoist_compare(node: ast.Compare, ctx: _Ctx, st: _HoistState, pre: list[str]) -> _Typed:
+    """One comparison with hoisted sides."""
+    if len(node.ops) != 1 or len(node.comparators) != 1:
+        raise _fail(node, "chained comparison")
+    op = node.ops[0]
+    symbol = _compare_op_name(op)
+    if not isinstance(op, (ast.Lt, ast.LtE, ast.Gt, ast.GtE, ast.Eq, ast.NotEq)):
+        raise _fail(node, f"operator {symbol}")
+    left = _hoist_expr(node.left, ctx, st, pre)
+    right = _hoist_expr(node.comparators[0], ctx, st, pre)
+    left_tag = _need(left.tag, node.left)
+    right_tag = _need(right.tag, node.comparators[0])
+    code = f"{_maybe_paren(left.code, node.left)} {symbol} {_maybe_paren(right.code, node.comparators[0])}"
+    if isinstance(op, (ast.Eq, ast.NotEq)):
+        if left_tag == right_tag:
+            return _Typed(code, _BOOL)
+        if {left_tag, right_tag} == {_CHAR, _STR}:
+            raise _fail(node, "char vs str")
+        raise _fail(node, "operand types")
+    if left_tag == _INT and right_tag == _INT:
+        return _Typed(code, _BOOL)
+    if left_tag == _STR and right_tag == _STR:
+        raise _fail(node, f"str comparison {symbol}")
+    if {left_tag, right_tag} == {_CHAR, _STR}:
+        raise _fail(node, "char vs str")
+    if left_tag == _BOOL or right_tag == _BOOL:
+        raise _fail(node, "bool comparison")
+    if left_tag == _CHAR and right_tag == _CHAR:
+        raise _fail(node, "char comparison")
+    if _is_seq(left_tag) and left_tag == right_tag:
+        raise _fail(node, "list comparison")
+    raise _fail(node, "operand types")
+
+
+def _hoist_call(node: ast.Call, ctx: _Ctx, st: _HoistState, pre: list[str]) -> _Typed:
+    """``len(x)`` inline; a self-call hoisted to ``var pcc_tN``; anything else rejected."""
+    func = node.func
+    if isinstance(func, ast.Name) and func.id == st.func_name and func.id not in ctx.renames:
+        if node.keywords:
+            raise _fail(node, f"call {func.id}")
+        arg_codes: list[str] = []
+        for arg in node.args:
+            hoisted = _hoist_expr(arg, ctx, st, pre)
+            _need(hoisted.tag, arg)
+            arg_codes.append(hoisted.code)
+        temp = st.fresh()
+        pre.append(f"var {temp} := {st.callee}({', '.join(arg_codes)});")
+        return _Typed(temp, st.return_tag)
+    if isinstance(func, ast.Name) and func.id == "len" and "len" not in ctx.types:
+        if node.keywords or len(node.args) != 1:
+            raise _fail(node, "len arguments")
+        hoisted_arg = _hoist_expr(node.args[0], ctx, st, pre)
+        tag = _need(hoisted_arg.tag, node.args[0])
+        if tag != _STR and not _is_seq(tag):
+            raise _fail(node, "len operand")
+        return _Typed(f"py_len({hoisted_arg.code})", _INT)
+    if isinstance(func, ast.Name):
+        raise _fail(node, f"call {func.id}")
+    if isinstance(func, ast.Attribute):
+        value = _hoist_expr(func.value, ctx, st, pre)
+        for arg in node.args:
+            _hoist_expr(arg, ctx, st, pre)
+        if value.tag is None:
+            raise _fail(node, "unknown type")
+        if _is_seq(value.tag) and func.attr in MUTATING_METHODS:
+            raise _fail(node, "mutated list")
+        raise _fail(node, f"call {func.attr}")
+    raise _fail(node, "call expression")
+
+
+def _hoist_bound(
+    node: ast.expr | None, ctx: _Ctx, st: _HoistState, pre: list[str], default: str, whole: ast.expr
+) -> str:
+    """A slice bound with hoisted calls; a missing bound becomes ``default``."""
+    if node is None:
+        return default
+    bound = _hoist_expr(node, ctx, st, pre)
+    if _need(bound.tag, node) != _INT:
+        raise _fail(whole, "slice bounds")
+    return bound.code
+
+
+def _hoist_subscript(node: ast.Subscript, ctx: _Ctx, st: _HoistState, pre: list[str]) -> _Typed:
+    """``x[i]``, ``x[a:b]`` and ``x[::-1]`` with hoisted subexpressions."""
+    value = _hoist_expr(node.value, ctx, st, pre)
+    tag = _need(value.tag, node.value)
+    if tag != _STR and not _is_seq(tag):
+        raise _fail(node, "index type")
+    elem = _CHAR if tag == _STR else _seq_elem(tag)
+    subscript = node.slice
+    if isinstance(subscript, ast.Slice):
+        if subscript.step is not None:
+            if subscript.lower is None and subscript.upper is None and _is_negative_one(subscript.step):
+                return _Typed(f"py_reversed({value.code})", tag)
+            raise _fail(node, "slice step")
+        lower = _hoist_bound(subscript.lower, ctx, st, pre, "0", node)
+        upper = _hoist_bound(subscript.upper, ctx, st, pre, f"py_len({value.code})", node)
+        return _Typed(f"py_slice({value.code}, {lower}, {upper})", tag)
+    index = _hoist_expr(subscript, ctx, st, pre)
+    if _need(index.tag, subscript) != _INT:
+        raise _fail(node, "index type")
+    return _Typed(f"py_index({value.code}, {index.code})", elem)
+
+
+def _hoist_ifexp(node: ast.IfExp, ctx: _Ctx, st: _HoistState, pre: list[str]) -> _Typed:
+    """``a if c else b`` with hoisted subexpressions."""
+    cond = _hoist_expr(node.test, ctx, st, pre)
+    if _need(cond.tag, node.test) != _BOOL:
+        raise _fail(node, "non-bool condition")
+    when_true = _hoist_expr(node.body, ctx, st, pre)
+    when_false = _hoist_expr(node.orelse, ctx, st, pre)
+    true_tag = _need(when_true.tag, node.body)
+    false_tag = _need(when_false.tag, node.orelse)
+    if true_tag != false_tag:
+        if {true_tag, false_tag} == {_CHAR, _STR}:
+            raise _fail(node, "char vs str")
+        raise _fail(node, "operand types")
+    body = when_true.code if not isinstance(node.body, ast.IfExp) else f"({when_true.code})"
+    orelse = when_false.code if not isinstance(node.orelse, ast.IfExp) else f"({when_false.code})"
+    cond_code = cond.code if not isinstance(node.test, ast.IfExp) else f"({cond.code})"
+    return _Typed(f"if {cond_code} then {body} else {orelse}", true_tag)
+
+
+def _hoist_list_display(node: ast.List, ctx: _Ctx, st: _HoistState, pre: list[str]) -> _Typed:
+    """A list display with hoisted elements."""
+    if not node.elts:
+        raise _fail(node, "empty list")
+    elts = [_hoist_expr(elt, ctx, st, pre) for elt in node.elts]
+    tags = [_need(elt.tag, original) for elt, original in zip(elts, node.elts, strict=True)]
+    if any(tag != tags[0] for tag in tags[1:]):
+        raise _fail(node, "operand types")
+    return _Typed(f"[{', '.join(elt.code for elt in elts)}]", f"seq<{tags[0]}>")
+
+
 def _collect_assigned(stmts: list[ast.stmt]) -> set[str]:
     """Every name assigned anywhere in ``stmts``, for the rename map.
 
@@ -539,6 +852,7 @@ def _statements(
     ctx: _Ctx,
     declared: set[str],
     return_tag: str,
+    st: _HoistState,
     *,
     depth: int,
     first: bool,
@@ -547,6 +861,7 @@ def _statements(
 
     ``declared`` holds the Python names already declared in Dafny (parameters plus
     earlier ``var`` bindings); it is updated in place, as is the type environment.
+    ``st`` carries the recursion hoisting state.
     """
     lines: list[str] = []
     returns = False
@@ -556,19 +871,19 @@ def _statements(
         if isinstance(stmt, ast.Pass):
             continue
         if isinstance(stmt, ast.Return):
-            lines.extend(_indent([_return(stmt, ctx, return_tag)], depth))
+            lines.extend(_return_lines(stmt, ctx, declared, st, return_tag, depth=depth))
             returns = True
             break
         if isinstance(stmt, ast.Expr):
             _expr(stmt.value, ctx)
             raise _fail(stmt, "expression statement")
         if isinstance(stmt, (ast.Assign, ast.AnnAssign)):
-            lines.extend(_indent(_assign(stmt, ctx, declared), depth))
+            lines.extend(_indent(_assign(stmt, ctx, declared, st), depth))
             continue
         if isinstance(stmt, ast.AugAssign):
             raise _augassign(stmt, ctx)
         if isinstance(stmt, ast.If):
-            block, done = _branch(stmt, ctx, declared, return_tag, depth=depth)
+            block, done = _branch(stmt, ctx, declared, return_tag, st, depth=depth)
             lines.extend(block)
             if done:
                 returns = True
@@ -591,6 +906,175 @@ def _return(stmt: ast.Return, ctx: _Ctx, return_tag: str) -> str:
     if _need(value.tag, stmt.value) != return_tag:
         raise _fail(stmt, "return type")
     return f"return {value.code};"
+
+
+def _return_lines(
+    stmt: ast.Return,
+    ctx: _Ctx,
+    declared: set[str],
+    st: _HoistState,
+    return_tag: str,
+    *,
+    depth: int,
+) -> list[str]:
+    """``return`` with recursive calls hoisted, expanding short-circuit under ``return``."""
+    _ = declared
+    if stmt.value is None:
+        raise _fail(stmt, "empty return")
+    expr = stmt.value
+    if not _contains_self_call(expr, st.func_name, ctx.renames):
+        value = _expr(expr, ctx)
+        if _need(value.tag, expr) != return_tag:
+            raise _fail(stmt, "return type")
+        return _indent([f"return {value.code};"], depth)
+    if _has_sc_self_call(expr, st.func_name, ctx.renames):
+        if isinstance(expr, (ast.BoolOp, ast.IfExp)):
+            return _return_sc_lines(expr, stmt, ctx, st, return_tag, depth=depth)
+        raise _fail(stmt, "call in short-circuit")
+    pre: list[str] = []
+    value = _hoist_expr(expr, ctx, st, pre)
+    if _need(value.tag, expr) != return_tag:
+        raise _fail(stmt, "return type")
+    return _indent([*pre, f"return {value.code};"], depth)
+
+
+def _return_expr_lines(
+    expr: ast.expr,
+    stmt: ast.Return | ast.If,
+    ctx: _Ctx,
+    st: _HoistState,
+    return_tag: str,
+    *,
+    depth: int,
+) -> list[str]:
+    """Lines for ``return <expr>`` at statement ``stmt`` (already indented)."""
+    if not _contains_self_call(expr, st.func_name, ctx.renames):
+        value = _expr(expr, ctx)
+        if _need(value.tag, expr) != return_tag:
+            raise _fail(stmt, "return type")
+        return _indent([f"return {value.code};"], depth)
+    if _has_sc_self_call(expr, st.func_name, ctx.renames):
+        if isinstance(expr, (ast.BoolOp, ast.IfExp)):
+            return _return_sc_lines(expr, stmt, ctx, st, return_tag, depth=depth)
+        raise _fail(stmt, "call in short-circuit")
+    pre: list[str] = []
+    value = _hoist_expr(expr, ctx, st, pre)
+    if _need(value.tag, expr) != return_tag:
+        raise _fail(stmt, "return type")
+    return _indent([*pre, f"return {value.code};"], depth)
+
+
+def _return_sc_lines(
+    expr: ast.BoolOp | ast.IfExp,
+    stmt: ast.Return | ast.If,
+    ctx: _Ctx,
+    st: _HoistState,
+    return_tag: str,
+    *,
+    depth: int,
+) -> list[str]:
+    """Expand ``return`` of ``and``/``or``/conditional preserving short-circuit order."""
+    if isinstance(expr, ast.BoolOp):
+        if isinstance(expr.op, ast.And):
+            return _emit_and_list(list(expr.values), stmt, ctx, st, return_tag, depth=depth)
+        return _emit_or_list(list(expr.values), stmt, ctx, st, return_tag, depth=depth)
+    return _emit_ifexp(expr, stmt, ctx, st, return_tag, depth=depth)
+
+
+def _emit_and_list(
+    values: list[ast.expr],
+    stmt: ast.Return | ast.If,
+    ctx: _Ctx,
+    st: _HoistState,
+    return_tag: str,
+    *,
+    depth: int,
+) -> list[str]:
+    """``return v0 and v1 ...`` keeping Python's left-to-right short-circuit."""
+    if return_tag != _BOOL:
+        raise _fail(stmt, "return type")
+    if len(values) == 1:
+        return _return_expr_lines(values[0], stmt, ctx, st, return_tag, depth=depth)
+    first = values[0]
+    rest = values[1:]
+    if _has_sc_self_call(first, st.func_name, ctx.renames):
+        # A nested ``and``/``or``/conditional inside the first operand is not
+        # directly under ``return``, so it is rejected instead of expanded.
+        raise _fail(stmt, "call in short-circuit")
+    pre: list[str] = []
+    hoisted = _hoist_expr(first, ctx, st, pre)
+    if _need(hoisted.tag, first) != _BOOL:
+        raise _fail(stmt, "non-bool logic")
+    indented = "  " * (depth + 1)
+    lines = _indent(pre, depth)
+    lines.append(f"{indented}if {hoisted.code} {{")
+    lines.extend(_emit_and_list(rest, stmt, ctx, st, return_tag, depth=depth + 1))
+    lines.append(f"{indented}}} else {{")
+    lines.extend(_indent(["return false;"], depth + 1))
+    lines.append(f"{indented}}}")
+    return lines
+
+
+def _emit_or_list(
+    values: list[ast.expr],
+    stmt: ast.Return | ast.If,
+    ctx: _Ctx,
+    st: _HoistState,
+    return_tag: str,
+    *,
+    depth: int,
+) -> list[str]:
+    """``return v0 or v1 ...`` keeping Python's left-to-right short-circuit."""
+    if return_tag != _BOOL:
+        raise _fail(stmt, "return type")
+    if len(values) == 1:
+        return _return_expr_lines(values[0], stmt, ctx, st, return_tag, depth=depth)
+    first = values[0]
+    rest = values[1:]
+    if _has_sc_self_call(first, st.func_name, ctx.renames):
+        # A nested ``and``/``or``/conditional inside the first operand is not
+        # directly under ``return``, so it is rejected instead of expanded.
+        raise _fail(stmt, "call in short-circuit")
+    pre: list[str] = []
+    hoisted = _hoist_expr(first, ctx, st, pre)
+    if _need(hoisted.tag, first) != _BOOL:
+        raise _fail(stmt, "non-bool logic")
+    indented = "  " * (depth + 1)
+    lines = _indent(pre, depth)
+    lines.append(f"{indented}if {hoisted.code} {{")
+    lines.extend(_indent(["return true;"], depth + 1))
+    lines.append(f"{indented}}} else {{")
+    lines.extend(_emit_or_list(rest, stmt, ctx, st, return_tag, depth=depth + 1))
+    lines.append(f"{indented}}}")
+    return lines
+
+
+def _emit_ifexp(
+    node: ast.IfExp,
+    stmt: ast.Return | ast.If,
+    ctx: _Ctx,
+    st: _HoistState,
+    return_tag: str,
+    *,
+    depth: int,
+) -> list[str]:
+    """``return a if c else b`` with short-circuit branches expanded."""
+    if _has_sc_self_call(node.test, st.func_name, ctx.renames):
+        # A short-circuit call inside the condition is not directly under
+        # ``return``, so it is rejected instead of expanded.
+        raise _fail(stmt, "call in short-circuit")
+    pre: list[str] = []
+    cond = _hoist_expr(node.test, ctx, st, pre)
+    if _need(cond.tag, node.test) != _BOOL:
+        raise _fail(stmt, "non-bool condition")
+    indented = "  " * (depth + 1)
+    lines = _indent(pre, depth)
+    lines.append(f"{indented}if {cond.code} {{")
+    lines.extend(_return_expr_lines(node.body, stmt, ctx, st, return_tag, depth=depth + 1))
+    lines.append(f"{indented}}} else {{")
+    lines.extend(_return_expr_lines(node.orelse, stmt, ctx, st, return_tag, depth=depth + 1))
+    lines.append(f"{indented}}}")
+    return lines
 
 
 def _assign_target(
@@ -626,8 +1110,8 @@ def _assign_target(
     raise _fail(stmt, "destructuring")
 
 
-def _assign(stmt: ast.Assign | ast.AnnAssign, ctx: _Ctx, declared: set[str]) -> list[str]:
-    """Translate ``x = e`` and ``x: T = e``."""
+def _assign(stmt: ast.Assign | ast.AnnAssign, ctx: _Ctx, declared: set[str], st: _HoistState) -> list[str]:
+    """Translate ``x = e`` and ``x: T = e``, hoisting self-calls in ``e``."""
     target: ast.expr
     value_node: ast.expr | None
     if isinstance(stmt, ast.Assign):
@@ -646,6 +1130,20 @@ def _assign(stmt: ast.Assign | ast.AnnAssign, ctx: _Ctx, declared: set[str]) -> 
         raise _fail(stmt, "destructuring")
     if isinstance(target, ast.Starred):
         raise _fail(stmt, "starred")
+    if _contains_self_call(value_node, st.func_name, ctx.renames):
+        if _has_call_inside_boolop(value_node, st.func_name, ctx.renames):
+            raise _fail(stmt, "call in short-circuit")
+        pre: list[str] = []
+        value = _hoist_expr(value_node, ctx, st, pre)
+        name, tag = _assign_target(target, value_node, value, stmt, ctx)
+        if declared_type is not None and declared_type != tag:
+            raise _fail(stmt, "assignment type")
+        assert isinstance(target, ast.Name)
+        ctx.types[name] = tag
+        if name in declared:
+            return [*pre, f"{ctx.name(name)} := {value.code};"]
+        declared.add(name)
+        return [*pre, f"var {ctx.name(name)} := {value.code};"]
     value = _expr(value_node, ctx)
     name, tag = _assign_target(target, value_node, value, stmt, ctx)
     if declared_type is not None and declared_type != tag:
@@ -670,21 +1168,35 @@ def _augassign(stmt: ast.AugAssign, ctx: _Ctx) -> UnsupportedConstruct:
     return _fail(stmt, "augmented assignment")
 
 
-def _branch(stmt: ast.If, ctx: _Ctx, declared: set[str], return_tag: str, *, depth: int) -> tuple[list[str], bool]:
-    """Translate an ``if``/``elif``/``else`` statement."""
-    cond = _expr(stmt.test, ctx)
-    if _need(cond.tag, stmt.test) != _BOOL:
-        raise _fail(stmt, "non-bool condition")
+def _branch(
+    stmt: ast.If, ctx: _Ctx, declared: set[str], return_tag: str, st: _HoistState, *, depth: int
+) -> tuple[list[str], bool]:
+    """Translate an ``if``/``elif``/``else`` statement, hoisting self-calls in the condition."""
+    indented = "  " * (depth + 1)
+    pre_cond: list[str] = []
+    if _contains_self_call(stmt.test, st.func_name, ctx.renames):
+        if _has_call_inside_boolop(stmt.test, st.func_name, ctx.renames):
+            raise _fail(stmt, "call in short-circuit")
+        cond_hoisted = _hoist_expr(stmt.test, ctx, st, pre_cond)
+        if _need(cond_hoisted.tag, stmt.test) != _BOOL:
+            raise _fail(stmt, "non-bool condition")
+        cond = cond_hoisted
+    else:
+        cond = _expr(stmt.test, ctx)
+        if _need(cond.tag, stmt.test) != _BOOL:
+            raise _fail(stmt, "non-bool condition")
     then_ctx = ctx.child()
     then_declared = set(declared)
-    then_lines, then_returns = _statements(stmt.body, then_ctx, then_declared, return_tag, depth=depth + 1, first=False)
-    indented = "  " * (depth + 1)
-    lines = [f"{indented}if {cond.code} {{"]
+    then_lines, then_returns = _statements(
+        stmt.body, then_ctx, then_declared, return_tag, st, depth=depth + 1, first=False
+    )
+    lines = _indent(pre_cond, depth)
+    lines.append(f"{indented}if {cond.code} {{")
     lines.extend(then_lines)
     if len(stmt.orelse) == 1 and isinstance(stmt.orelse[0], ast.If):
         else_ctx = ctx.child()
         else_declared = set(declared)
-        nested, nested_returns = _branch(stmt.orelse[0], else_ctx, else_declared, return_tag, depth=depth)
+        nested, nested_returns = _branch(stmt.orelse[0], else_ctx, else_declared, return_tag, st, depth=depth)
         nested_first = nested[0].strip()
         lines.append(f"{indented}}} else {nested_first}")
         lines.extend(nested[1:])
@@ -696,7 +1208,7 @@ def _branch(stmt: ast.If, ctx: _Ctx, declared: set[str], return_tag: str, *, dep
         else_ctx = ctx.child()
         else_declared = set(declared)
         else_lines, else_returns = _statements(
-            stmt.orelse, else_ctx, else_declared, return_tag, depth=depth + 1, first=False
+            stmt.orelse, else_ctx, else_declared, return_tag, st, depth=depth + 1, first=False
         )
         _merge(ctx.types, declared, then_ctx.types, then_declared, else_ctx.types, else_declared)
         lines.append(f"{indented}}} else {{")
@@ -794,13 +1306,14 @@ def transpile_function(function: FunctionRef, *, callees: Mapping[str, str] = Ma
     ``requires pre(<params>)`` clause and one ``ensures spec(<params>, result)``
     clause. ``<name>`` is ``verifier.layout.method_name`` of ``function``.
     ``callees`` maps the qualname of each callee in the project to its Dafny
-    module name, so callers use only the callee's spec; project calls are owned
-    by a later ticket, so any call raises ``UnsupportedConstruct`` here.
+    module name, so callers use only the callee's spec; project calls other than
+    the function itself are owned by a later ticket, so any such call raises
+    ``UnsupportedConstruct`` here.
 
     ``lineno`` of every error is relative to ``function.source``: line 1 is the
     first line of that source (the first decorator, if any).
     """
-    _ = callees  # Reserved for project calls in a later ticket; any call raises here.
+    _ = callees  # Reserved for project calls in a later ticket; only self-calls are supported here.
     try:
         tree = ast.parse(function.source)
     except (SyntaxError, ValueError, MemoryError, RecursionError):
@@ -822,7 +1335,8 @@ def transpile_function(function: FunctionRef, *, callees: Mapping[str, str] = Ma
             renames[extra] = extra + "_" if extra in RESERVED else extra
     declared = set(types)
     ctx = _Ctx(renames, types)
-    body, returns = _statements(func.body, ctx, declared, return_tag, depth=0, first=True)
+    st = _HoistState(func.name, method_name(function), return_tag, set(renames.values()))
+    body, returns = _statements(func.body, ctx, declared, return_tag, st, depth=0, first=True)
     if not returns:
         last = func.body[-1].lineno if func.body else func.lineno
         raise UnsupportedConstruct("missing return", lineno=last)
