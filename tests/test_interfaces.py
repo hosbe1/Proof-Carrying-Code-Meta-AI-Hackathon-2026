@@ -287,18 +287,17 @@ def test_project_signatures() -> None:
 
     assert project_diff.changed is pcc.project.changed
     assert project_calls.call_graph is pcc.project.call_graph
-    sig = assert_sig(
+    # ``changed`` and ``call_graph`` are implemented (issue #22); only their signatures stay locked here.
+    assert_sig(
         pcc.project.changed,
         [("repo_root", POS, NoDefault), ("base", POS, NoDefault)],
         tuple[FunctionRef, ...],
     )
-    assert_raises(pcc.project.changed, sig)
-    sig = assert_sig(
+    assert_sig(
         pcc.project.call_graph,
         [("repo_root", POS, NoDefault), ("functions", POS, NoDefault)],
         Mapping[FunctionRef, frozenset[FunctionRef]],
     )
-    assert_raises(pcc.project.call_graph, sig)
     assert callable(discover)
     assert callable(affected)
     assert callable(call_order)
