@@ -495,9 +495,11 @@ def _original_probe_script(function: FunctionRef, source: str) -> str:
 
 
 def _describe(kind: str, payload: str) -> str:
-    """The human-readable outcome part: ``returns <repr>`` or ``raises <Exc>``."""
+    """The human-readable outcome part: ``returns <repr>``, ``raises <Exc>`` or ``timeout``."""
     if kind == "raises":
         return f"raises {payload}"
+    if kind == "timeout":
+        return _DETAIL_TIMEOUT
     return f"returns {payload}"
 
 
@@ -518,13 +520,21 @@ def _test_source(
 
     The translation lives in a build-specific temporary directory that is gone after the check, so it cannot be
     imported here. The test replays the original (bound through ``target_loader``) and records both outcomes: the
-    expected original outcome is asserted, the actual translation outcome is quoted in a comment.
+    expected original outcome is asserted, the actual translation outcome is quoted in a comment. When the original
+    itself times out, replaying it would hang too, so the test only records the hanging input.
     """
     chunks = [target_loader(function), "import pytest"]
     expected_comment = (
         f"# original {_describe(orig_kind, orig_payload)}, translation {_describe(trans_kind, trans_payload)}"
     )
-    if orig_kind == "raises":
+    if orig_kind == "timeout":
+        chunks.append(
+            f"{expected_comment}\n"
+            f"def {_test_name(function.qualname)}():\n"
+            f"    # both sides time out on ({arguments}); replaying would hang.\n"
+            "    pass\n"
+        )
+    elif orig_kind == "raises":
         chunks.append(
             f"{expected_comment}\n"
             f"def {_test_name(function.qualname)}():\n"

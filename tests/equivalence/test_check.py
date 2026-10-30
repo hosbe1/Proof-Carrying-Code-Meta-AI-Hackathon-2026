@@ -218,8 +218,7 @@ def test_symbolic_seconds_writes_no_symbolic_record_and_runs_no_crosshair(
 
 def test_translation_timeout_is_a_timeout_mismatch(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Ticket edge case: a translation that loops forever ends as a mismatch with ``"timeout"``."""
-    filename, qualname, source = load_fixture("adder")
-    function = FunctionRef(filename, qualname, 4, source, source_hash(source))
+    function = function_at("adder", tmp_path)
     translation = make_translation(function, "method add() returns (r: int) { r := 0; }", "predicate pre() { true }")
     client = FakeClient([edge_answer([])])
 
@@ -245,6 +244,44 @@ def test_translation_timeout_is_a_timeout_mismatch(monkeypatch: pytest.MonkeyPat
     assert report.mismatch is not None
     assert report.mismatch.arguments == "1, 2"
     assert report.mismatch.actual == "timeout"
+    assert report.mismatch.expected == "timeout"
+    run_generated_test(report.mismatch, tmp_path)
+
+
+def test_translation_timeout_with_answering_original_replays_original(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A hanging translation with an answering original reports the original outcome and a runnable test."""
+    function = function_at("adder", tmp_path)
+    translation = make_translation(function, "method add() returns (r: int) { r := 0; }", "predicate pre() { true }")
+    client = FakeClient([edge_answer([])])
+
+    def fake_run(script: str, *, cwd: Path, timeout_seconds: float = 60.0, memory_mb: int = 1024) -> RunOutcome:
+        if "PCC_EQUIV_INPUTS" in script:
+            return _ok('PCC_EQUIV_INPUTS {"inputs": ["1, 2"]}\n')
+        return RunOutcome(
+            ok=False, returncode=1, stdout='PCC_EQUIV_PROGRESS {"idx": 0}\n', stderr="", timed_out=True, seconds=0.0
+        )
+
+    def pinpoint_or_probe(
+        script: str, *, cwd: Path, timeout_seconds: float = 60.0, memory_mb: int = 1024
+    ) -> RunOutcome:
+        if "PCC_EQUIV_ORIG" in script:
+            return _ok('PCC_EQUIV_ORIG {"kind": "return", "payload": "3"}\n')
+        return RunOutcome(ok=False, returncode=1, stdout="", stderr="", timed_out=True, seconds=0.0)
+
+    monkeypatch.setattr(check_module, "build_python", lambda code, out: tmp_path / "m-py")
+    monkeypatch.setattr(check_module, "run_python", fake_run)
+    monkeypatch.setattr("pcc.sandbox.run_python", pinpoint_or_probe)
+
+    report = check(function, translation, tmp_path, inputs=10, symbolic_seconds=0.0, client=client, model="m")
+
+    assert report.records[0].passed is False
+    assert report.mismatch is not None
+    assert report.mismatch.arguments == "1, 2"
+    assert report.mismatch.expected == "returns 3"
+    assert report.mismatch.actual == "timeout"
+    run_generated_test(report.mismatch, tmp_path)
 
 
 def test_precondition_never_holds_is_not_a_pass(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
