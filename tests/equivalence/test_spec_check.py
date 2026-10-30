@@ -26,17 +26,13 @@ FIRST_SOURCE: Final = "def first(xs: list[int]) -> int:\n    return xs[0]\n"
 FIRST_PRECONDITION: Final = "def pre(xs):\n    return len(xs) > 0\n"
 FIRST_PREDICATE: Final = "def spec(xs, result):\n    return result == xs[0]\n"
 FIRST_PRE_TRUE: Final = "predicate pre(xs: seq<int>)\n{\n  true\n}\n"
-FIRST_SPEC: Final = (
-    "predicate spec(xs: seq<int>, result: int)\n  requires pre(xs)\n{\n  result == xs[0]\n}\n"
-)
+FIRST_SPEC: Final = "predicate spec(xs: seq<int>, result: int)\n  requires pre(xs)\n{\n  result == xs[0]\n}\n"
 
 DIV_SOURCE: Final = "def div10(x: int) -> int:\n    return 10 // x\n"
 DIV_PREDICATE: Final = "def spec(x, result):\n    return result == 10 // x\n"
 DIV_SPEC_TRUE: Final = "predicate spec(x: int, result: int)\n{\n  true\n}\n"
 
-WRONG_SPEC_TRUE: Final = (
-    "predicate spec(s: string, result: bool)\n  requires pre(s)\n{\n  true\n}\n"
-)
+WRONG_SPEC_TRUE: Final = "predicate spec(s: string, result: bool)\n  requires pre(s)\n{\n  true\n}\n"
 
 
 def function_ref(source: str, path: str, qualname: str) -> FunctionRef:
@@ -60,7 +56,8 @@ def palindrome_cases(count: int = 200) -> tuple[tuple[str, str], ...]:
 
 def test_no_cases_needs_no_dafny(tmp_path: Path) -> None:
     """No cases: the check fails without touching Dafny."""
-    record = check_spec(palindrome_spec(), "predicate spec(s: string, result: bool)", palindrome_spec().function, tmp_path, cases=[])
+    spec = palindrome_spec()
+    record = check_spec(spec, "predicate spec(s: string, result: bool)", spec.function, tmp_path, cases=[])
     assert record.kind is CheckKind.DIFFERENTIAL
     assert record.passed is False
     assert record.detail.startswith("spec:")
