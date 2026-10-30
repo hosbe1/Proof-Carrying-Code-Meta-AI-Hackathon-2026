@@ -374,15 +374,13 @@ def _eval_script(
         "            return None",
         "    return (_pos, _kw)",
         "def _ordered(_pos, _kw):",
-        "    _binding = {}",
-        "    _positional = [n for n in _NAMES]",
-        "    for _name, _value in zip(_positional, _pos, strict=False):",
-        "        _binding[_name] = _value",
-        "    _binding.update(_kw)",
-        "    if set(_binding) != set(_NAMES) and len(_pos) + len(_kw) > len(_NAMES):",
-        "        return None",
         "    try:",
-        "        return tuple(_binding[n] for n in _NAMES)",
+        "        _bound = inspect.signature(target).bind(*_pos, **_kw)",
+        "    except TypeError:",
+        "        return None",
+        "    _bound.apply_defaults()",
+        "    try:",
+        "        return tuple(_bound.arguments[_name] for _name in _NAMES)",
         "    except KeyError:",
         "        return None",
         "_pre = getattr(_dafny_module.default__, " + f"{pre_name!r}, None)",
@@ -671,6 +669,12 @@ def _timeout_report(
     if hanging is None:
         hanging = candidates[0] if candidates else (combined[0] if combined else "")
     orig_kind, orig_payload = _probe_original(function, hanging, repo_root)
+    if orig_kind == "timeout":
+        # Both sides hang on the same input: there is no differing outcome to report as a
+        # counterexample, so the check fails without a mismatch instead of one with identical
+        # expected and actual outcomes.
+        record = CheckRecord(CheckKind.DIFFERENTIAL, False, f"{hanging} -> both sides timeout", None, len(combined))
+        return EquivalenceReport(records=(record,), mismatch=None)
     record = CheckRecord(CheckKind.DIFFERENTIAL, False, f"{hanging} -> {_DETAIL_TIMEOUT}", None, len(combined))
     # For the timeout case the translation never answered; the original outcome (when known) is expected.
     counterexample = Counterexample(

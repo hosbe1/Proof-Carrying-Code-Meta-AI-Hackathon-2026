@@ -16,6 +16,7 @@ import sys
 import tokenize
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 import pytest
 
@@ -217,7 +218,7 @@ def test_symbolic_seconds_writes_no_symbolic_record_and_runs_no_crosshair(
 
 
 def test_translation_timeout_is_a_timeout_mismatch(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Ticket edge case: a translation that loops forever ends as a mismatch with ``"timeout"``."""
+    """Both sides hanging on the same input fails without a mismatch instead of identical outcomes."""
     function = function_at("adder", tmp_path)
     translation = make_translation(function, "method add() returns (r: int) { r := 0; }", "predicate pre() { true }")
     client = FakeClient([edge_answer([])])
@@ -241,11 +242,8 @@ def test_translation_timeout_is_a_timeout_mismatch(monkeypatch: pytest.MonkeyPat
     assert report.records[0].kind is CheckKind.DIFFERENTIAL
     assert report.records[0].passed is False
     assert "timeout" in report.records[0].detail
-    assert report.mismatch is not None
-    assert report.mismatch.arguments == "1, 2"
-    assert report.mismatch.actual == "timeout"
-    assert report.mismatch.expected == "timeout"
-    run_generated_test(report.mismatch, tmp_path)
+    assert "both sides" in report.records[0].detail
+    assert report.mismatch is None
 
 
 def test_translation_timeout_with_answering_original_replays_original(
@@ -410,6 +408,33 @@ def test_valid_call_source_rejects_starred_and_unknown_keywords() -> None:
     assert _valid_call_source("t='a'", 1, {"s"}) is False
     assert _valid_call_source("'a', 'b'", 1, {"s"}) is False
     assert _valid_call_source("x[", 1, {"s"}) is False
+
+
+def test_eval_script_applies_missing_defaults() -> None:
+    """Inputs omitting defaulted parameters bind defaults instead of being skipped."""
+    function = function_ref(
+        source="def greet(name: str, greeting: str = 'hi') -> str:\n    return greeting + name\n",
+        path="greet.py",
+        qualname="greet",
+    )
+
+    script: str = check_module._eval_script(function, "M", "pass", ["'bob'"], "pre")
+
+    assert "apply_defaults" in script
+    start = script.index("def _ordered(")
+    end = script.index("_pre = getattr(")
+    ordered_source = script[start:end]
+
+    def greet(name: str, greeting: str = "hi") -> str:
+        return greeting + name
+
+    namespace: dict[str, Any] = {"inspect": inspect, "target": greet, "_NAMES": ["name", "greeting"]}
+    exec(compile(ordered_source, "<ordered>", "exec"), namespace)
+    ordered: Any = namespace["_ordered"]
+    assert callable(ordered)
+    assert ordered(("bob",), {}) == ("bob", "hi")
+    assert ordered((), {}) is None
+    assert ordered(("a", "b", "c"), {}) is None
 
 
 def test_wrapper_keeps_exact_parameters_and_hints() -> None:
