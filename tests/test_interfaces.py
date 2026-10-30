@@ -170,12 +170,12 @@ def test_fake_client_complete_and_calls() -> None:
 
 def test_router_and_available_stages() -> None:
     assert isinstance(Router(), Router)
-    sig = assert_sig(
+    # available_stages is implemented (issue #19); only its signature stays locked here.
+    assert_sig(
         models_router.available_stages,
         [("config", POS, NoDefault), ("router", POS, NoDefault)],
         Config,
     )
-    assert_raises(models_router.available_stages, sig)
 
 
 def test_verifier_signatures() -> None:
