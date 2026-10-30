@@ -9,6 +9,7 @@ from pcc.core import FunctionRef
 from pcc.project.calls import call_graph, subset_edges
 from pcc.project.diff import changed
 from pcc.project.discover import discover
+from pcc.project.types import infer_types
 
 
 def affected(repo_root: Path, changed: Sequence[FunctionRef]) -> tuple[FunctionRef, ...]:
@@ -149,4 +150,4 @@ def _post_order(children: list[set[int]]) -> list[int]:
     return order
 
 
-__all__ = ["affected", "call_graph", "call_order", "changed", "discover"]
+__all__ = ["affected", "call_graph", "call_order", "changed", "discover", "infer_types"]
