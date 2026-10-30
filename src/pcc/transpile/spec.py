@@ -394,13 +394,13 @@ def _is_range(node: ast.AST, scope: Scope) -> ast.Call | None:
     return None
 
 
-def _fresh_index(used: set[str]) -> str:
-    """A Dafny index variable not in ``used``: ``i``, ``j``, ``k``, then ``i_0`` and on."""
+def _fresh_index(taken: set[str]) -> str:
+    """A Dafny index variable not in ``taken``: ``i``, ``j``, ``k``, then ``i_0`` and on."""
     for candidate in ("i", "j", "k"):
-        if candidate not in used:
+        if candidate not in taken:
             return candidate
     index = 0
-    while f"i_{index}" in used:
+    while f"i_{index}" in taken:
         index += 1
     return f"i_{index}"
 
@@ -409,16 +409,24 @@ def _emit_quantifier(node: ast.GeneratorExp, scope: Scope, types: dict[str, str]
     """Dafny text for ``all``/``any`` over ``range`` bounds and over list indices."""
     keyword = "forall" if forall else "exists"
     link = "==>" if forall else "&&"
-    used = set(scope) | {child.id for child in ast.walk(node) if isinstance(child, ast.Name)}
-    bound: list[str] = []
-    variables: list[str] = []
     for generator in node.generators:
         if generator.ifs:
             raise UnsupportedConstruct("comprehension if")
         if not isinstance(generator.target, ast.Name):
             raise UnsupportedConstruct("comprehension target")
+    # Dafny names already spoken for: the parameters, ``result`` and every bound or index variable so far.
+    # Index variables come from here (never shadowing a parameter), and a generator variable that collides is
+    # suffixed, so the emitted binder can never capture a name the body resolves to an outer scope.
+    taken = {rename(name) for name in types}
+    bound: list[str] = []
+    variables: list[str] = []
+    for generator in node.generators:
+        assert isinstance(generator.target, ast.Name)
         variable = generator.target.id
         renamed = rename(variable)
+        while renamed in taken:
+            renamed += "_"
+        taken.add(renamed)
         range_call = _is_range(generator.iter, scope)
         if range_call is not None:
             if len(range_call.args) == 2:
@@ -426,17 +434,18 @@ def _emit_quantifier(node: ast.GeneratorExp, scope: Scope, types: dict[str, str]
             else:
                 (upper,) = range_call.args
                 lower = ast.Constant(0)
-            scope = {**scope, variable: renamed}
+            # Bounds evaluate in the enclosing scope, before the variable is bound.
             bound.append(
                 f"{_comparison_operand(lower, scope, types)} <= {renamed} < {_comparison_operand(upper, scope, types)}"
             )
+            scope = {**scope, variable: renamed}
             variables.append(renamed)
         else:
             element = _emit(generator.iter, scope, types)
             if _precedence(generator.iter) < _PREC_ATOM:
                 element = f"({element})"
-            index = _fresh_index(used)
-            used.add(index)
+            index = _fresh_index(taken)
+            taken.add(index)
             scope = {**scope, variable: f"{element}[{index}]"}
             bound.append(f"0 <= {index} < |{element}|")
             variables.append(index)

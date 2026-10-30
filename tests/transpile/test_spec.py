@@ -103,6 +103,26 @@ def test_nested_generators_mix_range_and_list() -> None:
     )
 
 
+def test_index_variable_avoids_parameter_capture() -> None:
+    function = "def f(i: int, xs: list[int]) -> bool:\n    return all(x <= i for x in xs)\n"
+    predicate = "def spec(i, xs, result):\n    return result == all(x <= i for x in xs)\n"
+    assert transpile_spec(make_spec(function, predicate)) == (
+        "predicate pre(i: int, xs: seq<int>) { true }\n"
+        "predicate spec(i: int, xs: seq<int>, result: bool) requires pre(i, xs)"
+        " { result == (forall j :: 0 <= j < |xs| ==> xs[j] <= i) }\n"
+    )
+
+
+def test_generator_variable_shadowing_parameter_is_suffixed() -> None:
+    function = "def f(i: int, n: int) -> bool:\n    return all(0 <= i for i in range(n))\n"
+    predicate = "def spec(i, n, result):\n    return result == all(0 <= i for i in range(n))\n"
+    assert transpile_spec(make_spec(function, predicate)) == (
+        "predicate pre(i: int, n: int) { true }\n"
+        "predicate spec(i: int, n: int, result: bool) requires pre(i, n)"
+        " { result == (forall i_ :: 0 <= i_ < n ==> 0 <= i_) }\n"
+    )
+
+
 def test_keyword_parameter_is_renamed() -> None:
     function = "def kind(type: str) -> bool:\n    return type == type\n"
     predicate = "def spec(type, result):\n    return result\n"
