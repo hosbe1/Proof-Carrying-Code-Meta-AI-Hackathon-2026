@@ -369,7 +369,8 @@ def test_transpile_signatures() -> None:
         [("function", POS, NoDefault), ("callees", KWO, MappingProxyType({}))],
         str,
     )
-    assert_raises(pcc.transpile.transpile_function, sig)
+    # transpile_function is implemented (issue #23); only its signature is locked here.
+    assert pcc.transpile.translate_expr is transpile_code.translate_expr
     sig = assert_sig(transpile_code.transpile_spec, [("spec", POS, NoDefault)], str)
     assert_raises(transpile_code.transpile_spec, sig)
 

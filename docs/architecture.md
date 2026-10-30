@@ -64,6 +64,19 @@ Why this shape:
 Training code (SFT and GRPO) lives in `training/` outside the package: it imports `pcc` (for the verifier as reward)
 but the package never imports it. The compute provider is decided in [plan.md](plan.md), not here.
 
+### Transpile subset (code mode)
+
+The subset the rule-based transpiler supports in code mode is listed in the module docstring of
+`src/pcc/transpile/code.py`, with the type mapping in `src/pcc/transpile/types.py`:
+
+- types: `int`, `bool`, `str`, `list[T]`/`typing.List[T]` (never mutated);
+- statements: `if`/`elif`/`else`, `return e`, local assignment (`var x := e;` once, then `x := e;`);
+- expressions: int/`True`/`False`/string literals, `+`/`-`/`*` on int, `//`/`%` as `py_floordiv`/`py_mod`,
+  unary minus on int, comparisons on int, `==`/`!=` on `str` and lists, `and`/`or`/`not` on bool,
+  `len` as `py_len`, `x[i]` as `py_index`, `x[a:b]` as `py_slice`, `x[::-1]` as `py_reversed`,
+  `+` on `str` and lists, ternaries;
+- Dafny-colliding names become `<name>_`; everything else raises `UnsupportedConstruct`.
+
 ## Data flow for one function
 
 ```text
