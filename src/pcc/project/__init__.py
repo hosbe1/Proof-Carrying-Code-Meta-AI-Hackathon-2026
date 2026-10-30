@@ -8,11 +8,7 @@ from pathlib import Path
 from pcc.core import FunctionRef
 from pcc.project.calls import call_graph
 from pcc.project.diff import changed
-
-
-def discover(repo_root: Path, paths: Sequence[str]) -> tuple[FunctionRef, ...]:
-    """Return every function and method defined in ``paths`` (relative to ``repo_root``)."""
-    raise NotImplementedError
+from pcc.project.discover import discover
 
 
 def affected(repo_root: Path, changed: Sequence[FunctionRef]) -> tuple[FunctionRef, ...]:
