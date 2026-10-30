@@ -200,7 +200,7 @@ def test_verifier_signatures() -> None:
     # The layout bodies are implemented, so only their signatures stay locked here.
     assert_sig(verifier_layout.method_name, [("function", POS, NoDefault)], str)
     assert_sig(verifier_layout.module_name, [("function", POS, NoDefault)], str)
-    sig = assert_sig(
+    assert_sig(
         verifier_layout.assemble,
         [
             ("function", POS, NoDefault),
@@ -230,12 +230,12 @@ def test_verifier_signatures() -> None:
         ],
         VerifyOutcome,
     )
-    sig = assert_sig(
+    # build_python is implemented (issue #29); only its signature stays locked here.
+    assert_sig(
         build_python,
         [("dafny_code", POS, NoDefault), ("out_dir", POS, NoDefault)],
         Path,
     )
-    assert_raises(build_python, sig)
 
     # The ghost bodies are implemented, so only their signatures stay locked here.
     assert_sig(
