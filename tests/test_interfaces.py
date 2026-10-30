@@ -377,7 +377,7 @@ def test_transpile_signatures() -> None:
 
 def test_translate_ai_signatures() -> None:
     assert translate_ai_translate.translate is pcc.translate_ai.translate
-    sig = assert_sig(
+    assert_sig(
         pcc.translate_ai.translate,
         [
             ("function", POS, NoDefault),
@@ -390,7 +390,7 @@ def test_translate_ai_signatures() -> None:
         ],
         Translation,
     )
-    assert_raises(pcc.translate_ai.translate, sig)
+    # translate_ai is implemented (issue #35); only its signature is locked here.
 
 
 def test_counterexample_signatures() -> None:
