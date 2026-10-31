@@ -237,3 +237,93 @@ def test_injected_clients_satisfy_model_client_protocol() -> None:
     clients: Mapping[str, ModelClient] = _fakes()
     router = build_client(Config(), {"META_API_KEY": "k", "PCC_META_ALLOWED": "1"}, clients=clients)
     assert router.complete("muse-spark-1.3", MESSAGES, step="intent").text == "meta"
+
+
+def _capture_server(state: _StubState) -> ThreadingHTTPServer:
+    parent: dict[str, Any] = {"state": state}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            st: _StubState = parent["state"]
+            length = int(self.headers.get("Content-Length", "0"))
+            st.requests.append(json.loads(self.rfile.read(length).decode("utf-8")))
+            payload = {
+                "choices": [{"message": {"role": "assistant", "content": "done"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            }
+            raw = json.dumps(payload).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+        def log_message(self, *args: object) -> None:
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server
+
+
+def test_meta_reasoning_effort_wired_from_env() -> None:
+    meta_state = _StubState()
+    meta_server = _capture_server(meta_state)
+    try:
+        env = {
+            "META_API_KEY": "key",
+            "PCC_META_ALLOWED": "1",
+            "PCC_META_BASE_URL": f"http://127.0.0.1:{meta_server.server_address[1]}",
+            "PCC_META_REASONING_EFFORT": "low",
+        }
+        router = build_client(Config(), env)
+        router.complete("muse-spark-1.3", MESSAGES, step="intent")
+    finally:
+        meta_server.shutdown()
+    assert meta_state.requests[0]["reasoning_effort"] == "low"
+
+
+def test_meta_reasoning_effort_unset_omits_field() -> None:
+    meta_state = _StubState()
+    meta_server = _capture_server(meta_state)
+    try:
+        env = {
+            "META_API_KEY": "key",
+            "PCC_META_ALLOWED": "1",
+            "PCC_META_BASE_URL": f"http://127.0.0.1:{meta_server.server_address[1]}",
+        }
+        router = build_client(Config(), env)
+        router.complete("muse-spark-1.3", MESSAGES, step="intent")
+    finally:
+        meta_server.shutdown()
+    assert "reasoning_effort" not in meta_state.requests[0]
+
+
+def test_invalid_meta_reasoning_effort_raises() -> None:
+    with pytest.raises(ValueError, match="reasoning_effort"):
+        build_client(Config(), {"PCC_META_REASONING_EFFORT": "banana"})
+
+
+def test_glimmer_request_omits_reasoning_effort() -> None:
+    meta_state = _StubState()
+    glimmer_state = _StubState()
+    meta_server = _capture_server(meta_state)
+    glimmer_server = _capture_server(glimmer_state)
+    try:
+        env = {
+            "META_API_KEY": "key",
+            "PCC_META_ALLOWED": "1",
+            "PCC_META_BASE_URL": f"http://127.0.0.1:{meta_server.server_address[1]}",
+            "PCC_GLIMMER_BASE_URL": f"http://127.0.0.1:{glimmer_server.server_address[1]}",
+            "PCC_GLIMMER_API_KEY": "key",
+            "PCC_META_REASONING_EFFORT": "low",
+        }
+        router = build_client(Config(), env)
+        router.complete("glimmer", MESSAGES, step="prove")
+        router.complete("muse-spark-1.3", MESSAGES, step="intent")
+    finally:
+        meta_server.shutdown()
+        glimmer_server.shutdown()
+    assert "reasoning_effort" not in glimmer_state.requests[0]
+    assert meta_state.requests[0]["reasoning_effort"] == "low"
