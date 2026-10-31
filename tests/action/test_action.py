@@ -133,6 +133,26 @@ def test_last_step_exits_with_the_captured_code() -> None:
     assert "steps.check.outputs.exit_code" in _read(ACTION), "the last step must exit with the captured code"
 
 
+def test_missing_key_records_exit_code_before_failing() -> None:
+    body = _read(ACTION)
+    run_section = body.split("Run pcc-check", 1)[1].split("Upload proofs artifact", 1)[0]
+    error_pos = run_section.find("::error::")
+    assert error_pos != -1, "the check step must fail with a clear message on a missing key"
+    assert "exit_code=1" in run_section[:error_pos] or (
+        "exit_code=" in run_section and run_section.find("exit_code=") < error_pos
+    ), "a missing key must record exit_code before failing so the failure is not masked"
+
+
+def test_last_step_fails_when_check_output_is_missing_unless_fork_skipped() -> None:
+    body = _read(ACTION)
+    section = body.split("Fail on findings", 1)[1]
+    assert "steps.fork.outputs.skip" in section, "the last step must stay green for skipped forks"
+    assert 'exit "${code:-0}"' not in section, "the last step must not default a missing code to success"
+    assert "-z" in section or ":-1" in section or ":1" in section, (
+        "the last step must fail when the check produced no exit code"
+    )
+
+
 def test_non_fork_steps_carry_the_skip_guard() -> None:
     count = _read(ACTION).count(_SKIP_GUARD)
     assert count >= 6, f"every later step needs the fork skip guard, found {count} guards"

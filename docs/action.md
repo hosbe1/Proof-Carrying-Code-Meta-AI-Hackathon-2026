@@ -60,7 +60,9 @@ with a notice, because they have no secrets.
    or creates it. The body is the report `pcc-check run` writes to its `--report` file (from the
    marker on), plus a footer linking the workflow run. No functions changed renders as
    "No functions checked.".
-6. The last step exits with the captured code, so the check turns red on findings.
+6. The last step exits with the captured code, so the check turns red on findings. It stays
+   green for skipped forks and fails when the check produced no exit code (for example a missing
+   key or a setup failure).
 
 Certificates are never committed by the action: download the `proofs` artifact from the workflow run
 linked in the comment and commit it to the branch, so the next run re-checks the certificates instead

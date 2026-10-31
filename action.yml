@@ -61,6 +61,7 @@ runs:
         GITHUB_TOKEN: ${{ github.token }}
       run: |
         if [ -z "${META_API_KEY}" ]; then
+          echo "exit_code=1" >> "$GITHUB_OUTPUT"
           echo "::error::Missing meta-api-key. Store your Meta Model API key as a repository secret and pass it as the meta-api-key input."
           exit 1
         fi
@@ -128,5 +129,11 @@ runs:
       if: always()
       shell: bash
       run: |
+        if [ "${{ steps.fork.outputs.skip }}" = "true" ]; then
+          exit 0
+        fi
         code="${{ steps.check.outputs.exit_code }}"
-        exit "${code:-0}"
+        if [ -z "$code" ]; then
+          exit 1
+        fi
+        exit "$code"
