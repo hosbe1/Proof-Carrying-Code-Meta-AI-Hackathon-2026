@@ -1,0 +1,1 @@
+{"summary": "Check whether a string reads the same forward and backward.", "claims": [{"text": "The function decides whether the input string is a palindrome.", "sources": [1, 2, 3]}, {"text": "Empty strings and single characters count as palindromes.", "sources": [3]}], "contradictions": [], "checkable": true, "reason": ""}
