@@ -372,8 +372,10 @@ def spec_dependency(qualname: str, dafny_spec: str) -> Dependency:
 def dependency_hashes(function: FunctionRef, callees: Mapping[FunctionRef, Result]) -> tuple[Dependency, ...]:
     """The certificate dependencies of ``function``: the sha256 of each direct callee's ``dafny_spec``.
 
-    The certificate writer passes these to ``certificate.from_result``; callees without a translated spec are
-    skipped.
+    This covers in-memory callee results that carry a translation. Callees without a translated spec (for
+    example certificate-reused callees in the CLI, whose ``Result`` carries only the proof) are skipped here
+    and covered by the CLI's stored-spec path instead. Both paths build each entry with ``spec_dependency``,
+    so they agree whenever both hold the spec (locked by a test).
     """
     found: list[Dependency] = []
     for callee in _direct_callees(function, callees):
