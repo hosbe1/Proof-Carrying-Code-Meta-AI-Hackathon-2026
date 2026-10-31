@@ -1,0 +1,30 @@
+name: Action self-test
+
+# Manual end-to-end run of the local action (uses: ./). Kept manual so CI stays green while
+# no model API secret is configured: without a key the action stops after the setup steps with a
+# clear missing-key error, which is the behaviour under test. With a META_API_KEY secret configured
+# it runs the full pcc-check run instead.
+# CI still lints this workflow with actionlint (see ci.yml).
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  selftest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Run the local action
+        uses: ./
+        with:
+          meta-api-key: ${{ secrets.META_API_KEY }}
