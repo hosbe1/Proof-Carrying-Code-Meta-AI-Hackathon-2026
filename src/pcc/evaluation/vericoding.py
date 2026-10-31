@@ -9,9 +9,11 @@ task is submitted, work already submitted finishes and its actual cost is record
 
 ``runs/<name>`` holds ``results.jsonl`` (one line per completed task, in stable task-ID order),
 ``run.json`` (the protocol fields) and ``summary.md`` (proof rate, cost and time per task).
-Rerunning into the same directory skips the task IDs already in ``results.jsonl``. A ``ToolError``
-(model unavailable, Dafny missing or of the wrong version) stops the run; the lines written so
-far are kept.
+Tasks whose prompt cannot be built (``build_prompt`` raises ``ValueError``) are skipped before
+any sampling and reported in ``skipped.json``; ``run.json`` and ``results.jsonl`` count only
+eligible tasks. Rerunning into the same directory skips the task IDs already in
+``results.jsonl``. A ``ToolError`` (model unavailable, Dafny missing or of the wrong version)
+stops the run; the lines written so far are kept.
 """
 
 from __future__ import annotations
@@ -317,6 +319,47 @@ def _load_resume(
     return done, spent, kept_utc, kept_sha, split_sha256
 
 
+def _partition_eligible(tasks: list[Task]) -> tuple[list[Task], list[str]]:
+    """Split ``tasks`` into eligible tasks and sorted skipped IDs.
+
+    A task is skipped only when ``build_prompt`` raises ``ValueError`` (for
+    example Vericoding rows with an empty ``vc-spec`` and no prompt stub); any
+    other error propagates. Proof-only tasks use ``build_proof_only_prompt``
+    instead, so they are never probed with ``build_prompt``.
+    """
+    eligible: list[Task] = []
+    skipped: list[str] = []
+    for task in tasks:
+        if _is_proof_only(task):
+            eligible.append(task)
+            continue
+        try:
+            build_prompt(task)
+        except ValueError:
+            skipped.append(task.id)
+        else:
+            eligible.append(task)
+    return eligible, sorted(skipped)
+
+
+def _write_skipped_report(out_dir: Path, *, total_tasks: int, eligible_tasks: int, skipped_ids: list[str]) -> None:
+    """Write ``skipped.json`` with the deterministic skip report of this run."""
+    (out_dir / "skipped.json").write_text(
+        json.dumps(
+            {
+                "total_tasks": total_tasks,
+                "eligible_tasks": eligible_tasks,
+                "skipped_count": len(skipped_ids),
+                "skipped_ids": sorted(skipped_ids),
+            },
+            sort_keys=True,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
 def _metrics(lines: list[dict[str, Any]]) -> dict[str, Any]:
     """The counts, proof rate and totals of completed result lines."""
     verified = sum(1 for line in lines if line.get("verified") is True)
@@ -368,6 +411,8 @@ def _write_run_json(
     status: str,
     task_ids: list[str],
     metrics: dict[str, Any] | None,
+    total_tasks: int | None = None,
+    skipped_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     """Write ``run.json`` and return its content.
 
@@ -392,6 +437,10 @@ def _write_run_json(
         "status": status,
         "tasks": task_ids,
         "metrics": metrics,
+        "total_tasks": total_tasks if total_tasks is not None else len(task_ids),
+        "eligible_tasks": len(task_ids),
+        "skipped_count": len(skipped_ids) if skipped_ids is not None else 0,
+        "skipped_ids": sorted(skipped_ids) if skipped_ids is not None else [],
     }
     (out_dir / "run.json").write_text(json.dumps(summary, sort_keys=True, indent=2) + "\n", encoding="utf-8")
     return summary
@@ -406,19 +455,26 @@ def _write_summary(
     split: str,
     lines: list[dict[str, Any]],
     stopped: bool,
+    total_tasks: int | None = None,
+    skipped_ids: list[str] | None = None,
 ) -> None:
     """Write ``summary.md``: the proof rate, the totals and the cost and time per task."""
     metrics = _metrics(lines)
+    skipped = sorted(skipped_ids) if skipped_ids is not None else []
+    total = total_tasks if total_tasks is not None else metrics["total"]
     text = [
         f"# Vericoding run: {out_dir.name}",
         "",
         f"- Model: {model} (endpoint {endpoint})",
         f"- Split: {split}",
         f"- Attempts per task: {attempts}",
+        f"- Eligible tasks: {metrics['total']} of {total} (skipped {len(skipped)})",
         f"- Verified: {metrics['verified']} of {metrics['total']} (proof rate {metrics['proof_rate']:.3f})",
         f"- Total cost: {metrics['total_cost_usd']:.2f} USD",
         f"- Total time: {metrics['total_seconds']:.1f} s",
     ]
+    if skipped:
+        text.append(f"- Skipped tasks (unbuildable prompt): {', '.join(skipped)}")
     if stopped:
         text.append(f"- {CAP_LINE}")
     text += ["", "## Tasks", ""]
@@ -468,6 +524,16 @@ def run_harness(
     the cheat scan and verifies with Dafny. ``run.json`` records the resolved
     tasks-file path as ``split`` and the SHA-256 of its raw bytes as
     ``split_sha256``; resuming requires both to match.
+
+    Tasks whose prompt cannot be built (``build_prompt`` raises ``ValueError``,
+    e.g. Vericoding rows with an empty ``vc-spec`` and no prompt stub) are
+    skipped deterministically before any sampling, on every invocation including
+    resumes: they are never sampled, verified, costed or recorded in
+    ``results.jsonl``. The skip is reported in ``<out_dir>/skipped.json``
+    (``total_tasks``, ``eligible_tasks``, ``skipped_count``, sorted
+    ``skipped_ids``) and in ``run.json`` and ``summary.md``; ``run.json`` tasks
+    and metrics count only eligible tasks. Only ``ValueError`` from
+    ``build_prompt`` is skipped: any other error still propagates.
     """
     if tasks_file is not None and split is not None:
         raise ValueError("--tasks-file is mutually exclusive with --split")
@@ -514,8 +580,10 @@ def run_harness(
     else:
         resolved = _load_tasks_file(resolved_file)
     out_dir.mkdir(parents=True, exist_ok=True)
-    ordered = sorted(resolved, key=lambda task: task.id)
+    ordered_all = sorted(resolved, key=lambda task: task.id)
+    ordered, skipped_ids = _partition_eligible(ordered_all)
     task_ids = [task.id for task in ordered]
+    _write_skipped_report(out_dir, total_tasks=len(ordered_all), eligible_tasks=len(ordered), skipped_ids=skipped_ids)
     done, spent, kept_utc, kept_sha, split_sha = _load_resume(
         out_dir, split_label, file_sha, endpoint, model, attempts, max_cost_usd, contributor, started_utc, git_sha
     )
@@ -534,6 +602,8 @@ def run_harness(
         status="running",
         task_ids=task_ids,
         metrics=None,
+        total_tasks=len(ordered_all),
+        skipped_ids=skipped_ids,
     )
     pending = [task for task in ordered if task.id not in done]
     stopped = False
@@ -597,6 +667,8 @@ def run_harness(
             status="error",
             task_ids=task_ids,
             metrics=_metrics(lines),
+            total_tasks=len(ordered_all),
+            skipped_ids=skipped_ids,
         )
         _write_summary(
             out_dir,
@@ -606,6 +678,8 @@ def run_harness(
             split=split_label,
             lines=lines,
             stopped=stopped,
+            total_tasks=len(ordered_all),
+            skipped_ids=skipped_ids,
         )
         raise
     lines = [done[task.id] for task in ordered if task.id in done]
@@ -624,9 +698,19 @@ def run_harness(
         status="done",
         task_ids=task_ids,
         metrics=_metrics(lines),
+        total_tasks=len(ordered_all),
+        skipped_ids=skipped_ids,
     )
     _write_summary(
-        out_dir, endpoint=endpoint, model=model, attempts=attempts, split=split_label, lines=lines, stopped=stopped
+        out_dir,
+        endpoint=endpoint,
+        model=model,
+        attempts=attempts,
+        split=split_label,
+        lines=lines,
+        stopped=stopped,
+        total_tasks=len(ordered_all),
+        skipped_ids=skipped_ids,
     )
     return summary
 

@@ -510,3 +510,36 @@ def test_compare_missing_summary_is_usage_error(tmp_path: Path) -> None:
     with pytest.raises(UsageError, match=r"summary\.json"):
         compare([empty])
     assert main(["compare", str(empty), str(empty)]) == 2
+
+
+def test_publish_vericoding_states_skipped_ids_and_denominator(tmp_path: Path) -> None:
+    """A run with skipped rows publishes the excluded IDs and the eligible denominator (issue #154)."""
+    runs = tmp_path / "runs"
+    run_dir = vericoding_run(runs, "skipped", [vericoding_line("vericoding/t1", 1, 1)])
+    payload = read_json(run_dir / "run.json")
+    payload["tasks"] = ["vericoding/t1"]
+    payload["total_tasks"] = 3
+    payload["eligible_tasks"] = 1
+    payload["skipped_count"] = 2
+    payload["skipped_ids"] = ["vericoding/DA0152", "vericoding/DA0818"]
+    write_json(run_dir / "run.json", payload)
+    dest = publish(run_dir, tmp_path / "results")
+    body = (dest / "summary.md").read_text(encoding="utf-8")
+    assert "vericoding/DA0152" in body
+    assert "vericoding/DA0818" in body
+    assert "1 of 3" in body
+    summary = read_json(dest / "summary.json")
+    assert summary["skipped_ids"] == ["vericoding/DA0152", "vericoding/DA0818"]
+    assert summary["total_tasks"] == 3
+
+
+def test_publish_vericoding_without_skips_has_empty_skip_report(tmp_path: Path) -> None:
+    """Runs without skipped rows publish an empty skip report and no skip lines."""
+    runs = tmp_path / "runs"
+    run_dir = vericoding_run(runs, "noskips", [vericoding_line("vericoding/t1", 1, 1)])
+    dest = publish(run_dir, tmp_path / "results")
+    body = (dest / "summary.md").read_text(encoding="utf-8")
+    assert "Skipped tasks" not in body
+    summary = read_json(dest / "summary.json")
+    assert summary["skipped_ids"] == []
+    assert summary["total_tasks"] == 1
