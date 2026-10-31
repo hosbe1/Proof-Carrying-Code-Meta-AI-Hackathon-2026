@@ -72,6 +72,32 @@ def test_empty_spec_gives_minus_one() -> None:
     assert reward(CORRECT, "", resource_limit=RESOURCE_LIMIT) == -1.0
 
 
+def test_added_requires_gives_minus_one_without_verifier(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ticket example 2: an answer with an added requires changes the header, giving -1."""
+
+    def fail_on_verify(_code: str, *, resource_limit: int) -> VerifyOutcome:
+        raise AssertionError("verify must not run for a header violation")
+
+    monkeypatch.setattr(reward_module, "verify", fail_on_verify)
+    spec = "method M(n: int) returns (r: int) requires n >= 0 ensures r == n {}"
+    answer = "method M(n: int) returns (r: int) requires n >= 0 ensures r == n requires false { r := n; }"
+    assert reward(answer, spec, resource_limit=RESOURCE_LIMIT) == -1.0
+
+
+def test_duplicated_method_with_added_requires_gives_minus_one(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The frozen prefix still occurs, but the duplicated header differs: -1 without verify."""
+
+    def fail_on_verify(_code: str, *, resource_limit: int) -> VerifyOutcome:
+        raise AssertionError("verify must not run for a header violation")
+
+    monkeypatch.setattr(reward_module, "verify", fail_on_verify)
+    answer = CORRECT + (
+        "method f(x: int) returns (result: int)\n  ensures spec(x, result)\n  requires false\n{\n  result := x;\n}\n"
+    )
+    assert TASK_SPEC in answer
+    assert reward(answer, TASK_SPEC, resource_limit=RESOURCE_LIMIT) == -1.0
+
+
 def test_tool_error_passes_through(monkeypatch: pytest.MonkeyPatch) -> None:
     def broken(_code: str, *, resource_limit: int) -> VerifyOutcome:
         raise ToolError("dafny CLI is not on PATH")
