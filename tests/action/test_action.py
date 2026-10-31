@@ -81,6 +81,18 @@ def test_check_step_environment_and_exit_code() -> None:
     assert "::error::" in body, "a missing meta-api-key must fail with a clear message"
 
 
+def test_check_step_writes_report_file() -> None:
+    body = _read(ACTION)
+    assert "--report" in body, "the check step must ask pcc-check run to write its markdown report to a file"
+    assert "pcc-report.md" in body, "the report file must be a stable name both steps share"
+
+
+def test_comment_step_reads_report_file() -> None:
+    body = _read(ACTION)
+    comment = body.split("Comment results", 1)[1]
+    assert "pcc-report.md" in comment, "the comment step must read the report file, not the run stdout"
+
+
 def test_artifact_upload_is_pinned_by_sha() -> None:
     lines = [line for line in _read(ACTION).splitlines() if "actions/upload-artifact@" in line]
     assert lines, "the action must upload the proofs with actions/upload-artifact"

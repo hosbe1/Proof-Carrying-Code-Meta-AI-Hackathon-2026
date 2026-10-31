@@ -1,8 +1,9 @@
 name: Action self-test
 
 # Manual end-to-end run of the local action (uses: ./). Kept manual so CI stays green while
-# pcc-check run (issue #40) is still a stub and no model API secret is configured: without a key the
-# action stops after the setup steps with a clear missing-key error, which is the behaviour under test.
+# no model API secret is configured: without a key the action stops after the setup steps with a
+# clear missing-key error, which is the behaviour under test. With a META_API_KEY secret configured
+# it runs the full pcc-check run instead.
 # CI still lints this workflow with actionlint (see ci.yml).
 
 on:

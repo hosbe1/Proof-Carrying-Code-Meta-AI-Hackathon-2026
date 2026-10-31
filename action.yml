@@ -72,7 +72,7 @@ runs:
           base="origin/main"
         fi
         set +e
-        pcc-check run ${{ inputs.paths }} --base "$base" --proofs-dir "${{ inputs.proofs-dir }}" > "${RUNNER_TEMP}/pcc-comment.md" 2> "${RUNNER_TEMP}/pcc-run.log"
+        pcc-check run ${{ inputs.paths }} --base "$base" --proofs-dir "${{ inputs.proofs-dir }}" --report "${RUNNER_TEMP}/pcc-report.md" > "${RUNNER_TEMP}/pcc-run.log" 2>&1
         code=$?
         set -e
         echo "exit_code=${code}" >> "$GITHUB_OUTPUT"
@@ -100,8 +100,8 @@ runs:
           exit 0
         fi
         report=""
-        if [ -f "${RUNNER_TEMP}/pcc-comment.md" ]; then
-          report="$(sed -n '/<!-- pcc-check -->/,$p' "${RUNNER_TEMP}/pcc-comment.md")"
+        if [ -f "${RUNNER_TEMP}/pcc-report.md" ]; then
+          report="$(sed -n '/<!-- pcc-check -->/,$p' "${RUNNER_TEMP}/pcc-report.md")"
         fi
         if [ -z "$report" ]; then
           code="${{ steps.check.outputs.exit_code }}"
