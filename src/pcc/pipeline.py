@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import ast
 import dataclasses
+import doctest
 import hashlib
+import json
 import re
 import textwrap
 import threading
@@ -32,6 +34,7 @@ from pcc.core import (
     SourceKind,
     Spec,
     State,
+    ToolError,
     Translation,
     TranslationPath,
     UnsupportedConstruct,
@@ -467,6 +470,9 @@ _METHOD_REASON = "methods are tier 3"
 #: Reason when the function calls another function of the project (ticket #64, from #43).
 _CALLS_REASON = "calls into the project come with #43"
 
+#: Reason when a scan counterexample contradicts the function's own doctests (ticket #66).
+_DOCTEST_CONFLICT_REASON = "spec contradicts docstring"
+
 #: Reasons for the spec and translation exits (ticket #34).
 _MUTANTS_REASON = "spec does not kill mutants"
 _UNTRANSLATABLE_REASON = "spec not translatable"
@@ -664,6 +670,186 @@ def precheck(
     return None
 
 
+#: Marker prefixing the doctest-filter result line on stdout, so prints from the target cannot be mistaken for it.
+_MARKER_DOCTEST = "PCC_DOCTEST_CONFLICT "
+
+
+def _simple_name(qualname: str) -> str:
+    """The last part of ``qualname`` without ``<locals>``: the name doctest examples call."""
+    return [part for part in qualname.split(".") if part != "<locals>"][-1]
+
+
+def _function_docstring(function: FunctionRef) -> str | None:
+    """The docstring of ``function.source``, parsed, never imported; ``None`` when missing or unparseable."""
+    try:
+        tree = ast.parse(textwrap.dedent(function.source))
+    except SyntaxError:
+        return None
+    name = _simple_name(function.qualname)
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
+            return ast.get_docstring(node)
+    return None
+
+
+def _is_bare_call(source: str, name: str) -> bool:
+    """Whether ``source`` is a single expression statement calling ``name``, such as ``f("ab")``."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return False
+    if len(tree.body) != 1:
+        return False
+    statement = tree.body[0]
+    if not isinstance(statement, ast.Expr) or not isinstance(statement.value, ast.Call):
+        return False
+    func = statement.value.func
+    return isinstance(func, ast.Name) and func.id == name
+
+
+def _doctest_binding_snippet(has_pre: bool) -> str:
+    """Sandbox helpers binding doctest inputs: positional calls by parameter name, like the generated test does.
+
+    ``spec`` (and ``pre`` when there is one) are already defined above this snippet; the doctest call is replayed
+    through a capturing stand-in, so its positional and keyword arguments bind by parameter name while ``result``
+    is bound separately. A ``pre`` that raises counts as not holding and a ``spec`` that raises counts as
+    rejecting the input: both skip the example.
+    """
+    pre_sig = "inspect.signature(pre)" if has_pre else "None  # no precondition; _pre_at always holds"
+    pre_at = (
+        "def _pre_at(_args, _kwargs):\n"
+        "    _binding = dict(zip(_func_names(), _args))\n"
+        "    _binding.update(_kwargs)\n"
+        "    return _call_bound(pre, _pre_sig, _binding)"
+        if has_pre
+        else "def _pre_at(_args, _kwargs):\n    return True"
+    )
+    return "\n".join(
+        [
+            "import inspect",
+            "_callee_sig = inspect.signature(target)",
+            "_spec_sig = inspect.signature(spec)",
+            f"_pre_sig = {pre_sig}",
+            "def _call_bound(_fn, _sig, _binding):",
+            "    _posonly = [n for n, p in _sig.parameters.items() if p.kind is inspect.Parameter.POSITIONAL_ONLY]",
+            "    _pos = tuple(_binding[n] for n in _posonly)",
+            "    _kw = {n: v for n, v in _binding.items() if n not in _posonly and n in _sig.parameters}",
+            "    return _fn(*_pos, **_kw)",
+            "def _func_names():",
+            "    return [n for n, p in _callee_sig.parameters.items() if p.kind in"
+            " (inspect.Parameter.POSITIONAL_ONLY,"
+            " inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)]",
+            pre_at,
+            "def _spec_at(_args, _kwargs, _result):",
+            "    _binding = dict(zip(_func_names(), _args))",
+            "    _binding.update(_kwargs)",
+            "    _binding['result'] = _result",
+            "    return _call_bound(spec, _spec_sig, _binding)",
+        ]
+    )
+
+
+def _doctest_script(function: FunctionRef, spec: Spec, name: str, kept: list[tuple[str, object]]) -> str:
+    """A sandbox script printing one marker line with the first conflicting example source, if there is one."""
+    chunks = [target_loader(function), spec.predicate]
+    if spec.precondition is not None:
+        chunks.append(spec.precondition)
+    chunks.append(_doctest_binding_snippet(spec.precondition is not None))
+    lines = [
+        "import json",
+        f"_examples = {kept!r}",
+        "_conflict = None",
+        "_capture = {}",
+        "def _capture_call(*_args, **_kwargs):",
+        '    _capture["args"] = _args',
+        '    _capture["kwargs"] = _kwargs',
+        "for _source, _want in _examples:",
+        "    _capture.clear()",
+        f"    _namespace = {{'__builtins__': __builtins__, {name!r}: _capture_call}}",
+        "    try:",
+        '        exec(compile(_source, "<doctest>", "exec"), _namespace)',
+        "    except Exception:",
+        "        continue",
+        '    _args = _capture.get("args")',
+        '    _kwargs = _capture.get("kwargs", {})',
+        "    if _args is None:",
+        "        continue",
+        "    try:",
+        "        _holds = bool(_pre_at(_args, _kwargs))",
+        "    except Exception:",
+        "        continue",
+        "    if not _holds:",
+        "        continue",
+        "    try:",
+        "        _ok = bool(_spec_at(_args, _kwargs, _want))",
+        "    except Exception:",
+        "        continue",
+        "    if not _ok:",
+        "        _conflict = _source",
+        "        break",
+        f"print({_MARKER_DOCTEST!r} + json.dumps({{'conflict': _conflict}}))",
+    ]
+    chunks.append("\n".join(lines))
+    return "\n".join(chunk.rstrip("\n") for chunk in chunks) + "\n"
+
+
+def _run_doctest_script(script: str, repo_root: Path) -> dict[str, object]:
+    """Run ``script`` in the sandbox and return its conflict payload.
+
+    A script whose marker parses is used as is. A run with no marker raises ``ToolError``, so a broken setup is
+    loud instead of silently reporting no conflict; the scan turns it into ``open`` "tool error".
+    """
+    outcome = run_python(script, cwd=repo_root)
+    for line in outcome.stdout.splitlines():
+        if not line.startswith(_MARKER_DOCTEST):
+            continue
+        try:
+            data = json.loads(line[len(_MARKER_DOCTEST) :])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict):
+            return data
+    raise ToolError(
+        "doctest filter sandbox run produced no result "
+        f"(exit {outcome.returncode}, timed out {outcome.timed_out}): {outcome.stderr.strip()}"
+    )
+
+
+def doctest_conflict(spec: Spec, function: FunctionRef, repo_root: Path) -> str | None:
+    """The first doctest example whose documented output the spec rejects, or ``None`` when there is none.
+
+    The docstring comes from ``function.source``, parsed, never imported; a missing or unparseable docstring
+    yields ``None``. Only examples that are a bare call to the function (``<name>(<args>)`` with ``<name>`` the
+    last part of the qualname) and whose expected output is ``ast.literal_eval``-able are kept; calls to other
+    functions, assignments and non-literal outputs (including tracebacks) are skipped. Each kept example runs in
+    the sandbox: an input that ``pre`` rejects (or on which ``pre`` raises) is skipped, and so is an input on
+    which ``spec`` raises; the first example with ``spec(args, want)`` false returns its stripped source (for
+    example ``f("ab")``). A ``ToolError`` from the sandbox passes through.
+    """
+    docstring = _function_docstring(function)
+    if not docstring:
+        return None
+    name = _simple_name(function.qualname)
+    examples = doctest.DocTestParser().get_doctest(docstring, {}, name, function.path, 0).examples
+    kept: list[tuple[str, object]] = []
+    for example in examples:
+        if example.exc_msg is not None:
+            continue
+        source = example.source.strip()
+        if not _is_bare_call(source, name):
+            continue
+        try:
+            want = ast.literal_eval(example.want)
+        except Exception:
+            continue
+        kept.append((source, want))
+    if not kept:
+        return None
+    payload = _run_doctest_script(_doctest_script(function, spec, name, kept), repo_root)
+    conflict = payload.get("conflict")
+    return conflict if isinstance(conflict, str) and conflict else None
+
+
 def _needs_search(context: Context) -> bool:
     """Whether the search agent should run: the evidence holds no TEST, DOCSTRING, ISSUE, PULL_REQUEST or COMMIT."""
     return not any(evidence.kind in _SEARCHED_KINDS for evidence in context.evidence)
@@ -812,7 +998,9 @@ def run(
     ``max_rewrites`` counter; the rewritten spec runs the full step-3 check again. ``BudgetExceeded`` and an
     elapsed time past ``max_seconds_per_function`` end the run ``open`` with the parts reached so far; the
     second opinion is advisory and never changes the state. Expected step failures become result states;
-    ``ToolError`` escapes.
+    ``ToolError`` escapes. In scan mode (``config.pipeline.scan``) a step-3 or step-6 counterexample that
+    contradicts the function's own doctests becomes ``open`` with reason ``"spec contradicts docstring"``
+    before the advisory second opinion.
     """
     wrapped = BudgetedClient(
         client,
@@ -890,6 +1078,10 @@ def run(
                 found = build_counterexample(function, spec, repo_root, _strip_raises_suffix(hyp_detail))
                 if fixes:
                     found = dataclasses.replace(found, suggested_fix=fixes[0].detail)
+                if config.pipeline.scan and doctest_conflict(spec, function, repo_root) is not None:
+                    return finish(
+                        Result(function, State.OPEN, _DOCTEST_CONFLICT_REASON, intent, spec, usage=wrapped.usage)
+                    )
                 return finish(
                     Result(
                         function,
@@ -988,6 +1180,22 @@ def run(
             config=config.counterexample,
         )
         if hit is not None:
+            if config.pipeline.scan and doctest_conflict(spec, function, repo_root) is not None:
+                return finish(
+                    Result(
+                        function,
+                        State.OPEN,
+                        _DOCTEST_CONFLICT_REASON,
+                        intent,
+                        spec,
+                        translation,
+                        assumptions,
+                        None,
+                        None,
+                        None,
+                        wrapped.usage,
+                    )
+                )
             return finish(
                 Result(
                     function,
@@ -1085,6 +1293,7 @@ __all__ = [
     "MUTUAL_RECURSION",
     "SerializedClient",
     "dependency_hashes",
+    "doctest_conflict",
     "module_import_errors",
     "precheck",
     "run",
