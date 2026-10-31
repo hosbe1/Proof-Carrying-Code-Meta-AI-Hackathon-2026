@@ -3,6 +3,7 @@ raises ``UnsupportedConstruct`` and the pipeline falls back to AI translation.""
 
 from __future__ import annotations
 
-from pcc.transpile.code import transpile_function, transpile_spec
+from pcc.transpile.code import translate_expr, transpile_function
+from pcc.transpile.spec import transpile_spec
 
-__all__ = ["transpile_function", "transpile_spec"]
+__all__ = ["translate_expr", "transpile_function", "transpile_spec"]

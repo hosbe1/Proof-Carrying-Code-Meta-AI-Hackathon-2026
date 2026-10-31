@@ -1,0 +1,4 @@
+{
+  "lemmas": "",
+  "method": "method is_palindrome(s: string) returns (result: bool)\n  ensures spec(s, result)\n{\n  result := s == py_reversed(s);\n}\n"
+}

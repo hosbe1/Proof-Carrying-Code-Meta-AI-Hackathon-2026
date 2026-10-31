@@ -105,7 +105,7 @@ def test_dafny_defaults() -> None:
 def test_pipeline_defaults() -> None:
     pipeline = Config().pipeline
     assert pipeline.workers == 4
-    assert pipeline.search_agent is False
+    assert pipeline.search_agent is True
 
 
 def test_config_holds_one_group_of_each_kind() -> None:

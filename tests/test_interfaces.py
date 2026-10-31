@@ -36,6 +36,7 @@ import pcc.spec
 import pcc.translate_ai
 import pcc.transpile
 import pcc.transpile.code as transpile_code
+import pcc.transpile.spec as transpile_spec_module
 import pcc.verifier
 import pcc.verifier.dafny as verifier_dafny
 import pcc.verifier.ghost as verifier_ghost
@@ -170,12 +171,12 @@ def test_fake_client_complete_and_calls() -> None:
 
 def test_router_and_available_stages() -> None:
     assert isinstance(Router(), Router)
-    sig = assert_sig(
+    # available_stages is implemented (issue #19); only its signature stays locked here.
+    assert_sig(
         models_router.available_stages,
         [("config", POS, NoDefault), ("router", POS, NoDefault)],
         Config,
     )
-    assert_raises(models_router.available_stages, sig)
 
 
 def test_verifier_signatures() -> None:
@@ -200,7 +201,7 @@ def test_verifier_signatures() -> None:
     # The layout bodies are implemented, so only their signatures stay locked here.
     assert_sig(verifier_layout.method_name, [("function", POS, NoDefault)], str)
     assert_sig(verifier_layout.module_name, [("function", POS, NoDefault)], str)
-    sig = assert_sig(
+    assert_sig(
         verifier_layout.assemble,
         [
             ("function", POS, NoDefault),
@@ -218,7 +219,8 @@ def test_verifier_signatures() -> None:
         [("dafny_code", POS, NoDefault), ("timeout_seconds", KWO, 120.0)],
         tuple[DafnyError, ...],
     )
-    sig = assert_sig(
+    # verify is implemented (issue #20); only its signature stays locked here.
+    assert_sig(
         verify,
         [
             ("dafny_code", POS, NoDefault),
@@ -229,13 +231,12 @@ def test_verifier_signatures() -> None:
         ],
         VerifyOutcome,
     )
-    assert_raises(verify, sig)
-    sig = assert_sig(
+    # build_python is implemented (issue #29); only its signature stays locked here.
+    assert_sig(
         build_python,
         [("dafny_code", POS, NoDefault), ("out_dir", POS, NoDefault)],
         Path,
     )
-    assert_raises(build_python, sig)
 
     # The ghost bodies are implemented, so only their signatures stay locked here.
     assert_sig(
@@ -287,18 +288,17 @@ def test_project_signatures() -> None:
 
     assert project_diff.changed is pcc.project.changed
     assert project_calls.call_graph is pcc.project.call_graph
-    sig = assert_sig(
+    # ``changed`` and ``call_graph`` are implemented (issue #22); only their signatures stay locked here.
+    assert_sig(
         pcc.project.changed,
         [("repo_root", POS, NoDefault), ("base", POS, NoDefault)],
         tuple[FunctionRef, ...],
     )
-    assert_raises(pcc.project.changed, sig)
-    sig = assert_sig(
+    assert_sig(
         pcc.project.call_graph,
         [("repo_root", POS, NoDefault), ("functions", POS, NoDefault)],
         Mapping[FunctionRef, frozenset[FunctionRef]],
     )
-    assert_raises(pcc.project.call_graph, sig)
     assert callable(discover)
     assert callable(affected)
     assert callable(call_order)
@@ -308,7 +308,8 @@ def test_spec_signatures() -> None:
     assert spec_write.write is pcc.spec.write
     assert spec_check.check is pcc.spec.check
     assert spec_check.spec_cases is pcc.spec.spec_cases
-    sig = assert_sig(
+    # write is implemented (issue #26); only its signature is locked here.
+    assert_sig(
         pcc.spec.write,
         [
             ("intent", POS, NoDefault),
@@ -318,8 +319,8 @@ def test_spec_signatures() -> None:
         ],
         Spec,
     )
-    assert_raises(pcc.spec.write, sig)
-    sig = assert_sig(
+    # check is implemented (issue #54); only its signature is locked here.
+    assert_sig(
         pcc.spec.check,
         [
             ("spec", POS, NoDefault),
@@ -331,8 +332,8 @@ def test_spec_signatures() -> None:
         ],
         Spec,
     )
-    assert_raises(pcc.spec.check, sig)
-    sig = assert_sig(
+    # spec_cases is implemented (issue #54); only its signature is locked here.
+    assert_sig(
         pcc.spec.spec_cases,
         [
             ("spec", POS, NoDefault),
@@ -342,7 +343,6 @@ def test_spec_signatures() -> None:
         ],
         tuple[tuple[str, str], ...],
     )
-    assert_raises(pcc.spec.spec_cases, sig)
 
 
 def test_equivalence_signatures() -> None:
@@ -364,20 +364,21 @@ def test_equivalence_signatures() -> None:
 
 def test_transpile_signatures() -> None:
     assert transpile_code.transpile_function is pcc.transpile.transpile_function
-    assert transpile_code.transpile_spec is pcc.transpile.transpile_spec
-    sig = assert_sig(
+    assert transpile_spec_module.transpile_spec is pcc.transpile.transpile_spec
+    assert_sig(
         pcc.transpile.transpile_function,
         [("function", POS, NoDefault), ("callees", KWO, MappingProxyType({}))],
         str,
     )
-    assert_raises(pcc.transpile.transpile_function, sig)
-    sig = assert_sig(transpile_code.transpile_spec, [("spec", POS, NoDefault)], str)
-    assert_raises(transpile_code.transpile_spec, sig)
+    # transpile_function is implemented (issue #23); only its signature is locked here.
+    assert pcc.transpile.translate_expr is transpile_code.translate_expr
+    # transpile_spec is implemented (issue #30), so only its signature stays locked here.
+    assert_sig(transpile_spec_module.transpile_spec, [("spec", POS, NoDefault)], str)
 
 
 def test_translate_ai_signatures() -> None:
     assert translate_ai_translate.translate is pcc.translate_ai.translate
-    sig = assert_sig(
+    assert_sig(
         pcc.translate_ai.translate,
         [
             ("function", POS, NoDefault),
@@ -390,13 +391,14 @@ def test_translate_ai_signatures() -> None:
         ],
         Translation,
     )
-    assert_raises(pcc.translate_ai.translate, sig)
+    # translate_ai is implemented (issue #35); only its signature is locked here.
 
 
 def test_counterexample_signatures() -> None:
     assert counterexample_search.search is pcc.counterexample.search
     assert counterexample_build.build is pcc.counterexample.build
-    sig = assert_sig(
+    # search is implemented (issue #33); only its signature is locked here.
+    assert_sig(
         pcc.counterexample.search,
         [
             ("function", POS, NoDefault),
@@ -409,8 +411,8 @@ def test_counterexample_signatures() -> None:
         ],
         Counterexample | None,
     )
-    assert_raises(pcc.counterexample.search, sig)
-    sig = assert_sig(
+    # build is implemented (issue #33); only its signature is locked here.
+    assert_sig(
         pcc.counterexample.build,
         [
             ("function", POS, NoDefault),
@@ -420,12 +422,11 @@ def test_counterexample_signatures() -> None:
         ],
         Counterexample,
     )
-    assert_raises(pcc.counterexample.build, sig)
 
 
 def test_prove_signatures() -> None:
     assert prove_agent.prove is pcc.prove.prove
-    sig = assert_sig(
+    assert_sig(
         pcc.prove.prove,
         [
             ("translation", POS, NoDefault),
@@ -439,7 +440,7 @@ def test_prove_signatures() -> None:
         ],
         ProofOutcome,
     )
-    assert_raises(pcc.prove.prove, sig)
+    # prove is implemented (issue #31); only its signature is locked here.
     hints = get_type_hints(pcc.prove.prove)
     assert hints["assumptions"] == Sequence[Assumption]
     assert hints["translation"] is Translation
