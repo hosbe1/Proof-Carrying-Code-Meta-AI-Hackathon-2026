@@ -347,7 +347,8 @@ def run_many(
 
     Mutually recursive functions of one level end ``open`` without running; every other function runs with the
     results of the earlier levels (plus the mutual ones of its own level) as ``callees``. The result holds one
-    entry per passed function, in order.
+    entry per passed function, in order. The shared ``client`` is called from several worker threads at once,
+    so it must be thread-safe.
     """
     levels = call_order(functions)
     done: dict[FunctionRef, Result] = {}
