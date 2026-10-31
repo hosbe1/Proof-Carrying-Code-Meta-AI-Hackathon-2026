@@ -401,20 +401,25 @@ def test_second_stage_prompt_holds_all_first_stage_errors(monkeypatch: pytest.Mo
     assert "second failure" in prompts[2]
 
 
-def test_non_empty_assumptions_raise_value_error() -> None:
+def test_non_empty_assumptions_are_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
     proven = make_translation()
-    client = FakeClient([])
+    client = FakeClient([proof_answer("", METHOD_WITH_DECREASES)])
+    verifier = _VerifyStub([VerifyOutcome(True, (), 0.1)])
+    monkeypatch.setattr(prove_agent, "verify", verifier)
 
-    with pytest.raises(ValueError, match="assumptions"):
-        prove(
-            proven,
-            (assumption(),),
-            client=client,
-            stages=(ProverStage("spark", "m", 1),),
-            resource_limit=1000,
-            function_lines=10,
-        )
-    assert client.requests == []
+    outcome = prove(
+        proven,
+        (assumption(),),
+        client=client,
+        stages=(ProverStage("spark", "m", 1),),
+        resource_limit=1000,
+        function_lines=10,
+        extra_modules=("module Callee {}\n",),
+        assumptions_module="module PCC_assume_12345678 {\n}\n",
+    )
+
+    assert outcome.proven is True
+    assert client.requests != []
 
 
 def test_tool_error_from_client_passes_through() -> None:

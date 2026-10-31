@@ -186,11 +186,12 @@ def prove(
     failures so far (only the last one in the first stage, all of them from the second stage on). An answer that is
     not a ``{lemmas, method}`` object, changes the header or the executable code, declares a method in ``lemmas`` or
     trips the anti-cheat scan fails that attempt without stopping the run. The first verified attempt is returned;
-    otherwise the last outcome, with ``stage`` set to the last stage tried. ``assumptions`` must be empty until
-    callees land. ``ToolError`` from the model client or the verifier passes through.
+    otherwise the last outcome, with ``stage`` set to the last stage tried. ``assumptions`` lists what the proof
+    rests on (unproven callees, contracts); the checkable side travels with ``extra_modules`` and
+    ``assumptions_module``, which ``verify`` links and scans. ``ToolError`` from the model client or the verifier
+    passes through.
     """
-    if assumptions:
-        raise ValueError("prove takes no assumptions until callees land (#43)")
+    _ = assumptions
     pylib_signatures = signatures()
     failures: list[str] = []
     attempts = 0
