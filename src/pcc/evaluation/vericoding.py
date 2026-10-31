@@ -34,9 +34,11 @@ from pcc.core import ToolError
 from pcc.evaluation import datasets
 from pcc.evaluation.datasets import Task
 from pcc.evaluation.prompts import SYSTEM_MESSAGE, build_prompt
+from pcc.evaluation.proof_only import build_proof_only_prompt
 from pcc.models import Message, ModelClient
 from pcc.models.router import ModelUnavailable
-from pcc.verifier import anti_cheat, verify
+from pcc.verifier import anti_cheat, same_executable, verify
+from pcc.verifier.ghost import declared_lemma_names
 from pcc.verifier.header import header_violations
 
 HARNESS = "vericoding"
@@ -78,10 +80,21 @@ def task_spec_of(task: Task) -> str:
     declaration through the opening method brace. ``vc-description`` and ``vc-postamble`` belong
     in the user prompt, not the frozen prefix; ``vc-code`` is the reference answer and never
     enters the prompt. The answer must preserve these bytes, and ``anti_cheat`` checks that.
+
+    A proof-only task (payload ``{"program": ...}``) has no Vericoding prefix; its program
+    is the reference the answer is checked against.
     """
+    program = task.payload.get("program")
+    if isinstance(program, str):
+        return program
     parts = [task.payload.get(key, "") for key in _PREFIX_KEYS]
     head = "\n".join(part for part in parts if isinstance(part, str) and part.strip())
     return f"{head}\n{{\n" if head else ""
+
+
+def _is_proof_only(task: Task) -> bool:
+    """Whether ``task`` comes from a proof-only tasks file (payload ``{"program": ...}``)."""
+    return isinstance(task.payload.get("program"), str)
 
 
 def _is_cheat(answer: str, frozen_prefix: str) -> bool:
@@ -91,6 +104,21 @@ def _is_cheat(answer: str, frozen_prefix: str) -> bool:
     if anti_cheat(answer, frozen_prefix):
         return True
     return bool(header_violations(answer, frozen_prefix))
+
+
+def _is_proof_only_cheat(answer: str, program: str) -> bool:
+    """Whether a proof-only ``answer`` fails the ghost-only contract against ``program``.
+
+    The answer must differ from the program only in ghost code, keep the method
+    header and pass the cheat scan; ``lemma_names`` are the lemmas declared in
+    the answer itself.
+    """
+    names = declared_lemma_names(answer)
+    if not same_executable(program, answer, lemma_names=names):
+        return True
+    if header_violations(answer, program):
+        return True
+    return bool(anti_cheat(answer, ""))
 
 
 def _verify_answer(answer: str, frozen_prefix: str, resource_limit: int) -> tuple[bool, float]:
@@ -105,9 +133,26 @@ def _verify_answer(answer: str, frozen_prefix: str, resource_limit: int) -> tupl
     return outcome.verified, outcome.seconds
 
 
+def _verify_proof_only_answer(answer: str, program: str, resource_limit: int) -> tuple[bool, float]:
+    """Verify one proof-only attempt: ``(verified, Dafny seconds)``; a cheat never reaches Dafny.
+
+    This runs in process-pool workers, so it stays a module-level function taking picklable
+    arguments only. A broken Dafny tool raises ``ToolError`` in the worker and aborts the run.
+    """
+    if _is_proof_only_cheat(answer, program):
+        return False, 0.0
+    outcome = verify(answer, resource_limit=resource_limit)
+    return outcome.verified, outcome.seconds
+
+
 def _sample_task(task: Task, client: ModelClient, model: str, attempts: int) -> list[_Attempt]:
     """Sample ``attempts`` independent answers for ``task``; a ``ToolError`` escapes to the caller."""
-    messages = (Message("system", SYSTEM_MESSAGE), Message("user", build_prompt(task)))
+    if _is_proof_only(task):
+        program = task.payload["program"]
+        assert isinstance(program, str)
+        messages = (Message("system", SYSTEM_MESSAGE), Message("user", build_proof_only_prompt(program)))
+    else:
+        messages = (Message("system", SYSTEM_MESSAGE), Message("user", build_prompt(task)))
     found: list[_Attempt] = []
     for _ in range(attempts):
         completion = client.complete(model, messages, step=_STEP, temperature=_TEMPERATURE, max_tokens=_MAX_TOKENS)
@@ -166,9 +211,53 @@ def _split_sha256() -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
+def _load_tasks_file(path: Path) -> tuple[Task, ...]:
+    """Proof-only tasks from a ``--tasks-file`` JSONL file.
+
+    Every line is exactly a task object with nonempty string ``id``,
+    ``source_task`` and ``program``; anything else raises a ``ToolError`` naming
+    the file and the line, without echoing the line itself.
+    """
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        raise ToolError(f"cannot read tasks file {path}: {exc}") from exc
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ToolError(f"cannot read tasks file {path}: {exc}") from exc
+    tasks: list[Task] = []
+    seen: set[str] = set()
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        if not line.strip():
+            continue
+        label = f"{path} line {lineno}"
+        try:
+            record = json.loads(line)
+        except ValueError as exc:
+            raise ToolError(f"cannot parse tasks file {label}: {exc}") from exc
+        if not isinstance(record, dict):
+            raise ToolError(f"cannot parse tasks file {label}: expected a JSON object")
+        task_id = record.get("id")
+        source_task = record.get("source_task")
+        program = record.get("program")
+        if not isinstance(task_id, str) or not task_id:
+            raise ToolError(f"cannot parse tasks file {label}: expected a nonempty string id")
+        if not isinstance(source_task, str) or not source_task:
+            raise ToolError(f"cannot parse tasks file {label}: expected a nonempty string source_task")
+        if not isinstance(program, str) or not program:
+            raise ToolError(f"cannot parse tasks file {label}: expected a nonempty string program")
+        if task_id in seen:
+            raise ToolError(f"cannot parse tasks file {label}: duplicate task id")
+        seen.add(task_id)
+        tasks.append(Task(id=task_id, source_task=source_task, payload={"program": program}))
+    return tuple(tasks)
+
+
 def _load_resume(
     out_dir: Path,
     split: str,
+    split_sha256: str,
     endpoint: str,
     model: str,
     attempts: int,
@@ -180,13 +269,14 @@ def _load_resume(
     """The (done lines, spent cost, started_utc, git_sha, split_sha256) of a previous partial run.
 
     Resuming with different harness options would silently mix results from another
-    configuration into the metrics, so a mismatch in ``split``, ``endpoint``, ``model``,
-    ``attempts``, ``max_cost_usd`` or ``contributor`` raises a ``ToolError`` instead. The run
+    configuration into the metrics, so a mismatch in ``split`` (the test/train name
+    or the resolved tasks-file path), ``split_sha256`` (the committed split or the
+    tasks file bytes), ``endpoint``, ``model``, ``attempts``, ``max_cost_usd`` or
+    ``contributor`` raises a ``ToolError`` instead. The run
     metadata (``started_utc``, ``git_sha``, ``split_sha256``) stays stable across resumes.
     """
     done = _done_lines(out_dir)
     spent = sum(float(line.get("cost_usd", 0.0)) for line in done.values())
-    fresh_sha = _split_sha256()
     run_file = out_dir / "run.json"
     if not run_file.is_file():
         return (
@@ -194,7 +284,7 @@ def _load_resume(
             spent,
             started_utc or _default_started_utc(),
             git_sha or _default_git_sha(),
-            fresh_sha,
+            split_sha256,
         )
     try:
         previous = json.loads(run_file.read_text(encoding="utf-8"))
@@ -216,15 +306,15 @@ def _load_resume(
                 f"cannot resume from {run_file}: {key} mismatch "
                 f"({previous.get(key)!r} != {value!r}); use a fresh --out directory"
             )
-    if previous.get("split_sha256") != fresh_sha:
-        raise ToolError(f"cannot resume from {run_file}: the committed split file changed; use a fresh --out directory")
+    if previous.get("split_sha256") != split_sha256:
+        raise ToolError(f"cannot resume from {run_file}: the split content changed; use a fresh --out directory")
     kept_utc = previous.get("started_utc")
     kept_sha = previous.get("git_sha")
     if not isinstance(kept_utc, str) or not kept_utc:
         raise ToolError(f"cannot resume from {run_file}: previous run has no started_utc")
     if not isinstance(kept_sha, str) or not kept_sha:
         raise ToolError(f"cannot resume from {run_file}: previous run has no git_sha")
-    return done, spent, kept_utc, kept_sha, fresh_sha
+    return done, spent, kept_utc, kept_sha, split_sha256
 
 
 def _metrics(lines: list[dict[str, Any]]) -> dict[str, Any]:
@@ -344,7 +434,7 @@ def _write_summary(
 
 def run_harness(
     *,
-    split: str,
+    split: str | None = None,
     out_dir: Path,
     model: str,
     attempts: int,
@@ -355,6 +445,7 @@ def run_harness(
     client: ModelClient | None = None,
     config: Config | None = None,
     tasks: tuple[Task, ...] | None = None,
+    tasks_file: Path | None = None,
     verify_fn: Callable[[str, str], tuple[bool, float]] | None = None,
     git_sha: str | None = None,
     started_utc: str | None = None,
@@ -365,16 +456,40 @@ def run_harness(
     overrides the model client (tests pass a scripted client); ``verify_fn`` replaces the
     process-pool Dafny verification with ``(verified, seconds)`` per answer (a test hook —
     production always verifies with ``verifier.verify``); ``workers`` sizes the process pool
-    (the default is ``os.cpu_count()``); ``git_sha`` and ``started_utc`` override the detected
-    run metadata. ``verify_fn`` still sees no cheat: answers that fail the frozen-prefix
+    (the default is ``os.cpu_count()``); ``git_sha`` and ``started_utc`` override the
+    detected run metadata. ``verify_fn`` still sees no cheat: answers that fail the frozen-prefix
     contract never reach it.
+
+    With ``tasks_file`` (mutually exclusive with ``split``) the harness runs proof-only
+    tasks from a JSONL file instead of a split: every line holds ``id``,
+    ``source_task`` and ``program``. The user prompt is
+    ``proof_only.build_proof_only_prompt(program)``, and an answer counts as
+    verified only when it keeps the program's executable code and header, passes
+    the cheat scan and verifies with Dafny. ``run.json`` records the resolved
+    tasks-file path as ``split`` and the SHA-256 of its raw bytes as
+    ``split_sha256``; resuming requires both to match.
     """
-    if split == "test":
-        which: Literal["test", "train"] = "test"
-    elif split == "train":
-        which = "train"
+    if tasks_file is not None and split is not None:
+        raise ValueError("--tasks-file is mutually exclusive with --split")
+    if tasks_file is None:
+        if split is None:
+            raise ValueError("either --tasks-file or --split is required")
+        if split == "test":
+            which: Literal["test", "train"] = "test"
+        elif split == "train":
+            which = "train"
+        else:
+            raise ValueError(f"unknown split {split!r}; expected 'test' or 'train'")
+        split_label = split
+        file_sha = _split_sha256()
     else:
-        raise ValueError(f"unknown split {split!r}; expected 'test' or 'train'")
+        resolved_file = tasks_file.resolve()
+        try:
+            file_bytes = resolved_file.read_bytes()
+        except OSError as exc:
+            raise ToolError(f"cannot read tasks file {resolved_file}: {exc}") from exc
+        split_label = str(resolved_file)
+        file_sha = hashlib.sha256(file_bytes).hexdigest()
     if attempts < 1:
         raise ValueError(f"attempts must be at least 1, got {attempts}")
     if concurrency < 1:
@@ -392,19 +507,24 @@ def run_harness(
     else:
         active = client
     contributor = model == _CONTRIBUTOR_MODEL
-    resolved = tasks if tasks is not None else datasets.split(datasets.VERICODING, which)
+    if tasks_file is None:
+        resolved = tasks if tasks is not None else datasets.split(datasets.VERICODING, which)
+    elif tasks is not None:
+        resolved = tasks
+    else:
+        resolved = _load_tasks_file(resolved_file)
     out_dir.mkdir(parents=True, exist_ok=True)
     ordered = sorted(resolved, key=lambda task: task.id)
     task_ids = [task.id for task in ordered]
     done, spent, kept_utc, kept_sha, split_sha = _load_resume(
-        out_dir, split, endpoint, model, attempts, max_cost_usd, contributor, started_utc, git_sha
+        out_dir, split_label, file_sha, endpoint, model, attempts, max_cost_usd, contributor, started_utc, git_sha
     )
     _write_run_json(
         out_dir,
         endpoint=endpoint,
         model=model,
         attempts=attempts,
-        split=split,
+        split=split_label,
         split_sha256=split_sha,
         contributor=contributor,
         git_sha=kept_sha,
@@ -437,11 +557,22 @@ def run_harness(
                     for task in ordered:
                         if task.id in done or task.id not in sampled:
                             continue
-                        frozen = task_spec_of(task)
-                        future_of[task.id] = [
-                            pool.submit(_verify_answer, attempt.text, frozen, effective.dafny.resource_limit)
-                            for attempt in sampled[task.id]
-                        ]
+                        context = task_spec_of(task)
+                        if _is_proof_only(task):
+                            future_of[task.id] = [
+                                pool.submit(
+                                    _verify_proof_only_answer,
+                                    attempt.text,
+                                    context,
+                                    effective.dafny.resource_limit,
+                                )
+                                for attempt in sampled[task.id]
+                            ]
+                        else:
+                            future_of[task.id] = [
+                                pool.submit(_verify_answer, attempt.text, context, effective.dafny.resource_limit)
+                                for attempt in sampled[task.id]
+                            ]
                     for task in ordered:
                         if task.id not in future_of:
                             continue
@@ -456,7 +587,7 @@ def run_harness(
             endpoint=endpoint,
             model=model,
             attempts=attempts,
-            split=split,
+            split=split_label,
             split_sha256=split_sha,
             contributor=contributor,
             git_sha=kept_sha,
@@ -468,7 +599,13 @@ def run_harness(
             metrics=_metrics(lines),
         )
         _write_summary(
-            out_dir, endpoint=endpoint, model=model, attempts=attempts, split=split, lines=lines, stopped=stopped
+            out_dir,
+            endpoint=endpoint,
+            model=model,
+            attempts=attempts,
+            split=split_label,
+            lines=lines,
+            stopped=stopped,
         )
         raise
     lines = [done[task.id] for task in ordered if task.id in done]
@@ -477,7 +614,7 @@ def run_harness(
         endpoint=endpoint,
         model=model,
         attempts=attempts,
-        split=split,
+        split=split_label,
         split_sha256=split_sha,
         contributor=contributor,
         git_sha=kept_sha,
@@ -489,7 +626,7 @@ def run_harness(
         metrics=_metrics(lines),
     )
     _write_summary(
-        out_dir, endpoint=endpoint, model=model, attempts=attempts, split=split, lines=lines, stopped=stopped
+        out_dir, endpoint=endpoint, model=model, attempts=attempts, split=split_label, lines=lines, stopped=stopped
     )
     return summary
 
@@ -535,8 +672,18 @@ def _check_inline(
     verify_fn: Callable[[str, str], tuple[bool, float]],
 ) -> list[tuple[bool, float]]:
     """Check sampled attempts without Dafny: cheats fail, the rest go to ``verify_fn`` (tests)."""
+    if _is_proof_only(task):
+        program = task.payload["program"]
+        assert isinstance(program, str)
+        checks: list[tuple[bool, float]] = []
+        for attempt in attempts_done:
+            if _is_proof_only_cheat(attempt.text, program):
+                checks.append((False, 0.0))
+            else:
+                checks.append(verify_fn(attempt.text, program))
+        return checks
     frozen = task_spec_of(task)
-    checks: list[tuple[bool, float]] = []
+    checks = []
     for attempt in attempts_done:
         if _is_cheat(attempt.text, frozen):
             checks.append((False, 0.0))
