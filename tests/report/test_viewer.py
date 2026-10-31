@@ -6,8 +6,11 @@ so the tests need no network and no browser.
 
 from __future__ import annotations
 
+import fnmatch
 import json
+import shutil
 import socket
+import subprocess
 import threading
 import time
 import tomllib
@@ -125,6 +128,152 @@ def test_page_is_self_contained(live_server: ThreadingHTTPServer) -> None:
         "usage",
     ):
         assert key in text
+
+
+PAGE_SCRIPT_MARKER = 'document.getElementById("state-filter").addEventListener'
+
+_JS_DRIVER = """
+"use strict";
+const fs = require("fs");
+const payload = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+entries = payload;
+
+const filterValues = { "state-filter": "", "project-filter": "", "search": "" };
+
+function makeNode(tag) {
+  return {
+    tag: tag,
+    children: [],
+    textContent: "",
+    value: "",
+    className: "",
+    hidden: false,
+    firstChild: null,
+    appendChild(child) {
+      this.children.push(child);
+      if (this.firstChild === null) { this.firstChild = child; }
+      return child;
+    },
+    removeChild(child) {
+      const at = this.children.indexOf(child);
+      if (at >= 0) { this.children.splice(at, 1); }
+      this.firstChild = this.children.length > 0 ? this.children[0] : null;
+      return child;
+    },
+    addEventListener() {},
+  };
+}
+
+const byId = {};
+globalThis.document = {
+  createElement: (tag) => makeNode(tag),
+  getElementById: (id) => {
+    if (!(id in byId)) {
+      byId[id] = makeNode("#" + id);
+      if (id in filterValues) { byId[id].value = filterValues[id]; }
+    }
+    return byId[id];
+  },
+};
+
+function setFilters(state, project, query) {
+  filterValues["state-filter"] = state;
+  filterValues["project-filter"] = project;
+  filterValues["search"] = query;
+  for (const id of Object.keys(filterValues)) {
+    if (id in byId) { byId[id].value = filterValues[id]; }
+  }
+}
+
+function check(cond, label) {
+  if (!cond) {
+    console.error("JS_FAIL " + label);
+    process.exit(1);
+  }
+  console.log("JS_OK " + label);
+}
+
+function texts(node, out) {
+  out.push(node.textContent);
+  for (const child of node.children) { texts(child, out); }
+  return out;
+}
+
+check(show(null) === MISSING, "null-shows-missing");
+check(show(undefined) === MISSING, "undefined-shows-missing");
+check(show(0) === "0", "zero-renders");
+check(show(false) === "false", "false-renders");
+check(show("<script>alert(1)</script>") === "<script>alert(1)</script>", "escaping-unchanged");
+
+check(costOf(entries[0].result).toFixed(2) === "0.50", "cost-proven");
+check(costOf(entries[1].result).toFixed(2) === "0.20", "cost-counterexample");
+check(costOf(entries[2].result).toFixed(2) === "0.00", "cost-open");
+check(costOf(entries[3].result).toFixed(2) === "0.00", "cost-not-checkable");
+
+setFilters("", "", "");
+check(entries.every(matches), "all-match-without-filters");
+setFilters("proven", "", "");
+check(matches(entries[0]) && !matches(entries[1]), "state-filter-proven");
+check(!matches(entries[2]) && !matches(entries[3]), "state-filter-rest");
+setFilters("", "unknown-project", "");
+check(entries.every((entry) => !matches(entry)), "project-filter-unknown");
+setFilters("", "demo-shop", "");
+check(entries.every(matches), "project-filter-known");
+setFilters("", "", "ALERT");
+check(matches(entries[2]) && !matches(entries[0]), "search-case-insensitive");
+check(!matches(entries[1]) && !matches(entries[3]), "search-case-rest");
+setFilters("", "", "legacy");
+check(matches(entries[3]) && !matches(entries[0]), "search-path-qualname");
+
+fillProjects();
+check(byId["project-filter"].children.length === 1, "project-options");
+
+setFilters("", "", "");
+renderTable();
+const rows = byId["rows"].children;
+check(rows.length === 4, "table-has-four-rows");
+const first = rows[0].children.map((cell) => cell.textContent).join("|");
+check(first === "demo-shop|shop/cart.py|total|proven|verified|0.50", "table-first-row");
+check(byId["summary"].textContent === "4 of 4 functions", "table-summary");
+
+renderDetail(entries[3]);
+const missing = texts(byId["detail"], []);
+check(missing.includes(MISSING), "detail-null-shows-missing");
+check(missing.includes("not_checkable"), "detail-state");
+check(missing.includes("no type hints"), "detail-reason");
+renderDetail(entries[2]);
+const escaped = texts(byId["detail"], []);
+check(escaped.includes("<script>alert(1)</script>"), "detail-escaping-as-text");
+renderDetail(entries[0]);
+const proven = texts(byId["detail"], []).join("\\n");
+check(proven.includes("Returns the total price of the cart."), "detail-intent");
+check(proven.includes("dafny_function"), "detail-dafny");
+"""
+
+
+def test_page_js_logic_runs_in_node(tmp_path: Path, live_server: ThreadingHTTPServer) -> None:
+    """The page script executes: null placeholder, cost sums, filters and detail rendering.
+
+    Node ships on the CI image; where it is missing the test skips and the static source
+    assertions in ``test_page_is_self_contained`` still hold.
+    """
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not available")
+    status, _, body = _get(_base(live_server) + "/api/results")
+    assert status == 200
+    payload_path = tmp_path / "api.json"
+    payload_path.write_text(body.decode("utf-8"), encoding="utf-8")
+    html = viewer.page_html()
+    assert PAGE_SCRIPT_MARKER in html
+    script = html.split("<script>", 1)[1].split("</script>", 1)[0]
+    script = script.split(PAGE_SCRIPT_MARKER, 1)[0]
+    driver = tmp_path / "viewer-driver.js"
+    driver.write_text(script + _JS_DRIVER, encoding="utf-8")
+    proc = subprocess.run([node, str(driver), str(payload_path)], capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, f"node driver failed:\n{proc.stdout}\n{proc.stderr}"
+    assert "JS_OK table-first-row" in proc.stdout
+    assert "JS_OK detail-escaping-as-text" in proc.stdout
 
 
 def test_unknown_path_returns_404(live_server: ThreadingHTTPServer) -> None:
@@ -305,12 +454,25 @@ def test_viewer_html_ships_in_the_wheel() -> None:
     """``viewer.html`` is installed with the wheel, so ``page_html`` works outside the source tree.
 
     The wheel target ships whole package directories (``packages = ["src/pcc"]``), so the page has to
-    live inside one of them; otherwise an installed ``pcc-check view`` would not find its page.
+    live inside one of them; otherwise an installed ``pcc-check view`` would not find its page. Any
+    file-selection override must keep covering ``viewer.html``. A full wheel build for this issue
+    (hatchling 1.33.0, 87 files) was listed once and contains ``pcc/report/viewer.html``.
     """
     assert viewer.page_html().strip()
     repo_root = Path(__file__).resolve().parents[2]
     data = tomllib.loads((repo_root / "pyproject.toml").read_text(encoding="utf-8"))
-    packages = data["tool"]["hatch"]["build"]["targets"]["wheel"]["packages"]
+    build = data["tool"]["hatch"]["build"]
+    wheel_target = build["targets"]["wheel"]
+    packages = wheel_target["packages"]
     html = Path("src/pcc/report/viewer.html")
     assert (repo_root / html).is_file()
     assert any(str(html).startswith(pkg.rstrip("/") + "/") for pkg in packages)
+    html_posix = html.as_posix()
+    for section in (build, wheel_target):
+        for pattern in section.get("exclude", []):
+            assert not fnmatch.fnmatch(html_posix, pattern), f"hatch exclude {pattern!r} drops {html_posix}"
+        only = section.get("only-include")
+        if only is not None:
+            assert any(fnmatch.fnmatch(html_posix, pattern) for pattern in only), (
+                f"hatch only-include {only!r} drops {html_posix}"
+            )
