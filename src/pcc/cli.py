@@ -91,11 +91,14 @@ def _hashes_for_key(
 ) -> tuple[Dependency, ...]:
     """The certificate dependencies of ``key``: the sha256 of each direct callee spec found in ``specs_by_key``.
 
-    Callees without a known spec are skipped, which conservatively marks the caller
-    stale through ``is_stale``.
+    Self-calls are skipped, like in ``pipeline._direct_callees``: a function that calls only itself is checked
+    normally, with no dependency. Callees without a known spec are skipped, which conservatively marks the
+    caller stale through ``is_stale``.
     """
     found: list[Dependency] = []
     for callee_key in edges_by_key.get(key, ()):
+        if callee_key == key:
+            continue
         spec = specs_by_key.get(callee_key)
         if spec is not None:
             found.append(pipeline.spec_dependency(callee_key[1], spec))
@@ -210,7 +213,7 @@ def _run_command(
         if not _still_exists(repo_root, cert):
             stale.append(cert)
 
-    ran = pipeline.run_many(to_run, repo_root, client=client, config=config) if to_run else ()
+    ran = pipeline.run_many(to_run, repo_root, client=client, config=config, callees=cached) if to_run else ()
     by_result = {(result.function.path, result.function.qualname): result for result in ran}
     results = []
     for function in scope:

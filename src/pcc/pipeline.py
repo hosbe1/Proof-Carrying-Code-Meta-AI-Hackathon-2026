@@ -312,15 +312,18 @@ def _callee_wiring(
 ) -> tuple[dict[str, str], tuple[str, ...], tuple[Assumption, ...], str, tuple[str, ...]]:
     """The callee info for the transpiler and the prover: modules, extras, assumptions, source, imports.
 
-    A proven callee passes its certificate source as an extra module, under its Dafny module name. An unproven
-    (``open``) callee becomes an ``UNPROVEN_CALLEE`` assumption with a body-less method together with the callee's
-    Dafny spec in the generated ``PCC_assume_<hash>`` module, where ``<hash>`` is the first 8 hex digits of the
-    sha256 of the assumed specs (the same truncation ``verifier.layout.module_name`` uses). An open callee with no
-    translated method is still listed, with empty Dafny text, so the caller records what it rests on. With no open
-    callee that has a translated method the module source is empty. ``imports`` holds the Dafny module names the
-    caller links against: every proven callee module, plus the generated assumptions module when there is one.
+    Every direct callee maps its qualname to its Dafny module name, whatever its state, so the transpiler can
+    qualify calls to proven and unproven callees alike. A proven callee passes its certificate source as an extra
+    module. An unproven (``open``) callee becomes an ``UNPROVEN_CALLEE`` assumption with a body-less method
+    together with the callee's Dafny spec in the generated ``PCC_assume_<hash>`` module, where ``<hash>`` is the
+    first 8 hex digits of the sha256 of the assumed specs and method headers (the same truncation
+    ``verifier.layout.module_name`` uses). An open callee with no translated method is still listed, with empty
+    Dafny text, so the caller records what it rests on. With no open callee that has a translated method the
+    module source is empty. ``imports`` holds the Dafny module names the caller links against: every proven
+    callee module, plus the generated assumptions module when there is one.
     """
-    modules: dict[str, str] = {}
+    modules = {callee.qualname: module_name(callee) for callee in direct}
+    proven_modules: dict[str, str] = {}
     extra: list[str] = []
     assumptions: list[Assumption] = []
     methods: list[str] = []
@@ -329,7 +332,7 @@ def _callee_wiring(
         outcome = callees[callee]
         if outcome.state is State.PROVEN:
             assert outcome.proof is not None  # a proven result always carries its proof
-            modules[callee.qualname] = module_name(callee)
+            proven_modules[callee.qualname] = modules[callee.qualname]
             extra.append(outcome.proof.dafny_source)
         elif outcome.state is State.OPEN:
             method = _assumption_method(outcome)
@@ -348,12 +351,13 @@ def _callee_wiring(
     assumptions_module = ""
     assume_name = ""
     if methods:
-        digest = hashlib.sha256("\n".join(specs).encode("utf-8")).hexdigest()[:8]
+        digest = hashlib.sha256("\n".join([*specs, *methods]).encode("utf-8")).hexdigest()[:8]
         assume_name = f"PCC_assume_{digest}"
         blocks = [*specs, *methods]
         body = "\n".join(f"  {line}" if line.strip() else "" for block in blocks for line in block.split("\n"))
         assumptions_module = f"module {assume_name} {{\n{body}\n}}\n"
-    imports = (*modules.values(), assume_name) if assume_name else tuple(modules.values())
+    proven_imports = tuple(proven_modules.values())
+    imports = (*proven_imports, assume_name) if assume_name else proven_imports
     return modules, tuple(extra), tuple(assumptions), assumptions_module, imports
 
 
@@ -569,17 +573,24 @@ def run(
 
 
 def run_many(
-    functions: Sequence[FunctionRef], repo_root: Path, *, client: ModelClient, config: Config
+    functions: Sequence[FunctionRef],
+    repo_root: Path,
+    *,
+    client: ModelClient,
+    config: Config,
+    callees: Mapping[FunctionRef, Result] = MappingProxyType({}),
 ) -> tuple[Result, ...]:
     """Run in ``pcc.project.call_order``, reusing proven callee specs; functions of one level run in parallel.
 
     Mutually recursive functions of one level end ``open`` without running; every other function runs with the
-    results of the earlier levels (plus the mutual ones of its own level) as ``callees``. The result holds one
-    entry per passed function, in order. Model calls across the worker threads are serialized, so the shared
-    ``client`` needs no thread-safety of its own.
+    results of the earlier levels (plus the mutual ones of its own level) as ``callees``. ``callees`` seeds the
+    run with already-known results, for example proven callees reused from certificates: callers link against
+    them instead of proving with no callee info. The result holds one entry per passed function, in order.
+    Model calls across the worker threads are serialized, so the shared ``client`` needs no thread-safety of
+    its own.
     """
     levels = call_order(functions)
-    done: dict[FunctionRef, Result] = {}
+    done: dict[FunctionRef, Result] = dict(callees)
     for level in levels:
         for ref in _mutual_members(level):
             done[ref] = Result(ref, State.OPEN, MUTUAL_RECURSION)

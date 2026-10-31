@@ -292,6 +292,7 @@ def test_open_callee_becomes_unproven_callee_assumption(monkeypatch: pytest.Monk
     assert assumption.kind is AssumptionKind.UNPROVEN_CALLEE
     assert assumption.subject == "g"
     assert "method {:axiom} g(" in assumption.dafny
+    assert recorded.transpile_callees == [{"g": module_name(callee)}]
     assert recorded.prove_extra == [()]
     (module,) = recorded.prove_assumptions_module
     match = re.fullmatch(r"module (PCC_assume_[0-9a-f]{8}) \{\n(?:.*\n)*\}\n", module)
@@ -537,6 +538,7 @@ def test_open_callee_without_translation_lists_assumption_without_dafny(
     assert assumption.kind is AssumptionKind.UNPROVEN_CALLEE
     assert assumption.subject == "g"
     assert assumption.dafny == ""
+    assert recorded.transpile_callees == [{"g": module_name(callee)}]
     assert recorded.prove_extra == [()]
     assert recorded.prove_imports == [()]
     assert recorded.prove_assumptions_module == [""]
@@ -725,6 +727,53 @@ def test_dependency_hashes_agree_with_cli_stored_hashes() -> None:
     assert _hashes_for_key(key, by_key, specs) == pcc.pipeline.dependency_hashes(
         caller, {callee: proven_callee(callee)}
     )
+
+
+def test_run_many_uses_passed_callee_results(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    recorded = _Recorded()
+    _install_steps(monkeypatch, recorded)
+    callee = g_ref()
+    caller = f_ref()
+
+    results = pcc.pipeline.run_many(
+        [caller],
+        tmp_path,
+        client=FakeClient([]),
+        config=Config(),
+        callees={callee: proven_callee(callee)},
+    )
+
+    assert [result.state for result in results] == [State.PROVEN]
+    assert recorded.transpile_callees == [{"g": module_name(callee)}]
+    assert recorded.prove_extra == [(G_PROOF_SOURCE,)]
+    assert recorded.prove_imports == [(module_name(callee),)]
+    assert recorded.prove_assumptions_module == [""]
+
+
+def test_assume_module_hash_covers_method_headers() -> None:
+    callee = g_ref()
+    first = _open_callee_result(callee, "no proof found", G_DAFNY_FUNCTION)
+    renamed = G_DAFNY_FUNCTION.replace("method g(", "method g_renamed(")
+    second = _open_callee_result(callee, "no proof found", renamed)
+    assert first.translation is not None and second.translation is not None
+    assert first.translation.dafny_spec == second.translation.dafny_spec
+
+    def assume_name(outcome: Result) -> str:
+        (_, _, _, module, _) = pcc.pipeline._callee_wiring((callee,), {callee: outcome})
+        match = re.fullmatch(r"module (PCC_assume_[0-9a-f]{8}) \{\n(?:.*\n)*\}\n", module)
+        assert match is not None
+        return match.group(1)
+
+    assert assume_name(first) != assume_name(second)
+
+
+def test_cli_hashes_ignore_self_calls() -> None:
+    from pcc.cli import _hashes_for_key
+
+    function = function_ref(source=H_SOURCE, path=PATH, qualname="h", lineno=21)
+    key = (function.path, function.qualname)
+
+    assert _hashes_for_key(key, {key: (key,)}, {key: G_DAFNY_SPEC}) == ()
 
 
 def test_run_many_serializes_model_calls() -> None:

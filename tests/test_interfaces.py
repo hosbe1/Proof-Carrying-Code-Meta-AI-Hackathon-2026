@@ -501,6 +501,7 @@ def test_pipeline_signatures() -> None:
             ("repo_root", POS, NoDefault),
             ("client", KWO, NoDefault),
             ("config", KWO, NoDefault),
+            ("callees", KWO, MappingProxyType({})),
         ],
         tuple[Result, ...],
     )
