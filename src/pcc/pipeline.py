@@ -42,10 +42,10 @@ from pcc.equivalence import check as check_equivalence
 from pcc.equivalence import check_spec as check_spec_translation
 from pcc.intent import derive
 from pcc.models import BudgetedClient, BudgetExceeded, Completion, Message, ModelClient
-from pcc.project import call_order
+from pcc.project import call_graph, call_order
 from pcc.project.calls import subset_edges
 from pcc.prove import prove
-from pcc.sandbox import strategies_source
+from pcc.sandbox import RunOutcome, run_python, strategies_source, target_loader
 from pcc.second_opinion import review
 from pcc.spec import check as check_spec
 from pcc.spec import spec_cases
@@ -464,6 +464,9 @@ _EVAL_REASON = "eval/exec is not supported"
 _THREADING_REASON = "threading/multiprocessing is not supported"
 _METHOD_REASON = "methods are tier 3"
 
+#: Reason when the function calls another function of the project (ticket #64, from #43).
+_CALLS_REASON = "calls into the project come with #43"
+
 #: Reasons for the spec and translation exits (ticket #34).
 _MUTANTS_REASON = "spec does not kill mutants"
 _UNTRANSLATABLE_REASON = "spec not translatable"
@@ -557,22 +560,84 @@ def _has_own_yield(node: ast.AST) -> bool:
     return False
 
 
-def _early_not_checkable(function: FunctionRef, repo_root: Path) -> str | None:
-    """The step-0 reason, or ``None`` when the function is checked normally (ticket #34, step 0).
+def _import_module_name(path: str) -> str:
+    """The dotted module name of ``path`` as ``target_loader`` derives it.
 
-    Async functions, generators, ``eval``/``exec`` and ``threading``/``multiprocessing`` end here, as do
-    methods and functions without type hints (``strategies_source`` raises). Calls into the project are
-    decided by the #43 callee gate instead, from the passed ``callees``.
+    A leading ``src/`` is dropped, ``.py`` is stripped and separators become dots, so
+    ``strings/demo.py`` becomes ``strings.demo``. ``precheck`` and ``module_import_errors``
+    share this so an import failure and its reason name the same module.
     """
+    relative = path.removeprefix("src/")
+    if relative.endswith(".py"):
+        relative = relative[: -len(".py")]
+    return relative.replace("/", ".")
+
+
+def module_import_errors(functions: Sequence[FunctionRef], repo_root: Path) -> dict[str, str]:
+    """The modules of ``functions`` that fail to import, mapped to their last stderr line.
+
+    For each distinct module one sandboxed ``target_loader`` script runs with ``cwd=repo_root``
+    under the default sandbox settings, using the lexicographically first discovered ``FunctionRef``
+    of the module. A module whose script fails (nonzero exit, timeout or ``ok == False``) is
+    returned with the module name ``target_loader`` derives as key and the last nonblank stderr
+    line as value, or ``"timeout"`` and ``"exit <returncode>"`` when stderr is blank. Modules
+    that import cleanly are absent. ``ToolError`` escapes: a failing import is a survey result,
+    a broken sandbox is not.
+    """
+    by_module: dict[str, list[FunctionRef]] = {}
+    for ref in functions:
+        by_module.setdefault(_import_module_name(ref.path), []).append(ref)
+    errors: dict[str, str] = {}
+    for module in sorted(by_module):
+        first = sorted(by_module[module], key=lambda ref: (ref.path, ref.qualname, ref.lineno))[0]
+        outcome = run_python(target_loader(first), cwd=repo_root)
+        if not outcome.ok:
+            errors[module] = _failure_detail(outcome)
+    return errors
+
+
+def _failure_detail(outcome: RunOutcome) -> str:
+    """The survey detail of a failed import: the last nonblank stderr line, or a fallback.
+
+    The fallback is ``"timeout"`` for a timed-out run and ``"exit <returncode>"`` otherwise.
+    """
+    for line in reversed(outcome.stderr.splitlines()):
+        if line.strip():
+            return line.strip()
+    if outcome.timed_out:
+        return "timeout"
+    return f"exit {outcome.returncode}"
+
+
+def precheck(
+    function: FunctionRef,
+    repo_root: Path,
+    *,
+    graph: Mapping[FunctionRef, frozenset[FunctionRef]],
+    import_errors: Mapping[str, str],
+) -> str | None:
+    """The step-0 not-checkable reason for ``function``, or ``None`` when it is checked normally.
+
+    The first matching reason wins: a module import failure first (the module cannot even be
+    loaded), then generators, ``async`` functions, ``eval``/``exec``, ``threading``/
+    ``multiprocessing``, methods, ``strategies_source`` failures such as ``"no types"``, and
+    finally calls into the project other than a call of the function to itself (a callee with the
+    same ``(path, qualname)`` counts as the function itself: the graph holds freshly discovered
+    references, whose source text may differ from the passed one in trailing newlines). ``graph`` is the
+    ``call_graph`` of the surveyed functions and ``import_errors`` comes from
+    ``module_import_errors``. A snippet that no longer parses gets no reason here.
+    """
+    if _import_module_name(function.path) in import_errors:
+        return f"imports {_import_module_name(function.path)}"
     try:
         tree = ast.parse(textwrap.dedent(function.source))
     except SyntaxError:
         return None
     definitions = [node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
-    if any(isinstance(node, ast.AsyncFunctionDef) for node in definitions):
-        return _ASYNC_REASON
     if any(_has_own_yield(definition) for definition in definitions):
         return _GENERATOR_REASON
+    if any(isinstance(node, ast.AsyncFunctionDef) for node in definitions):
+        return _ASYNC_REASON
     for node in ast.walk(tree):
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in ("eval", "exec"):
             return _EVAL_REASON
@@ -593,6 +658,9 @@ def _early_not_checkable(function: FunctionRef, repo_root: Path) -> str | None:
         return error.construct
     except SyntaxError:
         return None
+    key = (function.path, function.qualname)
+    if any((callee.path, callee.qualname) != key for callee in graph.get(function, frozenset())):
+        return _CALLS_REASON
     return None
 
 
@@ -731,11 +799,14 @@ def run(
     """Steps 0 to 7 for one function; every expected failure becomes a result state, never an exception.
 
     The client is wrapped once per call in a ``BudgetedClient`` for this function, and every ``Result``,
-    including partial ones, carries that wrapper's ``usage``. Step 0 ends generators, ``async`` functions,
-    ``eval``/``exec``, threads, methods and functions without type hints as ``not_checkable``. ``callees``
-    holds the results of already-run callees in the project (#43): callees the function never calls are
-    ignored; a callee with a counterexample or a ``not_checkable`` callee ends the run before any step, mutual
-    recursion ends it ``open``. Otherwise a proven callee is linked by its certificate source under its Dafny
+    including partial ones, carries that wrapper's ``usage``. Step 0 runs ``precheck`` with the
+    ``call_graph`` of the function and no import errors: generators, ``async`` functions,
+    ``eval``/``exec``, threads, methods and functions without type hints end ``not_checkable``. When
+    the only reason is a call into the project, the existing #43 callee gate decides instead: a
+    counterexample or ``not_checkable`` callee ends the run before any step, mutual recursion ends it
+    ``open``, and a certified (proven) callee lets the run proceed with only the callee's spec.
+    ``callees`` holds the results of already-run callees in the project (#43): callees the function
+    never calls are ignored. Otherwise a proven callee is linked by its certificate source under its Dafny
     module name (plus an import) and an unproven one by a generated assumptions module, and the run uses only
     the callees' specs. Failed ``MUTANTS`` and unsupported ``transpile_spec`` constructs share one
     ``max_rewrites`` counter; the rewritten spec runs the full step-3 check again. ``BudgetExceeded`` and an
@@ -758,13 +829,15 @@ def run(
                 f"budget exceeded: the run passed max_seconds_per_function={config.budget.max_seconds_per_function}"
             )
 
-    early = _early_not_checkable(function, repo_root)
-    if early is not None:
+    early = precheck(function, repo_root, graph=call_graph(repo_root, [function]), import_errors={})
+    if early is not None and early != _CALLS_REASON:
         return Result(function, State.NOT_CHECKABLE, early, usage=wrapped.usage)
     direct = _direct_callees(function, callees)
     gated = _callee_gate(function, direct, callees)
     if gated is not None:
         return dataclasses.replace(gated, usage=wrapped.usage)
+    if early == _CALLS_REASON and not direct:
+        return Result(function, State.NOT_CHECKABLE, early, usage=wrapped.usage)
     callee_modules, extra_modules, assumptions, assumptions_module, callee_imports = _callee_wiring(direct, callees)
     context: Context | None = None
     intent: Intent | None = None
@@ -1008,4 +1081,13 @@ def run_many(
     return tuple(done[ref] for ref in functions)
 
 
-__all__ = ["MUTUAL_RECURSION", "SerializedClient", "dependency_hashes", "run", "run_many", "spec_dependency"]
+__all__ = [
+    "MUTUAL_RECURSION",
+    "SerializedClient",
+    "dependency_hashes",
+    "module_import_errors",
+    "precheck",
+    "run",
+    "run_many",
+    "spec_dependency",
+]
