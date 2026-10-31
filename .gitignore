@@ -233,3 +233,6 @@ TestResults/
 
 # Claude Code local settings, never shared
 .claude/settings.local.json
+
+# Local evaluation run output (python -m pcc.evaluation --out runs/<name>); published runs live under docs/results/.
+runs/
