@@ -50,7 +50,7 @@ class ChatLine(TypedDict):
 
 @dataclass(frozen=True, slots=True)
 class TaskIndex:
-    """All known tasks by ID, plus the test-split guards: test IDs and their prompts."""
+    """Train-split tasks by ID, plus the test-split guards: test IDs and their prompts."""
 
     tasks: Mapping[str, Task]
     test_ids: frozenset[str]
@@ -104,10 +104,12 @@ def _records(path: Path) -> Iterator[tuple[int, Any]]:
 
 
 def _checked_task_id(record: Any, label: str, *, index: TaskIndex) -> str:
-    """The task ID of ``record``; test-split and unknown IDs raise ``ValueError``.
+    """The task ID of ``record``; test-split, non-train and unknown IDs raise ``ValueError``.
 
     The test check runs before anything else, so even an unverified line carrying a test ID
-    fails the export: test data must never reach training, not even by accident.
+    fails the export: test data must never reach training, not even by accident. ``index.tasks``
+    holds only the train split, so any other ID (unknown, or excluded from train through
+    another dataset's test ``source_task``) fails as a non-train ID.
     """
     task_id = record.get("task_id")
     if not isinstance(task_id, str) or not task_id:
@@ -115,7 +117,7 @@ def _checked_task_id(record: Any, label: str, *, index: TaskIndex) -> str:
     if task_id in index.test_ids:
         raise ValueError(f"{label}: task {task_id!r} is on the test split and must not enter training")
     if task_id not in index.tasks:
-        raise ValueError(f"{label}: unknown task ID {task_id!r}")
+        raise ValueError(f"{label}: unknown task ID {task_id!r}: not on the train split, must not enter training")
     return task_id
 
 
@@ -256,21 +258,26 @@ def collect_lines(run_dirs: Sequence[Path], include_paths: Sequence[Path], *, in
 
 
 def build_index(cache_dir: Path | None = None, splits_dir: Path | None = None) -> TaskIndex:
-    """All tasks of every dataset with the test-split guards over every test split.
+    """Train-split tasks of every dataset with the test-split guards over every test split.
 
-    Train contamination can leak across datasets (a benchmark task solved under another
-    dataset's ID), so both the task-ID check and the prompt check cover every test split.
+    ``tasks`` holds only the train split (via ``datasets.split(name, "train")``), so a benchmark
+    task excluded from train through another dataset's test ``source_task`` is rejected as a
+    non-train ID instead of leaking in. Both the task-ID check and the prompt check still cover
+    every test split.
     """
-    tasks: dict[str, Task] = {}
+    train_tasks: dict[str, Task] = {}
+    test_tasks: dict[str, Task] = {}
     test_ids: set[str] = set()
     for name in (datasets.VERICODING, datasets.HUMANEVALFIX):
-        for task in datasets.load(name, cache_dir):
-            tasks[task.id] = task
-        test_ids.update(task.id for task in datasets.split(name, "test", cache_dir, splits_dir))
+        for task in datasets.split(name, "train", cache_dir, splits_dir):
+            train_tasks[task.id] = task
+        for task in datasets.split(name, "test", cache_dir, splits_dir):
+            test_tasks[task.id] = task
+            test_ids.add(task.id)
     return TaskIndex(
-        tasks=tasks,
+        tasks=train_tasks,
         test_ids=frozenset(test_ids),
-        test_prompts=frozenset(build_prompt(tasks[task_id]) for task_id in test_ids),
+        test_prompts=frozenset(build_prompt(task) for task in test_tasks.values()),
     )
 
 

@@ -21,6 +21,7 @@ from training.export_sft import (
     PROOFS_FILENAME,
     SAMPLES_FILENAME,
     TaskIndex,
+    build_index,
     build_prompt,
     collect_lines,
     main,
@@ -200,6 +201,100 @@ def test_unknown_task_id_raises(tmp_path: Path) -> None:
     _write_lines(run / SAMPLES_FILENAME, [_sample("vericoding/NOPE", ANSWER_A)])
     with pytest.raises(ValueError, match="unknown task"):
         collect_lines((run,), (), index=INDEX)
+
+
+def test_build_index_holds_only_train_tasks(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    cache_dir, splits_dir, _tasks = _fixture_cache_and_splits(monkeypatch, tmp_path)
+    index = build_index(cache_dir, splits_dir)
+    assert set(index.tasks) == {"vericoding/DA0002"}
+    assert index.test_ids == frozenset({"vericoding/DA0003", "humanevalfix/Python/0"})
+
+
+def test_source_blocked_task_id_raises(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A task sharing a test source_task through another dataset is not train."""
+    vericoding_rows = [
+        {
+            "id": "DA0002",
+            "language": "dafny",
+            "source": "apps",
+            "source-id": "apps_DA0002",
+            "vc-description": "Solve it.",
+            "vc-preamble": "",
+            "vc-helpers": "",
+            "vc-spec": "method solve(n: int) returns (result: int)",
+            "vc-code": "{ result := n; }",
+            "vc-postamble": "",
+        },
+        {
+            "id": "DA0009",
+            "language": "dafny",
+            "source": "humaneval",
+            "source-id": "humaneval_0_colliding",
+            "vc-description": "Shares the test benchmark task.",
+            "vc-preamble": "",
+            "vc-helpers": "",
+            "vc-spec": "method solve(n: int) returns (result: int)",
+            "vc-code": "{ result := n; }",
+            "vc-postamble": "",
+        },
+    ]
+    vericoding_bytes = "".join(json.dumps(row) + "\n" for row in vericoding_rows).encode("utf-8")
+    humanevalfix_rows = [
+        {
+            "task_id": "Python/0",
+            "prompt": "def f(x):\n    return x\n",
+            "canonical_solution": "def f(x):\n    return x\n",
+            "buggy_solution": "def f(x):\n    return 0\n",
+            "bug_type": "logic",
+            "test": "assert f(1) == 1",
+        }
+    ]
+    humanevalfix_bytes = json.dumps(humanevalfix_rows, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode(
+        "utf-8"
+    )
+    specs = {
+        "humanevalfix": datasets._DatasetSpec(
+            name="humanevalfix",
+            url="https://example.invalid/humanevalfix-rows",
+            revision="fixture",
+            sha256=hashlib.sha256(humanevalfix_bytes).hexdigest(),
+            cache_filename="humanevalfix.json",
+            kind="rows",
+        ),
+        "vericoding": datasets._DatasetSpec(
+            name="vericoding",
+            url="https://example.invalid/vericoding-train.jsonl",
+            revision="fixture",
+            sha256=hashlib.sha256(vericoding_bytes).hexdigest(),
+            cache_filename="vericoding-train.jsonl",
+            kind="jsonl",
+        ),
+    }
+
+    def fake_http_get(url: str) -> bytes:
+        if url == specs["vericoding"].url:
+            return vericoding_bytes
+        if url == specs["humanevalfix"].url or url.startswith(specs["humanevalfix"].url + "?"):
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+            offset = int(query.get("offset", ["0"])[0])
+            length = int(query.get("length", ["100"])[0])
+            return json.dumps({"rows": [{"row": row} for row in humanevalfix_rows[offset : offset + length]]}).encode()
+        raise AssertionError(f"unexpected download URL {url!r}")
+
+    monkeypatch.setattr(datasets, "_DATASETS", specs)
+    monkeypatch.setattr(datasets, "_http_get", fake_http_get)
+    cache_dir = tmp_path / "cache"
+    splits_dir = tmp_path / "splits"
+    splits_dir.mkdir(parents=True)
+    (splits_dir / "vericoding_test.txt").write_text("", encoding="utf-8")
+    (splits_dir / "humanevalfix_test.txt").write_text("humanevalfix/Python/0\n", encoding="utf-8")
+    index = build_index(cache_dir, splits_dir)
+    assert set(index.tasks) == {"vericoding/DA0002"}
+    assert "vericoding/DA0009" not in index.test_ids
+    run = tmp_path / "run-a"
+    _write_lines(run / SAMPLES_FILENAME, [_sample("vericoding/DA0009", ANSWER_A)])
+    with pytest.raises(ValueError, match="train split"):
+        collect_lines((run,), (), index=index)
 
 
 def test_proofs_jsonl_lines_are_exported_with_answer_as_assistant(tmp_path: Path) -> None:

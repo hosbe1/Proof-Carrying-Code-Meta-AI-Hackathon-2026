@@ -39,9 +39,11 @@ deduplicated together by `(user, answer)`: the first occurrence wins. A run that
 candidate line warns and contributes nothing, so an empty run still produces an (empty)
 output file.
 
-Only the train split is used. A `task_id` from any test split, or a user message equal to
-`build_prompt` of a test-split task, raises `ValueError` and fails the export: test data
-must never reach training, not even through another dataset's task ID.
+Only the train split (`datasets.split(name, "train")`) is used. A `task_id` from any
+test split, a `task_id` excluded from train through another dataset's test `source_task`,
+or a user message equal to `build_prompt` of a test-split task, raises `ValueError` and
+fails the export: test data must never reach training, not even through another dataset's
+task ID.
 
 ## Uploading `sft.jsonl` to Fireworks
 
