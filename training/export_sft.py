@@ -8,8 +8,9 @@ the chat format (the round 0 output). Only train-split tasks are used: a task ID
 split, or a user message equal to the prompt of a test-split task, raises ``ValueError``.
 
 ``build_prompt`` is the reference Vericoding prompt used both to rebuild the user message of a
-run solution and to guard the test split; the harness and the round 0 tool use this same
-function so prompts compare byte-identical.
+run solution and to guard the test split; the sampling harness (#46) and the round 0 tool
+(#69) must import this same function instead of copying it, so their prompts compare
+byte-identical with the test-split guard, which relies on exact equality.
 """
 
 from __future__ import annotations
@@ -60,6 +61,9 @@ class TaskIndex:
 def build_prompt(task: Task) -> str:
     """The Vericoding user prompt for ``task``: instructions plus spec, never the answer.
 
+    This is the reference contract for the sampling harness (#46) and the round 0 tool
+    (#69): both must import this function so their user messages compare byte-identical
+    with the test-split prompt guard, which relies on exact equality.
     For a Vericoding row this joins the description, preamble, helpers, spec and postamble,
     skipping blank parts; ``vc-code`` holds the reference answer, so it stays out. For a
     HumanEvalFix row it is the instructions plus the ``prompt`` stub. Anything else raises
@@ -121,11 +125,26 @@ def _checked_task_id(record: Any, label: str, *, index: TaskIndex) -> str:
     return task_id
 
 
+def _checked_system(messages: list[ChatMessage], label: str) -> None:
+    """Require the shared system message first: every SFT line starts with ``SYSTEM_MESSAGE``.
+
+    The sampling tool sends ``SYSTEM_MESSAGE`` verbatim, so a stored prompt or an
+    ``--include`` line with a missing or drifted system message is rejected instead of
+    being exported with the wrong format.
+    """
+    if not messages or messages[0]["role"] != "system" or messages[0]["content"] != SYSTEM_MESSAGE:
+        raise ValueError(f"{label}: the first message must be the shared system message")
+    for message in messages[1:]:
+        if message["role"] == "system" and message["content"] != SYSTEM_MESSAGE:
+            raise ValueError(f"{label}: every system message must equal the shared system message")
+
+
 def _checked_messages(record: Any, label: str) -> list[ChatMessage]:
     """The prompt messages of a ``proofs.jsonl`` line: non-empty, roles and strings only.
 
-    The stored prompt must hold no assistant turn (it is the prompt of one ``proof`` call) and
-    at least one user turn, whose content the test-split guard and the dedup key use.
+    The stored prompt must start with the shared system message, hold no assistant turn
+    (it is the prompt of one ``proof`` call) and hold at least one user turn, whose content
+    the test-split guard and the dedup key use.
     """
     raw = record.get("messages")
     if not isinstance(raw, list) or not raw:
@@ -139,6 +158,7 @@ def _checked_messages(record: Any, label: str) -> list[ChatMessage]:
         if not isinstance(role, str) or role not in _ROLES or not isinstance(content, str):
             raise ValueError(f"{label}: every message needs a role and a string content")
         messages.append({"role": role, "content": content})
+    _checked_system(messages, label)
     if any(message["role"] == "assistant" for message in messages):
         raise ValueError(f"{label}: the prompt must not hold an assistant message")
     if not any(message["role"] == "user" for message in messages):
@@ -197,7 +217,11 @@ def _iter_run_proofs(run_dir: Path, *, index: TaskIndex) -> Iterator[tuple[str, 
 
 
 def _iter_include(path: Path) -> Iterator[tuple[str, str, list[ChatMessage]]]:
-    """The ``(user, answer, messages)`` triples of a file that already has the chat format."""
+    """The ``(user, answer, messages)`` triples of a file that already has the chat format.
+
+    Every line must start with the shared system message; a missing or drifted system
+    message raises ``ValueError`` instead of being exported with the wrong format.
+    """
     for lineno, record in _records(path):
         label = f"{path} line {lineno}"
         raw = record.get("messages")
@@ -212,6 +236,7 @@ def _iter_include(path: Path) -> Iterator[tuple[str, str, list[ChatMessage]]]:
             if not isinstance(role, str) or role not in _ROLES or not isinstance(content, str):
                 raise ValueError(f"{label}: every message needs a role and a string content")
             messages.append({"role": role, "content": content})
+        _checked_system(messages, label)
         if messages[-1]["role"] != "assistant" or not messages[-1]["content"].strip():
             raise ValueError(f"{label}: a chat line must end with a non-empty assistant message")
         if not any(message["role"] == "user" for message in messages):

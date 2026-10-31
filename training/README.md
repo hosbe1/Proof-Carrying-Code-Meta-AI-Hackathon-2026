@@ -32,9 +32,13 @@ format:
 
 For `samples.jsonl` lines the user turn is rebuilt with `build_prompt` from
 `training/export_sft.py` (instructions plus the task description, preamble, helpers, spec
-and postamble; never `vc-code`, which is the reference answer). For `proofs.jsonl` lines it
+and postamble; never `vc-code`, which is the reference answer). The sampling harness and
+the round 0 tool must import that same `build_prompt` instead of copying it, so their user
+messages compare byte-identical with the test-split prompt guard. For `proofs.jsonl` lines it
 is the stored prompt, with `answer` appended as the assistant turn. `--include` merges
-files that already have the chat format, such as the round 0 output. All inputs are
+files that already have the chat format, such as the round 0 output. A `proofs.jsonl` or
+`--include` line whose first message is not the shared `SYSTEM_MESSAGE`, or which holds
+any other system message differing from it, raises `ValueError`. All inputs are
 deduplicated together by `(user, answer)`: the first occurrence wins. A run that yields no
 candidate line warns and contributes nothing, so an empty run still produces an (empty)
 output file.

@@ -313,6 +313,65 @@ def test_proofs_jsonl_lines_are_exported_with_answer_as_assistant(tmp_path: Path
     ]
 
 
+def test_proofs_line_with_drifted_system_raises(tmp_path: Path) -> None:
+    run = tmp_path / "run-a"
+    _write_lines(
+        run / PROOFS_FILENAME,
+        [
+            json.dumps(
+                {
+                    "task_id": TRAIN_A.id,
+                    "messages": [
+                        {"role": "system", "content": "some other system message"},
+                        {"role": "user", "content": "prove this method with ghost code only"},
+                    ],
+                    "answer": ANSWER_A,
+                }
+            )
+        ],
+    )
+    with pytest.raises(ValueError, match="system message"):
+        collect_lines((run,), (), index=INDEX)
+
+
+def test_proofs_line_without_system_raises(tmp_path: Path) -> None:
+    run = tmp_path / "run-a"
+    _write_lines(
+        run / PROOFS_FILENAME,
+        [
+            json.dumps(
+                {
+                    "task_id": TRAIN_A.id,
+                    "messages": [{"role": "user", "content": "prove this method with ghost code only"}],
+                    "answer": ANSWER_A,
+                }
+            )
+        ],
+    )
+    with pytest.raises(ValueError, match="system message"):
+        collect_lines((run,), (), index=INDEX)
+
+
+def test_include_line_with_drifted_system_raises(tmp_path: Path) -> None:
+    include = tmp_path / "round0.jsonl"
+    _write_lines(
+        include,
+        [
+            json.dumps(
+                {
+                    "messages": [
+                        {"role": "system", "content": "some other system message"},
+                        {"role": "user", "content": build_prompt(TRAIN_A)},
+                        {"role": "assistant", "content": ANSWER_A},
+                    ]
+                }
+            )
+        ],
+    )
+    with pytest.raises(ValueError, match="system message"):
+        collect_lines((), (include,), index=INDEX)
+
+
 def test_samples_and_proofs_and_include_are_deduplicated_together(tmp_path: Path) -> None:
     run = tmp_path / "run-a"
     prompt = build_prompt(TRAIN_A)
