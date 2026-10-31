@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -41,6 +43,44 @@ def test_timeout_kills_the_process(tmp_path: Path) -> None:
     assert outcome.timed_out is True
     assert outcome.ok is False
     assert elapsed < 3
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux parent-death signal")
+def test_sandbox_child_stops_if_its_supervisor_is_killed(tmp_path: Path) -> None:
+    marker = tmp_path / "child.pid"
+    script = (
+        f"import os\nfrom pathlib import Path\nPath({str(marker)!r}).write_text(str(os.getpid()))\nwhile True: pass\n"
+    )
+    supervisor_script = (
+        "from pathlib import Path\n"
+        "from pcc.sandbox import run_python\n"
+        f"run_python({script!r}, cwd=Path({str(tmp_path)!r}), timeout_seconds=30)\n"
+    )
+    supervisor = subprocess.Popen([sys.executable, "-c", supervisor_script])
+    child_pid: int | None = None
+    try:
+        deadline = time.monotonic() + 10
+        while not marker.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert marker.exists(), "sandbox child did not start"
+        child_pid = int(marker.read_text())
+        supervisor.kill()
+        supervisor.wait(timeout=3)
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            status = Path(f"/proc/{child_pid}/stat")
+            if not status.exists() or status.read_text().split()[2] == "Z":
+                break
+            time.sleep(0.05)
+        else:
+            pytest.fail("sandbox child kept running after its supervisor was killed")
+    finally:
+        if supervisor.poll() is None:
+            supervisor.kill()
+            supervisor.wait(timeout=3)
+        if child_pid is not None:
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(child_pid, 9)
 
 
 def test_environment_is_an_allowlist(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
