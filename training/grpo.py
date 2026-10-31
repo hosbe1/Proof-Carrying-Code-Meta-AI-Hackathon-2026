@@ -19,7 +19,7 @@ from typing import Literal, Protocol, runtime_checkable
 from pcc.config import Config
 from pcc.core import ToolError
 from pcc.evaluation import Task, split
-from training.prompts import SYSTEM_MESSAGE
+from training.prompts import SYSTEM_MESSAGE, build_prompt
 from training.reward import reward
 
 _TRAIN_DATASET = "vericoding"
@@ -144,21 +144,23 @@ def _task_spec(task: Task) -> str:
     """The immutable Dafny task prefix of a Vericoding training task.
 
     This joins the documented ``vc-*`` payload parts (preamble, helpers, spec) and ends at the
-    opening method brace. It stands in for the prompt builder of the evaluation until that change
-    lands; the evaluation prompt and this prefix are replaced together then.
+    opening method brace. The graded reward scores the answer against this prefix, which must
+    occur unchanged in the answer.
     """
     parts = [task.payload.get(key, "") for key in _TASK_SPEC_KEYS]
     head = "\n".join(part for part in parts if isinstance(part, str) and part.strip())
     return f"{head}\n{{\n" if head else ""
 
 
-def _render_prompt(task_spec: str) -> str:
-    """Render the training prompt for ``task_spec``.
+def _render_prompt(task: Task) -> str:
+    """Render the training prompt for ``task`` with the shared prompt builder.
 
-    This stands in for the evaluation prompt builder until that change lands, so training sees the
-    same prompt shape the evaluation sends: the shared system message plus the task prefix.
+    The user turn is ``build_prompt`` from ``training/prompts.py`` — the same function the SFT
+    export uses, so training prompts compare byte-identical with the exported lines. The
+    evaluation harness reuses the same builder when it lands. The sampled prompt string is the
+    shared system message, a blank line, then that user turn.
     """
-    return f"{SYSTEM_MESSAGE}\n\n{task_spec}"
+    return f"{SYSTEM_MESSAGE}\n\n{build_prompt(task)}"
 
 
 def _advantages(rewards: list[float]) -> list[float] | None:
@@ -216,7 +218,7 @@ def run(
     kept: list[Task] = []
     for task in prepass:
         task_spec = _task_spec(task)
-        prompt = _render_prompt(task_spec)
+        prompt = _render_prompt(task)
         samples = backend.sample(prompt, config.samples_per_task)
         prepass_samples += len(samples)
         spend += estimate_spend(
@@ -246,7 +248,7 @@ def run(
         step_sample_tokens = 0
         for task in rng.sample(kept, min(config.tasks_per_step, len(kept))):
             task_spec = _task_spec(task)
-            prompt = _render_prompt(task_spec)
+            prompt = _render_prompt(task)
             try:
                 samples = backend.sample(prompt, config.samples_per_task)
             except ToolError:

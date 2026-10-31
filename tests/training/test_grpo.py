@@ -24,6 +24,7 @@ from training.grpo import (
     load_config,
     run,
 )
+from training.prompts import SYSTEM_MESSAGE, build_prompt
 
 from pcc.config import Config
 from pcc.core import ToolError
@@ -217,6 +218,17 @@ def test_load_config_rejects_bad_toml(tmp_path: Path) -> None:
     path.write_text("model = [\n", encoding="utf-8")
     with pytest.raises(tomllib.TOMLDecodeError):
         load_config(path)
+
+
+def test_prompts_match_shared_build_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
+    tasks = [make_task("TASK-PROMPT")]
+    _stub_split(monkeypatch, tasks)
+    backend = FakeBackend({"TASK-PROMPT": 1}, prepass_sample_calls=1)
+    config = make_config(tasks_per_step=1, samples_per_task=2, prepass_tasks=1, max_spend_usd=0.01)
+    run(config, backend, reward_fn=good_reward)
+    expected = f"{SYSTEM_MESSAGE}\n\n{build_prompt(tasks[0])}"
+    assert backend.sample_calls != []
+    assert all(prompt == expected for prompt, _ in backend.sample_calls)
 
 
 def test_group_filter_and_advantages_sum_to_zero(monkeypatch: pytest.MonkeyPatch) -> None:
