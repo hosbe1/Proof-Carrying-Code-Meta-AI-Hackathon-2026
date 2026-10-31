@@ -127,8 +127,10 @@ def _callee_wiring(
 
     A proven callee passes its certificate source as an extra module, under its Dafny module name. An unproven
     (``open``) callee becomes an ``UNPROVEN_CALLEE`` assumption with a body-less method in the generated
-    ``PCC_assume_<hash>`` module, where ``<hash>`` is the sha256 of the assumed specs. With no open callee the
-    module source is empty.
+    ``PCC_assume_<hash>`` module, where ``<hash>`` is the first 8 hex digits of the sha256 of the assumed specs
+    (the same truncation ``verifier.layout.module_name`` uses). An open callee with no translated method is still
+    listed, with empty Dafny text, so the caller records what it rests on. With no open callee that has a
+    translated method the module source is empty.
     """
     modules: dict[str, str] = {}
     extra: list[str] = []
@@ -228,6 +230,8 @@ def _translate(
     dafny_spec = transpile_spec(spec)
     mismatch: Counterexample | None = None
     try:
+        # Calls to project functions are not translated yet: the rule that turns them into
+        # `<Module>.<name>(...)` calls with the mapping below lands with the subset of #44.
         transpiled: str | None = transpile_function(function, callees=callee_modules)
     except UnsupportedConstruct:
         transpiled = None

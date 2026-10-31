@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 
 import pcc.pipeline
+from pcc.certificate import from_result
 from pcc.config import Config
 from pcc.core import (
     Assumption,
@@ -384,6 +385,41 @@ def test_dependency_hashes_use_callee_specs(tmp_path: Path) -> None:
     assert pcc.pipeline.dependency_hashes(caller, {callee: proven_callee(callee)}) == (Dependency("g", expected),)
     assert pcc.pipeline.dependency_hashes(caller, {callee: open_callee(callee)}) == (Dependency("g", expected),)
     assert pcc.pipeline.dependency_hashes(caller, {}) == ()
+
+
+def test_dependency_hashes_reach_certificate_from_result(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    recorded = _Recorded()
+    _install_steps(monkeypatch, recorded)
+    callee = g_ref()
+    caller = f_ref()
+    callees = {callee: proven_callee(callee)}
+
+    result = _run(caller, tmp_path, callees)
+
+    hashes = pcc.pipeline.dependency_hashes(caller, callees)
+    certificate = from_result(result, Config(), dependency_hashes=hashes)
+
+    assert certificate.dependency_hashes == hashes
+    assert certificate.assumptions == ()
+
+
+def test_open_callee_without_translation_lists_assumption_without_dafny(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    recorded = _Recorded()
+    _install_steps(monkeypatch, recorded)
+    callee = g_ref()
+
+    result = _run(f_ref(), tmp_path, {callee: make_result(callee, State.OPEN, reason="no proof found")})
+
+    assert result.state is State.PROVEN
+    assert len(result.assumptions) == 1
+    assumption = result.assumptions[0]
+    assert assumption.kind is AssumptionKind.UNPROVEN_CALLEE
+    assert assumption.subject == "g"
+    assert assumption.dafny == ""
+    assert recorded.prove_extra == [()]
+    assert recorded.prove_assumptions_module == [""]
 
 
 def test_ai_fallback_still_passes_callee_modules(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
