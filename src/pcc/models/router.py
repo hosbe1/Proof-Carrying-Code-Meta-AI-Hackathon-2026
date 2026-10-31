@@ -118,10 +118,13 @@ def build_client(
 
     ``clients`` overrides the endpoint clients by endpoint name (``"meta"``, ``"glimmer"``); tests pass
     ``FakeClient`` instances there. Without an override the client is a real ``OpenAICompatClient``: meta uses
-    ``PCC_META_BASE_URL`` (default ``https://api.meta.ai/v1``), ``META_API_KEY`` and ``META_PRICES``; glimmer
-    uses ``PCC_GLIMMER_BASE_URL``, ``PCC_GLIMMER_API_KEY`` and
+    ``PCC_META_BASE_URL`` (default ``https://api.meta.ai/v1``), ``META_API_KEY`` and ``META_PRICES``, plus the
+    optional ``PCC_META_REASONING_EFFORT`` request field (``minimal``, ``low``, ``medium``, ``high`` or ``xhigh``;
+    omitted when unset; any other value raises ``ValueError``); glimmer uses ``PCC_GLIMMER_BASE_URL``,
+    ``PCC_GLIMMER_API_KEY`` and
     ``config.models.endpoint_prices["glimmer"]`` keyed by the model name sent, which is ``PCC_GLIMMER_MODEL``
-    when set and the routed model id otherwise. A model id routed to two different endpoints raises
+    when set and the routed model id otherwise. Glimmer requests never carry ``reasoning_effort``.
+    A model id routed to two different endpoints raises
     ``ValueError``.
     """
     snapshot = dict(env)
@@ -150,6 +153,7 @@ def build_client(
             snapshot.get("PCC_META_BASE_URL", META_BASE_URL_DEFAULT),
             snapshot.get("META_API_KEY", ""),
             prices=META_PRICES,
+            reasoning_effort=snapshot.get("PCC_META_REASONING_EFFORT"),
         )
     glimmer_price = config.models.endpoint_prices.get(GLIMMER_ENDPOINT, (0.0, 0.0))
     override = snapshot.get("PCC_GLIMMER_MODEL") or None

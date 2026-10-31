@@ -36,6 +36,9 @@ _RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
 _BACKOFF_SECONDS = (1.0, 2.0, 4.0, 8.0)
 _FALLBACK_PREFIX = "\n\nAnswer with JSON matching this schema: "
 
+REASONING_EFFORTS = frozenset({"minimal", "low", "medium", "high", "xhigh"})
+"""Valid ``reasoning_effort`` values for the Meta model API; unset omits the field."""
+
 # Errors from the request itself that are worth one retry each: a refused or
 # reset connection, a timeout, and a broken HTTP exchange. HTTPError is also a
 # URLError, so it is caught separately before this tuple.
@@ -96,6 +99,15 @@ class OpenAICompatClient:
     valid; the fallbacks never sleep. ``Usage.seconds`` is the wall-clock time
     of the whole call, including sleeps. The API key is sent as
     ``Authorization: Bearer`` and never appears in an error message.
+
+    ``reasoning_effort`` is an opt-in Meta request field (one of ``minimal``,
+    ``low``, ``medium``, ``high``, ``xhigh``); with ``None`` the field is
+    omitted and the request shape is unchanged. Any other value raises
+    ``ValueError``. A response whose message ``content`` is null with
+    ``finish_reason`` ``"length"`` is a billed but exhausted attempt: it returns
+    an empty ``Completion`` with the reported usage immediately, without the
+    invalid-JSON retry, even when ``schema`` was requested. All other null or
+    non-text contents remain malformed-response ``ToolError``s.
     """
 
     def __init__(
@@ -107,13 +119,18 @@ class OpenAICompatClient:
         timeout_seconds: float = 120,
         max_retries: int = 4,
         sleep: Callable[[float], None] = time.sleep,
+        reasoning_effort: str | None = None,
     ) -> None:
+        if reasoning_effort is not None and reasoning_effort not in REASONING_EFFORTS:
+            valid = ", ".join(sorted(REASONING_EFFORTS))
+            raise ValueError(f"invalid reasoning_effort {reasoning_effort!r}; expected one of: {valid}")
         self._url = base_url.rstrip("/") + "/chat/completions"
         self._api_key = api_key
         self._prices = dict(prices) if prices is not None else None
         self._timeout_seconds = timeout_seconds
         self._max_retries = max_retries
         self._sleep = sleep
+        self._reasoning_effort = reasoning_effort
 
     def complete(
         self,
@@ -164,7 +181,11 @@ class OpenAICompatClient:
                 retries_used = self._consume_retry(model, step, retries_used, last_error)
                 self._sleep(delay)
                 continue
-            text, input_tokens, output_tokens = self._parse_response(model, step, raw)
+            text, input_tokens, output_tokens, length_exhausted = self._parse_response(model, step, raw)
+            if length_exhausted:
+                seconds = time.monotonic() - start
+                cost = self._cost(model, input_tokens, output_tokens)
+                return Completion(text, Usage(step, model, input_tokens, output_tokens, cost, seconds))
             if schema is not None and not json_retry_used and not _is_json(text):
                 last_error = f"invalid JSON answer: {text[:200]}"
                 json_retry_used = True
@@ -206,6 +227,8 @@ class OpenAICompatClient:
         body: dict[str, Any] = {"model": model, "messages": payload, "temperature": temperature}
         if max_tokens is not None:
             body["max_tokens"] = max_tokens
+        if self._reasoning_effort is not None:
+            body["reasoning_effort"] = self._reasoning_effort
         if use_response_format and schema is not None:
             body["response_format"] = {
                 "type": "json_schema",
@@ -233,21 +256,36 @@ class OpenAICompatClient:
         return _error_message(raw)
 
     @staticmethod
-    def _parse_response(model: str, step: str, raw: bytes) -> tuple[str, int, int]:
+    def _parse_response(model: str, step: str, raw: bytes) -> tuple[str, int, int, bool]:
         try:
             payload: Any = json.loads(raw.decode("utf-8"))
             choice = payload["choices"][0]
-            text = choice["message"]["content"]
-            if not isinstance(text, str):
+            message = choice["message"]
+            if not isinstance(message, dict):
+                raise TypeError("message is not an object")
+            if "content" not in message:
+                raise KeyError("content")
+            content = message["content"]
+            if content is None:
+                if isinstance(choice, dict) and choice.get("finish_reason") == "length":
+                    prompt, completion_tokens = _usage_tokens(payload)
+                    return "", prompt, completion_tokens, True
                 raise TypeError("content is not text")
-            usage = payload.get("usage", {})
-            if not isinstance(usage, dict):
-                raise TypeError("usage is not an object")
-            prompt = usage.get("prompt_tokens", 0) or 0
-            completion_tokens = usage.get("completion_tokens", 0) or 0
-            return text, int(prompt), int(completion_tokens)
+            if not isinstance(content, str):
+                raise TypeError("content is not text")
+            prompt, completion_tokens = _usage_tokens(payload)
+            return content, prompt, completion_tokens, False
         except (ValueError, KeyError, IndexError, TypeError, AttributeError) as exc:
             raise ToolError(f"malformed model response for {model!r} (step {step!r}): {exc}") from exc
 
 
-__all__ = ["META_PRICES", "OpenAICompatClient"]
+def _usage_tokens(payload: Any) -> tuple[int, int]:
+    usage = payload.get("usage", {})
+    if not isinstance(usage, dict):
+        raise TypeError("usage is not an object")
+    prompt = usage.get("prompt_tokens", 0) or 0
+    completion_tokens = usage.get("completion_tokens", 0) or 0
+    return int(prompt), int(completion_tokens)
+
+
+__all__ = ["META_PRICES", "REASONING_EFFORTS", "OpenAICompatClient"]

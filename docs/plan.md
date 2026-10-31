@@ -381,6 +381,11 @@ API by `META_API_KEY`, a Glimmer deployment by `PCC_GLIMMER_BASE_URL` and `PCC_G
 endpoint is not configured is skipped. Prices per million input/output tokens: `muse-spark-1.3` $1.25/$4.25,
 `muse-spark-1.3-contributor` $0.10/$0.20, `muse-wonder-1.0` $4/$20.
 
+An optional `PCC_META_REASONING_EFFORT` (`minimal`, `low`, `medium`, `high` or `xhigh`) is sent only to the
+Meta Model API; when unset the request field is omitted. A response with null content and `finish_reason`
+`length` returns an empty answer with the reported usage, so the budget wrapper counts the billed attempt
+instead of failing the run. Evaluation runs keep the fixed 4096-token limit.
+
 Endpoints billed per GPU hour (a Glimmer deployment) count $0 per token in the function budget; their GPU time is
 tracked per deployment and capped in Compute.
 
