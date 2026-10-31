@@ -9,9 +9,48 @@ source of truth) but the package never imports it.
 | --- | --- |
 | `prompts.py` | `SYSTEM_MESSAGE` and `build_prompt`, shared verbatim by every data line and every sampling tool |
 | `reward.py` | The graded proof reward: 1 verified, 0 not verified, −1 cheat or changed spec |
+| `rejection.py` | `python -m training.rejection`: sample proofs per task, keep the Dafny-verified ones |
 | `export_sft.py` | `python -m training.export_sft`: verified solutions become Fireworks SFT data |
 | `grpo.py` | The GRPO loop itself, against a small `Backend` protocol with no SDK and no network, so it runs offline in tests |
 | `configs/glimmer_fireworks.toml` | The GRPO run configuration |
+
+## Rejection sampling
+
+```bash
+python -m training.rejection --endpoint meta|glimmer --model <name> --tasks train \
+  --attempts 8 --out sft.jsonl [--skip-solved old.jsonl] [--max-cost-usd 40] [--resume]
+```
+
+`run(tasks, client, *, model, attempts, out, ...)` in `rejection.py` drives one round and
+returns a `RoundSummary`. Every attempt is one `complete` call with the shared system
+message and `build_prompt(task)` as the user message (`step="proof"`, free text, no
+schema). Sampling runs the attempts of a task concurrently with `concurrency` tasks at
+once; every raw attempt is appended to `<out>.attempts.jsonl` under a lock. After
+sampling, `reward_fn` (default: the graded reward bound to `Config().dafny.resource_limit`)
+scores every attempt of the finished tasks in a `ProcessPoolExecutor` with `--workers`
+processes. Only a reward of exactly 1.0 counts as verified; 0 and −1 do not.
+
+`<out>` holds one line per verified, deduplicated answer in the SFT chat format from the
+section below. Identical answers of one task are written once, at most `--max-per-task`
+per task, and `<out>` is rewritten from the attempts file at the end of each run.
+`--endpoint meta` routes through `build_client` (round 0: the contributor model, with
+`--max-cost-usd` required); `--endpoint glimmer` posts to `PCC_GLIMMER_BASE_URL` with
+`PCC_GLIMMER_API_KEY` (round 1: the SFT 1 model on the tasks still unsolved, passed as
+`--skip-solved`).
+
+After verification, one line per finished task goes to `<out>.tasks.jsonl` with
+`prompt_sha256` (lowercase hex SHA-256 of the exact UTF-8 bytes of `build_prompt(task)`),
+`attempts` and `solved`. An existing `<out>` requires `--resume`, which appends to
+`<out>.attempts.jsonl` (never truncates it), skips the finished tasks, and tops up tasks
+that have attempts but no finished-task record. `--skip-solved` skips the tasks whose
+exact user prompt occurs in that file; the union of both skips runs nothing twice.
+With `--max-cost-usd` the client is wrapped so only the dollar cap constrains the run:
+the call that crosses the cap completes, the next call stops sampling with
+`stop_reason` `"cost cap"` (exit 0, resumable); an endpoint failure stops with
+`"endpoint: <message>"` (exit 2). The summary is printed and written to
+`<out>.summary.json` with `tasks_solved`, `tasks_run`, `attempts`, `input_tokens`,
+`output_tokens`, `cost_usd`, `wall_seconds` and `stop_reason`; it describes the current
+invocation while the output files keep the resumed cumulative data.
 
 ## SFT data export
 
