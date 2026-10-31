@@ -6,8 +6,9 @@ monkeypatched; only ``discover``, the certificate store and the report run for r
 
 from __future__ import annotations
 
+import hashlib
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from importlib.metadata import version
 from pathlib import Path
 
@@ -67,6 +68,7 @@ def _patch_run_many(
     *,
     error: BaseException | None = None,
     calls: list[tuple[FunctionRef, ...]] | None = None,
+    seen_callees: list[Mapping[FunctionRef, Result]] | None = None,
 ) -> None:
     def fake(
         functions: Sequence[FunctionRef],
@@ -74,9 +76,12 @@ def _patch_run_many(
         *,
         client: object,
         config: Config,
+        callees: Mapping[FunctionRef, Result] | None = None,
     ) -> tuple[Result, ...]:
         if calls is not None:
             calls.append(tuple(functions))
+        if seen_callees is not None:
+            seen_callees.append(dict(callees or {}))
         if error is not None:
             raise error
         return tuple(results or ())
@@ -337,3 +342,95 @@ def test_run_reproven_stale_certificate_is_not_reported(monkeypatch: pytest.Monk
     report = (tmp_path / "report.md").read_text(encoding="utf-8")
     assert "Stale certificates" not in report
     assert "pkg/mod.py::add" in report
+
+
+CALLS_SOURCE = "def g(x: int) -> int:\n    return x\n\n\ndef f(x: int) -> int:\n    return g(x)\n"
+G_SPEC = "predicate spec(x: int, r: int)\n{\n  r == x\n}\n"
+F_SPEC = "predicate spec(x: int, r: int)\n{\n  r == g(x)\n}\n"
+
+
+def _proven_with_spec(function: FunctionRef, dafny_spec: str) -> Result:
+    return Result(
+        function,
+        State.PROVEN,
+        "verified",
+        h.intent(function),
+        h.spec(function),
+        h.translation(function, dafny_spec=dafny_spec),
+        (),
+        None,
+        h.proof(),
+    )
+
+
+def test_run_writes_callee_dependency_hashes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _write_repo(tmp_path, CALLS_SOURCE)
+    _patch_models(monkeypatch)
+    _patch_affected_identity(monkeypatch)
+    refs = {ref.qualname: ref for ref in project.discover(tmp_path, [REL_PATH])}
+    assert set(refs) == {"g", "f"}
+    _patch_run_many(
+        monkeypatch,
+        [_proven_with_spec(refs["g"], G_SPEC), _proven_with_spec(refs["f"], F_SPEC)],
+    )
+    assert _run(monkeypatch, tmp_path, _default_argv(tmp_path)) == 0
+    sidecar = tmp_path / "proofs" / "pkg" / "mod" / "f.json"
+    data = json.loads(sidecar.read_text(encoding="utf-8"))
+    assert data["dependency_hashes"] == [{"name": "g", "sha256": hashlib.sha256(G_SPEC.encode("utf-8")).hexdigest()}]
+
+
+def test_run_reruns_caller_when_callee_is_stale(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _write_repo(tmp_path, CALLS_SOURCE)
+    _patch_models(monkeypatch)
+    _patch_affected_identity(monkeypatch)
+    refs = {ref.qualname: ref for ref in project.discover(tmp_path, [REL_PATH])}
+    proofs = tmp_path / "proofs"
+    for ref in refs.values():
+        write(from_result(_proven_result(ref), Config()), proofs)
+    (tmp_path / REL_PATH).write_text(
+        "def g(x: int) -> int:\n    return x + 1\n\n\ndef f(x: int) -> int:\n    return g(x)\n",
+        encoding="utf-8",
+    )
+    calls: list[tuple[FunctionRef, ...]] = []
+
+    def fake(
+        functions: Sequence[FunctionRef],
+        repo_root: Path,
+        *,
+        client: object,
+        config: Config,
+        callees: Mapping[FunctionRef, Result] | None = None,
+    ) -> tuple[Result, ...]:
+        _ = callees
+        calls.append(tuple(functions))
+        return tuple(Result(function, State.OPEN, "no proof found") for function in functions)
+
+    monkeypatch.setattr(pipeline, "run_many", fake)
+    assert _run(monkeypatch, tmp_path, _default_argv(tmp_path)) == 1
+    assert len(calls) == 1
+    assert {ref.qualname for ref in calls[0]} == {"g", "f"}
+
+
+def test_run_passes_cached_callee_results_to_run_many(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _write_repo(tmp_path, CALLS_SOURCE)
+    _patch_models(monkeypatch)
+    _patch_affected_identity(monkeypatch)
+    refs = {ref.qualname: ref for ref in project.discover(tmp_path, [REL_PATH])}
+    assert set(refs) == {"g", "f"}
+    proofs = tmp_path / "proofs"
+    write(from_result(_proven_with_spec(refs["g"], G_SPEC), Config()), proofs)
+    callee = refs["g"]
+    caller = refs["f"]
+    seen: list[Mapping[FunctionRef, Result]] = []
+    _patch_run_many(
+        monkeypatch,
+        [Result(caller, State.OPEN, "no proof found")],
+        seen_callees=seen,
+    )
+    assert _run(monkeypatch, tmp_path, _default_argv(tmp_path)) == 0
+    assert len(seen) == 1
+    assert set(seen[0]) == {callee}
+    reused = seen[0][callee]
+    assert reused.state is State.PROVEN
+    assert reused.reason == "certificate"
+    assert reused.proof is not None
