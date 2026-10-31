@@ -630,7 +630,12 @@ def _range_single_bound(call: ast.Call) -> ast.expr | None:
 
 
 def _comprehension(node: ast.ListComp, ctx: _Ctx, sub: Callable[[ast.expr, _Ctx], _Typed]) -> _Typed:
-    """``[e for i in range(n)]`` to ``seq(n, i => e)`` with ``sub`` for the parts."""
+    """``[e for i in range(n)]`` to ``seq(n, i => e)`` with ``sub`` for the parts.
+
+    An element calling the function itself or a project callee raises
+    ``"call in comprehension"``: hoisting it into the outer ``pre`` would bind
+    the loop variable outside the ``seq`` lambda where it is unbound.
+    """
     if len(node.generators) != 1:
         raise _fail(node, "comprehension")
     gen = node.generators[0]
@@ -651,13 +656,20 @@ def _comprehension(node: ast.ListComp, ctx: _Ctx, sub: Callable[[ast.expr, _Ctx]
         raise _fail(node, "comprehension")
     child = ctx.child()
     child.types[gen.target.id] = _INT
+    if _contains_any_call(node.elt, ctx.func_name, child):
+        raise _fail(node, "call in comprehension")
     elt = sub(node.elt, child)
     elt_tag = _need(elt.tag, node.elt)
     return _Typed(f"seq({bound.code}, {child.name(gen.target.id)} => {elt.code})", f"seq<{elt_tag}>")
 
 
 def _sum_call(node: ast.Call, ctx: _Ctx, sub: Callable[[ast.expr, _Ctx], _Typed]) -> _Typed:
-    """``sum(<bool> for v in xs)`` to ``py_count(xs, v => <bool>)``."""
+    """``sum(<bool> for v in xs)`` to ``py_count(xs, v => <bool>)``.
+
+    A predicate calling the function itself or a project callee raises
+    ``"call in sum"``: hoisting it into the outer ``pre`` would bind the loop
+    variable outside the ``py_count`` lambda where it is unbound.
+    """
     if node.keywords or len(node.args) != 1 or not isinstance(node.args[0], ast.GeneratorExp):
         raise _fail(node, "sum generator")
     gen = node.args[0]
@@ -672,6 +684,8 @@ def _sum_call(node: ast.Call, ctx: _Ctx, sub: Callable[[ast.expr, _Ctx], _Typed]
         raise _fail(node, "sum generator")
     child = ctx.child()
     child.types[comp.target.id] = _seq_elem(seq_tag)
+    if _contains_any_call(gen.elt, ctx.func_name, child):
+        raise _fail(node, "call in sum")
     elt = sub(gen.elt, child)
     if _need(elt.tag, gen.elt) != _BOOL:
         raise _fail(node, "sum generator")
@@ -703,16 +717,11 @@ def _project_call(
 def _callee_tag(ctx: _Ctx, key: str) -> str | None:
     """The Dafny return tag for the callee ``key``, or ``None`` when unknown.
 
-    Looks up ``callee_types`` by qualname, falling back to the short name, so a
-    caller that only knows ``g`` still finds the type recorded under ``pkg.g``.
+    Looks up ``callee_types`` by exact qualname only. A short-name fallback
+    would pick an arbitrary entry when several qualnames share the short name,
+    so callers must record the type under the same qualname used in ``callees``.
     """
-    tag = ctx.callee_types.get(key)
-    if tag is None:
-        short = key.split(".")[-1]
-        for other, other_tag in ctx.callee_types.items():
-            if other.split(".")[-1] == short:
-                return other_tag
-    return tag
+    return ctx.callee_types.get(key)
 
 
 def _call(node: ast.Call, ctx: _Ctx) -> _Typed:

@@ -598,6 +598,44 @@ def test_comprehension_two_generators_rejected() -> None:
     )
 
 
+def test_comprehension_with_project_call_rejected() -> None:
+    check_unsupported(
+        "def f(n: int) -> list[int]:\n    return [g(i) for i in range(n)]\n",
+        "call in comprehension",
+        lineno=2,
+        callees={"g": "GoldenG"},
+        callee_types={"g": "int"},
+    )
+
+
+def test_comprehension_with_self_call_rejected() -> None:
+    check_unsupported(
+        "def f(n: int) -> list[int]:\n    return [f(i) for i in range(n)]\n",
+        "call in comprehension",
+        lineno=2,
+    )
+
+
+def test_comprehension_with_nested_project_call_rejected() -> None:
+    check_unsupported(
+        "def f(n: int) -> list[int]:\n    return [g(i) + 1 for i in range(n)]\n",
+        "call in comprehension",
+        lineno=2,
+        callees={"g": "GoldenG"},
+        callee_types={"g": "int"},
+    )
+
+
+def test_comprehension_with_project_call_in_assign_rejected() -> None:
+    check_unsupported(
+        "def f(n: int) -> list[int]:\n    xs = [g(i) for i in range(n)]\n    return xs\n",
+        "call in comprehension",
+        lineno=2,
+        callees={"g": "GoldenG"},
+        callee_types={"g": "int"},
+    )
+
+
 def test_min_two_ints() -> None:
     out = transpile("def f(a: int, b: int) -> int:\n    return min(a, b)\n")
     assert out.endswith("{\n  return py_min(a, b);\n}")
@@ -639,6 +677,53 @@ def test_sum_with_filter_rejected() -> None:
 
 def test_sum_non_sequence_rejected() -> None:
     check_unsupported("def f(s: str) -> int:\n    return sum(v for v in s)\n", "sum generator", lineno=2)
+
+
+def test_sum_with_project_call_rejected() -> None:
+    check_unsupported(
+        "def f(xs: list[int]) -> int:\n    return sum(g(v) for v in xs)\n",
+        "call in sum",
+        lineno=2,
+        callees={"g": "GoldenG"},
+        callee_types={"g": "bool"},
+    )
+
+
+def test_sum_with_self_call_rejected() -> None:
+    check_unsupported(
+        "def f(xs: list[int]) -> bool:\n    return sum(f(xs) for v in xs)\n",
+        "call in sum",
+        lineno=2,
+    )
+
+
+def test_sum_with_nested_project_call_rejected() -> None:
+    check_unsupported(
+        "def f(xs: list[int], n: int) -> int:\n    return sum(v + g(v) >= n for v in xs)\n",
+        "call in sum",
+        lineno=2,
+        callees={"g": "GoldenG"},
+        callee_types={"g": "int"},
+    )
+
+
+def test_callee_tag_ignores_short_name_collision() -> None:
+    check_unsupported(
+        "def f(a: int) -> int:\n    return g(a) + 1\n",
+        "unknown type",
+        lineno=2,
+        callees={"g": "GoldenG"},
+        callee_types={"pkg.g": "int", "other.g": "bool"},
+    )
+
+
+def test_callee_tag_exact_qualname_match() -> None:
+    out = transpile(
+        "def f(a: int) -> int:\n    return g(a) + 1\n",
+        callees={"pkg.g": "GoldenG"},
+        callee_types={"pkg.g": "int"},
+    )
+    assert "  var pcc_t1 := GoldenG.g(a);\n  return pcc_t1 + 1;\n" in out
 
 
 def test_go_next_matches_golden() -> None:
