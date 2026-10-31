@@ -126,11 +126,11 @@ def _callee_wiring(
     """The callee info for the transpiler and the prover: module names, extra modules, assumptions, module source.
 
     A proven callee passes its certificate source as an extra module, under its Dafny module name. An unproven
-    (``open``) callee becomes an ``UNPROVEN_CALLEE`` assumption with a body-less method in the generated
-    ``PCC_assume_<hash>`` module, where ``<hash>`` is the first 8 hex digits of the sha256 of the assumed specs
-    (the same truncation ``verifier.layout.module_name`` uses). An open callee with no translated method is still
-    listed, with empty Dafny text, so the caller records what it rests on. With no open callee that has a
-    translated method the module source is empty.
+    (``open``) callee becomes an ``UNPROVEN_CALLEE`` assumption with a body-less method together with the callee's
+    Dafny spec in the generated ``PCC_assume_<hash>`` module, where ``<hash>`` is the first 8 hex digits of the
+    sha256 of the assumed specs (the same truncation ``verifier.layout.module_name`` uses). An open callee with no
+    translated method is still listed, with empty Dafny text, so the caller records what it rests on. With no open
+    callee that has a translated method the module source is empty.
     """
     modules: dict[str, str] = {}
     extra: list[str] = []
@@ -160,7 +160,8 @@ def _callee_wiring(
     assumptions_module = ""
     if methods:
         digest = hashlib.sha256("\n".join(specs).encode("utf-8")).hexdigest()[:8]
-        body = "\n".join(f"  {line}" if line.strip() else "" for method in methods for line in method.split("\n"))
+        blocks = [*specs, *methods]
+        body = "\n".join(f"  {line}" if line.strip() else "" for block in blocks for line in block.split("\n"))
         assumptions_module = f"module PCC_assume_{digest} {{\n{body}\n}}\n"
     return modules, tuple(extra), tuple(assumptions), assumptions_module
 

@@ -290,6 +290,8 @@ def test_open_callee_becomes_unproven_callee_assumption(monkeypatch: pytest.Monk
     assert recorded.prove_extra == [()]
     (module,) = recorded.prove_assumptions_module
     assert re.fullmatch(r"module PCC_assume_[0-9a-f]{8} \{\n(?:.*\n)*\}\n", module) is not None
+    assert "predicate spec(x: int, result: int)" in module
+    assert "result == x" in module
     assert "method {:axiom} g(x: int) returns (result: int)\n    requires pre(x)\n    ensures spec(x, result)" in module
 
 
