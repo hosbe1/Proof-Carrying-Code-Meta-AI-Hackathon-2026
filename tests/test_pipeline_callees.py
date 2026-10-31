@@ -39,6 +39,7 @@ from pcc.core import (
     Translation,
     TranslationPath,
     UnsupportedConstruct,
+    Usage,
 )
 from pcc.models import FakeClient
 from pcc.verifier.layout import module_name
@@ -586,3 +587,191 @@ def test_failed_proof_without_counterexample_stays_open(monkeypatch: pytest.Monk
 
     assert result.state is State.OPEN
     assert result.reason == "assertion might not hold"
+
+
+def _open_callee_result(ref: FunctionRef, reason: str, dafny_function: str = G_DAFNY_FUNCTION) -> Result:
+    """An unproven callee result with a translated method and spec."""
+    return Result(
+        ref,
+        State.OPEN,
+        reason,
+        make_intent(ref),
+        make_spec(ref),
+        make_translation(ref, dafny_function=dafny_function, dafny_spec=G_DAFNY_SPEC),
+        (),
+        None,
+        None,
+    )
+
+
+def test_visible_cycle_gates_caller_without_mutual_reason(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    def fail(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("steps must not run for a visible mutual cycle")
+
+    monkeypatch.setattr(pcc.pipeline, "collect", fail)
+    monkeypatch.setattr(pcc.pipeline, "prove", fail)
+    callee_a = a_ref()
+    callee_b = b_ref()
+
+    result = _run(
+        fa_ref(),
+        tmp_path,
+        {
+            callee_a: _open_callee_result(callee_a, "no proof found"),
+            callee_b: _open_callee_result(callee_b, "no proof found"),
+        },
+    )
+
+    assert result.state is State.OPEN
+    assert result.reason == "mutual recursion"
+
+
+TRAILING_COMMENT_FUNCTION = (
+    "method g(x: int) returns (result: int)\n"
+    "  requires pre(x)\n"
+    "  ensures spec(x, result)\n"
+    "{\n"
+    "  result := x;\n"
+    "}\n"
+    "// trailing note\n"
+)
+
+
+def test_open_callee_with_trailing_comment_after_body(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    recorded = _Recorded()
+    _install_steps(monkeypatch, recorded)
+    callee = g_ref()
+
+    result = _run(f_ref(), tmp_path, {callee: _open_callee_result(callee, "no proof found", TRAILING_COMMENT_FUNCTION)})
+
+    assert result.state is State.PROVEN
+    (assumption,) = result.assumptions
+    assert assumption.dafny.count("{:axiom}") == 1
+    assert assumption.dafny.startswith("method {:axiom} g(")
+    assert "requires pre(x)" in assumption.dafny
+
+
+LEADING_COMMENT_FUNCTION = (
+    "// method sketch for g\n"
+    "method g(x: int) returns (result: int)\n"
+    "  requires pre(x)\n"
+    "  ensures spec(x, result)\n"
+    "{\n"
+    "  result := x;\n"
+    "}\n"
+)
+
+
+def test_open_callee_with_method_word_in_comment(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    recorded = _Recorded()
+    _install_steps(monkeypatch, recorded)
+    callee = g_ref()
+
+    result = _run(f_ref(), tmp_path, {callee: _open_callee_result(callee, "no proof found", LEADING_COMMENT_FUNCTION)})
+
+    assert result.state is State.PROVEN
+    (assumption,) = result.assumptions
+    assert assumption.dafny.count("{:axiom}") == 1
+    assert assumption.dafny.split("\n")[0] == "// method sketch for g"
+    assert "method {:axiom} g(x: int)" in assumption.dafny
+    assert "requires pre(x)" in assumption.dafny
+
+
+H_CALLER_SOURCE = "def fh(x: int) -> int:\n    return g(x) + h(x)\n"
+
+
+def test_first_deciding_callee_in_path_order_wins(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    def fail(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("steps must not run after a deciding callee")
+
+    monkeypatch.setattr(pcc.pipeline, "collect", fail)
+    monkeypatch.setattr(pcc.pipeline, "prove", fail)
+    callee_g = g_ref()
+    callee_h = function_ref(source=H_SOURCE, path=PATH, qualname="h", lineno=3)
+    caller = function_ref(source=H_CALLER_SOURCE, path=PATH, qualname="fh", lineno=9)
+
+    first_counterexample = _run(
+        caller,
+        tmp_path,
+        {
+            callee_g: make_result(callee_g, State.COUNTEREXAMPLE),
+            callee_h: make_result(callee_h, State.NOT_CHECKABLE),
+        },
+    )
+    assert first_counterexample.state is State.OPEN
+    assert first_counterexample.reason == "callee g has a counterexample"
+
+    first_not_checkable = _run(
+        caller,
+        tmp_path,
+        {
+            callee_g: make_result(callee_g, State.NOT_CHECKABLE),
+            callee_h: make_result(callee_h, State.COUNTEREXAMPLE),
+        },
+    )
+    assert first_not_checkable.state is State.NOT_CHECKABLE
+    assert first_not_checkable.reason == "callee g not checkable"
+
+
+def test_dependency_hashes_agree_with_cli_stored_hashes() -> None:
+    from pcc.cli import _hashes_for_key
+
+    callee = g_ref()
+    caller = f_ref()
+    key = (caller.path, caller.qualname)
+    by_key: dict[tuple[str, str], tuple[tuple[str, str], ...]] = {key: ((callee.path, callee.qualname),)}
+    specs = {(callee.path, callee.qualname): G_DAFNY_SPEC}
+
+    assert _hashes_for_key(key, by_key, specs) == pcc.pipeline.dependency_hashes(caller, {callee: proven_callee(callee)})
+
+
+def test_run_many_serializes_model_calls() -> None:
+    import threading
+    import time
+
+    from pcc.models import Completion, Message, ModelClient
+
+    active = 0
+    max_active = 0
+    guard = threading.Lock()
+
+    class _SlowClient:
+        def complete(
+            self,
+            model: str,
+            messages: tuple[Message, ...],
+            *,
+            step: str,
+            schema: dict[str, object] | None = None,
+            temperature: float = 0.0,
+            max_tokens: int | None = None,
+        ) -> Completion:
+            nonlocal active, max_active
+            _ = (model, messages, step, schema, temperature, max_tokens)
+            with guard:
+                active += 1
+                max_active = max(max_active, active)
+            time.sleep(0.02)
+            with guard:
+                active -= 1
+            return Completion("{}", Usage("prove", None, 0, 0, 0.0, 0.0))
+
+    wrapper: ModelClient = pcc.pipeline.SerializedClient(_SlowClient())
+    barrier = threading.Barrier(8)
+    failures: list[BaseException] = []
+
+    def call() -> None:
+        try:
+            barrier.wait(timeout=10)
+            wrapper.complete("model", (), step="prove")
+        except BaseException as error:
+            failures.append(error)
+
+    threads = [threading.Thread(target=call) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert failures == []
+    assert max_active == 1

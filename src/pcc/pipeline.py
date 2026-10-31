@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import re
+import threading
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
@@ -31,7 +32,7 @@ from pcc.core import (
 from pcc.counterexample import search as search_counterexample
 from pcc.equivalence import check as check_equivalence
 from pcc.intent import derive
-from pcc.models import ModelClient
+from pcc.models import Completion, Message, ModelClient
 from pcc.project import call_order
 from pcc.project.calls import subset_edges
 from pcc.prove import prove
@@ -78,6 +79,15 @@ def _reaches(start: FunctionRef, target: FunctionRef, edges: Mapping[FunctionRef
     return False
 
 
+def _in_multi_member_scc(node: FunctionRef, edges: Mapping[FunctionRef, frozenset[FunctionRef]]) -> bool:
+    """Whether ``node`` shares a multi-member strongly connected component with another function.
+
+    A function that calls only itself stays out: self-recursion is checked normally.
+    """
+    universe = set(edges) | {successor for successors in edges.values() for successor in successors}
+    return any(other != node and _reaches(node, other, edges) and _reaches(other, node, edges) for other in universe)
+
+
 def _callee_gate(
     function: FunctionRef,
     direct: tuple[FunctionRef, ...],
@@ -85,17 +95,25 @@ def _callee_gate(
 ) -> Result | None:
     """The early result when a direct callee decides the caller, or ``None`` when the run proceeds.
 
-    A callee reached back from the caller is mutual recursion; a callee that ended that way makes the caller end
-    the same way. A callee with a counterexample ends the caller ``open``, because an assumption known to be false
-    proves nothing; a callee that is ``not_checkable`` ends the caller ``not_checkable``. No step runs then. The
-    first deciding callee in path order wins.
+    A callee reached back from the caller is mutual recursion, as is a callee that sits in a multi-member
+    strongly connected component visible in the passed graph, even under another ``open`` reason. A callee that
+    ended that way in an earlier run makes the caller end the same way: ``run`` and ``run_many`` always report
+    mutual recursion with ``MUTUAL_RECURSION``, so the reason match only propagates that pre-marking. A callee
+    with a counterexample ends the caller ``open``, because an assumption known to be false proves nothing; a
+    callee that is ``not_checkable`` ends the caller ``not_checkable``. No step runs then. Precedence is callee
+    order, not severity: the first deciding callee in path order (then lineno) wins, so a counterexample in an
+    earlier callee beats ``not_checkable`` in a later one.
     """
     if not direct:
         return None
     edges = subset_edges((function, *callees))
     for callee in direct:
         outcome = callees[callee]
-        if _reaches(callee, function, edges) or (outcome.state is State.OPEN and outcome.reason == MUTUAL_RECURSION):
+        if (
+            _reaches(callee, function, edges)
+            or _in_multi_member_scc(callee, edges)
+            or (outcome.state is State.OPEN and outcome.reason == MUTUAL_RECURSION)
+        ):
             return Result(function, State.OPEN, MUTUAL_RECURSION)
         if outcome.state is State.COUNTEREXAMPLE:
             return Result(function, State.OPEN, f"callee {callee.qualname} has a counterexample")
@@ -161,6 +179,55 @@ def _skip_atom(text: str, index: int) -> int | None:
     return None
 
 
+def _in_code(text: str, index: int) -> bool:
+    """Whether ``index`` is real code rather than inside a string, char literal or comment."""
+    pos = 0
+    while pos < index:
+        skipped = _skip_atom(text, pos)
+        if skipped is None:
+            pos += 1
+        elif skipped > index:
+            return False
+        else:
+            pos = skipped
+    return True
+
+
+def _method_match(text: str) -> re.Match[str] | None:
+    """The first ``method`` keyword in real code, or ``None`` when there is none.
+
+    A comment or string before the declaration may hold the word ``method``; matching it would truncate the
+    header at the wrong place.
+    """
+    for match in _METHOD_RE.finditer(text):
+        if _in_code(text, match.start()):
+            return match
+    return None
+
+
+def _skip_trivia(text: str, index: int) -> int | None:
+    """End index of the whitespace or comment starting at ``index``, or ``None`` when there is neither."""
+    if text[index] in " \t\n\r":
+        end = index + 1
+        while end < len(text) and text[end] in " \t\n\r":
+            end += 1
+        return end
+    if text.startswith(("//", "/*"), index):
+        return _skip_atom(text, index)
+    return None
+
+
+def _only_trivia(text: str, index: int) -> bool:
+    """Whether ``text[index:]`` holds only whitespace and comments."""
+    pos = index
+    while pos < len(text):
+        skipped = _skip_trivia(text, pos)
+        if skipped is None:
+            return False
+        pos = skipped
+    return True
+
+
 def _match_brace(text: str, opening: int) -> int | None:
     """Index of the ``}`` matching the ``{`` at ``opening``, or ``None`` when unbalanced.
 
@@ -188,7 +255,7 @@ def _body_start(text: str) -> int | None:
 
     A ``{`` inside parentheses or brackets, or a group that more header text follows, holds a contract
     expression (a set display such as ``{0, 1}`` or an attribute argument) rather than the body: only a
-    group whose match runs to the end of the text opens the body. Braces inside strings, char literals
+    group after which only whitespace and comments follow opens the body. Braces inside strings, char literals
     and comments do not count.
     """
     depth_paren = 0
@@ -213,7 +280,7 @@ def _body_start(text: str) -> int | None:
             closing = _match_brace(text, index)
             if closing is None:
                 return None
-            if text[closing + 1 :].strip() == "":
+            if _only_trivia(text, closing + 1):
                 return index
             index = closing
         index += 1
@@ -223,9 +290,9 @@ def _body_start(text: str) -> int | None:
 def _assumption_method(outcome: Result) -> str | None:
     """The callee's translated method header as a body-less ``{:axiom}`` method.
 
-    Returns ``None`` when the callee has no translated method to assume or no body brace is found, so the
-    caller still lists the assumption without Dafny text. The ``{:axiom}`` mark is what ``pcc.verifier.anti_cheat``
-    allows inside the generated assumptions module.
+    Returns ``None`` when the callee has no translated method, no body brace is found, or the ``method``
+    keyword cannot be located in real code, so the caller still lists the assumption without Dafny text.
+    The ``{:axiom}`` mark is what ``pcc.verifier.anti_cheat`` allows inside the generated assumptions module.
     """
     if outcome.translation is None:
         return None
@@ -234,7 +301,7 @@ def _assumption_method(outcome: Result) -> str | None:
     if body is None:
         return None
     header = text[:body].strip()
-    match = _METHOD_RE.search(header)
+    match = _method_match(header)
     if match is None:
         return None
     return f"{header[: match.end()]} {{:axiom}}{header[match.end() :]}"
@@ -290,6 +357,14 @@ def _callee_wiring(
     return modules, tuple(extra), tuple(assumptions), assumptions_module, imports
 
 
+def spec_dependency(qualname: str, dafny_spec: str) -> Dependency:
+    """One certificate dependency: ``qualname`` with the sha256 of its Dafny spec.
+
+    The pipeline and the CLI share this so stored and fresh hashes cannot drift apart.
+    """
+    return Dependency(qualname, hashlib.sha256(dafny_spec.encode("utf-8")).hexdigest())
+
+
 def dependency_hashes(function: FunctionRef, callees: Mapping[FunctionRef, Result]) -> tuple[Dependency, ...]:
     """The certificate dependencies of ``function``: the sha256 of each direct callee's ``dafny_spec``.
 
@@ -300,9 +375,7 @@ def dependency_hashes(function: FunctionRef, callees: Mapping[FunctionRef, Resul
     for callee in _direct_callees(function, callees):
         translation = callees[callee].translation
         if translation is not None:
-            found.append(
-                Dependency(callee.qualname, hashlib.sha256(translation.dafny_spec.encode("utf-8")).hexdigest())
-            )
+            found.append(spec_dependency(callee.qualname, translation.dafny_spec))
     return tuple(found)
 
 
@@ -317,6 +390,34 @@ def _closure(start: FunctionRef, edges: Mapping[FunctionRef, frozenset[FunctionR
         seen.add(node)
         stack.extend(edges.get(node, ()))
     return seen
+
+
+class SerializedClient:
+    """A ``ModelClient`` adapter that runs one completion at a time.
+
+    ``run_many`` shares one client across worker threads; the adapter serializes the calls so a client that is
+    not thread-safe cannot race. It adds no budget or retry behavior on its own.
+    """
+
+    def __init__(self, inner: ModelClient) -> None:
+        self._inner = inner
+        self._lock = threading.Lock()
+
+    def complete(
+        self,
+        model: str,
+        messages: tuple[Message, ...],
+        *,
+        step: str,
+        schema: dict[str, object] | None = None,
+        temperature: float = 0.0,
+        max_tokens: int | None = None,
+    ) -> Completion:
+        """Run one completion, waiting for any in-flight call on another thread first."""
+        with self._lock:
+            return self._inner.complete(
+                model, messages, step=step, schema=schema, temperature=temperature, max_tokens=max_tokens
+            )
 
 
 def _mutual_members(level: Sequence[FunctionRef]) -> set[FunctionRef]:
@@ -474,8 +575,8 @@ def run_many(
 
     Mutually recursive functions of one level end ``open`` without running; every other function runs with the
     results of the earlier levels (plus the mutual ones of its own level) as ``callees``. The result holds one
-    entry per passed function, in order. The shared ``client`` is called from several worker threads at once,
-    so it must be thread-safe.
+    entry per passed function, in order. Model calls across the worker threads are serialized, so the shared
+    ``client`` needs no thread-safety of its own.
     """
     levels = call_order(functions)
     done: dict[FunctionRef, Result] = {}
@@ -485,9 +586,10 @@ def run_many(
         rest = [ref for ref in level if ref not in done]
         if rest:
             snapshot: Mapping[FunctionRef, Result] = MappingProxyType(dict(done))
+            shared = SerializedClient(client)
             with ThreadPoolExecutor(max_workers=max(1, config.pipeline.workers)) as pool:
                 calls = pool.map(
-                    partial(run, repo_root=repo_root, client=client, config=config, callees=snapshot),
+                    partial(run, repo_root=repo_root, client=shared, config=config, callees=snapshot),
                     rest,
                 )
                 for ref, outcome in zip(rest, calls, strict=True):
@@ -495,4 +597,4 @@ def run_many(
     return tuple(done[ref] for ref in functions)
 
 
-__all__ = ["MUTUAL_RECURSION", "dependency_hashes", "run", "run_many"]
+__all__ = ["MUTUAL_RECURSION", "SerializedClient", "dependency_hashes", "run", "run_many", "spec_dependency"]

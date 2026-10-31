@@ -98,7 +98,7 @@ def _hashes_for_key(
     for callee_key in edges_by_key.get(key, ()):
         spec = specs_by_key.get(callee_key)
         if spec is not None:
-            found.append(Dependency(callee_key[1], hashlib.sha256(spec.encode("utf-8")).hexdigest()))
+            found.append(pipeline.spec_dependency(callee_key[1], spec))
     return tuple(found)
 
 
