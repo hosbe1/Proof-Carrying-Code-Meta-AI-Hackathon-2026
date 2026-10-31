@@ -75,4 +75,35 @@ module PyLib {
   {
     seq(|xs|, i requires 0 <= i < |xs| => xs[|xs| - 1 - i])
   }
+
+  // min(a, b) in Python for two ints: the smaller of the two (the first on ties).
+  function py_min(a: int, b: int): int
+    ensures py_min(a, b) == (if a <= b then a else b)
+    ensures py_min(a, b) <= a && py_min(a, b) <= b
+    ensures py_min(a, b) == a || py_min(a, b) == b
+  {
+    if a <= b then a else b
+  }
+
+  // sum(1 for v in xs if p(v)) in Python: the number of elements satisfying p.
+  function py_count<T>(xs: seq<T>, p: T -> bool): int
+    ensures 0 <= py_count(xs, p) <= |xs|
+    ensures |xs| == 0 ==> py_count(xs, p) == 0
+    ensures |xs| > 0 ==> py_count(xs, p) == (if p(xs[0]) then 1 else 0) + py_count(xs[1..], p)
+    decreases |xs|
+  {
+    if |xs| == 0 then 0 else (if p(xs[0]) then 1 else 0) + py_count(xs[1..], p)
+  }
+
+  // xs[i] = v in Python: negative indices count from the end; indices outside
+  // [-|xs|, |xs|) raise IndexError. The result has the same length as xs with
+  // only the normalized position changed.
+  function py_set_index<T>(xs: seq<T>, i: int, v: T): seq<T>
+    requires -|xs| <= i < |xs|
+    ensures |py_set_index(xs, i, v)| == |xs|
+    ensures forall j :: 0 <= j < |xs| ==> py_set_index(xs, i, v)[j] == (if j == (if i >= 0 then i else |xs| + i) then v else xs[j])
+  {
+    var k := if i >= 0 then i else |xs| + i;
+    xs[k := v]
+  }
 }

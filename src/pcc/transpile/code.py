@@ -3,16 +3,26 @@
 What the transpiler supports, it translates exactly; anything else raises
 ``UnsupportedConstruct`` and the pipeline falls back to AI translation.
 
-Supported subset (this ticket; project calls, loops and mutated lists live in later
-tickets; spec mode lives in ``pcc.transpile.spec``):
+Supported subset (this ticket; spec mode lives in ``pcc.transpile.spec``):
 
 - Types: ``int`` to ``int``, ``bool`` to ``bool``, ``str`` to ``string``, ``list[T]``
-  and ``typing.List[T]`` to ``seq<T>`` (only when never mutated; see below). ``tuple``
+  and ``typing.List[T]`` to ``seq<T>`` (only when never shared; see below). ``tuple``
   and ``typing.Tuple`` raise ``"type tuple"``; anything else raises ``"type <T>"``;
   missing hints raise ``"no types"``. The mapping lives in ``pcc.transpile.types``.
 - Statements: ``if``/``elif``/``else``, ``return e``, local assignment ``x = e``
-  (``var x := e;`` the first time, ``x := e;`` after). A docstring as the first
-  statement is skipped.
+  (``var x := e;`` the first time, ``x := e;`` after), ``for i in range(a[, b])``
+  (a ``while`` loop with a counter; a step raises ``"range step"``),
+  ``for x in xs`` over a ``seq`` (an index loop), and ``while`` (a plain loop, or
+  ``while true`` with hoisted calls when the condition calls the function itself or
+  a project callee). A docstring as the first statement is skipped.
+  Tuple assignment ``a, b = e1, e2`` becomes ``var a, b := e1, e2;`` the first
+  time and ``a, b := e1, e2;`` after. ``x += e`` on ints becomes ``x := x + e;``.
+  ``xs[i] = e`` on a local list becomes ``xs := py_set_index(xs, i, e);`` (and
+  ``xs[i] += e`` reads the element back first); on a parameter it raises
+  ``"shared list"``.
+- A list that is aliased (``ys = xs``) or passed to a project callee that is not
+  certified read-only raises ``"shared list"``. Passing a list to the function
+  itself or to a callee in ``read_only_callees`` is allowed (a value in Dafny).
 - Parameter and local names that are Dafny keywords or reserved (``seq``, ``set``,
   ``map``, ``string``, ``type``, ``method``, ``function``, ``var``, ``int``, ``nat``,
   ``real``, ``object``, ``array``, ``iset``, ``imap``, ``multiset``, ``char``,
@@ -25,28 +35,32 @@ tickets; spec mode lives in ``pcc.transpile.spec``):
   ``!=`` between two chars are allowed, char against string raises
   ``"char vs str"``); ``x[a:b]`` to ``py_slice(x, a, b)`` with an omitted ``a`` to
   ``0`` and an omitted ``b`` to ``py_len(x)``; ``x[::-1]`` to ``py_reversed(x)``;
-  ``+`` on ``str`` and ``list`` to ``+``; ``a if c else b`` to ``if c then a else b``.
+  ``+`` on ``str`` and ``list`` to ``+``; ``a if c else b`` to ``if c then a else b``;
+  ``[e for i in range(n)]`` to ``seq(n, i => e)``; ``min(a, b)`` on ints to
+  ``py_min(a, b)``; ``sum(<bool> for v in xs)`` to ``py_count(xs, v => <bool>)``.
 - Whole-variable rebinding of a list (``xs = expression``) is supported when the
-  inferred type stays compatible. Subscript and slice stores, ``AugAssign`` on lists
-  (including ``+=``), calls to mutating methods (``append``, ``extend``, ``insert``,
-  ``pop``, ``remove``, ``clear``, ``sort``, ``reverse``) and aliasing a list-typed
-  value into another name raise ``"mutated list"``.
+  inferred type stays compatible. Slice stores, ``AugAssign`` on whole lists
+  (including ``+=``) and calls to mutating methods (``append``, ``extend``,
+  ``insert``, ``pop``, ``remove``, ``clear``, ``sort``, ``reverse``) raise
+  ``"mutated list"``.
 - Recursive calls to the function itself are hoisted into fresh locals
   ``var pcc_t1 := f(...);``, ``pcc_t2``, ... in evaluation order before the
   statement that uses them. Under ``return``, a call in the right operand of
   ``and``/``or`` or in a branch of ``a if c else b`` is expanded into an ``if``
   statement preserving short-circuit order; elsewhere it raises
-  ``"call in short-circuit"``.
+  ``"call in short-circuit"``. Calls to project functions use
+  ``callees[qualname]`` as ``<Module>.<name>(...)``; they stay inline except under
+  ``return`` short-circuit expansion, where they bind a fresh ``pcc_tN`` local.
 
 Not supported: ``<`` (and friends) on strings, anything on ``float``, ``/``,
-arithmetic on bools, string methods, loops, non-recursive calls, ``raise``, ``try``,
+arithmetic on bools, string methods, ``raise``, ``try``,
 ``with``, ``yield``, ``await``, ``global`` and ``nonlocal``.
 """
 
 from __future__ import annotations
 
 import ast
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 
@@ -110,17 +124,47 @@ class _Typed:
 
 
 class _Ctx:
-    """Translation state: renames plus the live inferred type environment."""
+    """Translation state: renames plus the live inferred type environment.
 
-    __slots__ = ("renames", "types")
+    ``params`` holds the Python names of the parameters (never mutable when they
+    hold a list). ``func_name`` is the Python name of the function itself.
+    ``callees`` maps each project callee qualname to its Dafny module name,
+    ``callee_types`` maps a callee qualname to its Dafny return type tag, and
+    ``read_only`` holds the qualnames certified not to mutate or escape a list.
+    """
 
-    def __init__(self, renames: Mapping[str, str], types: dict[str, str]) -> None:
+    __slots__ = ("callee_types", "callees", "func_name", "params", "read_only", "renames", "types")
+
+    def __init__(
+        self,
+        renames: Mapping[str, str],
+        types: dict[str, str],
+        *,
+        params: frozenset[str] = frozenset(),
+        func_name: str = "",
+        callees: Mapping[str, str] = MappingProxyType({}),
+        callee_types: Mapping[str, str] = MappingProxyType({}),
+        read_only: frozenset[str] = frozenset(),
+    ) -> None:
         self.renames = renames
         self.types = types
+        self.params = params
+        self.func_name = func_name
+        self.callees = callees
+        self.callee_types = callee_types
+        self.read_only = read_only
 
     def child(self) -> _Ctx:
-        """A context sharing the renames with a copied type environment."""
-        return _Ctx(self.renames, dict(self.types))
+        """A context sharing everything but the type environment, which is copied."""
+        return _Ctx(
+            self.renames,
+            dict(self.types),
+            params=self.params,
+            func_name=self.func_name,
+            callees=self.callees,
+            callee_types=self.callee_types,
+            read_only=self.read_only,
+        )
 
     def name(self, python_name: str) -> str:
         """The Dafny name of the Python variable ``python_name``."""
@@ -132,15 +176,16 @@ class _Ctx:
 
 
 class _HoistState:
-    """Hoisting state: fresh ``pcc_tN`` names plus the recursive callee."""
+    """Hoisting state: fresh ``pcc_tN`` and ``pcc_c`` names plus the recursive callee."""
 
-    __slots__ = ("callee", "counter", "func_name", "return_tag", "used")
+    __slots__ = ("callee", "cond_counter", "counter", "func_name", "return_tag", "used")
 
     def __init__(self, func_name: str, callee: str, return_tag: str, used: set[str]) -> None:
         self.func_name = func_name
         self.callee = callee
         self.return_tag = return_tag
         self.counter = 1
+        self.cond_counter = 1
         self.used = set(used)
 
     def fresh(self) -> str:
@@ -151,6 +196,15 @@ class _HoistState:
         self.used.add(name)
         self.counter += 1
         return name
+
+    def fresh_cond(self) -> str:
+        """A fresh ``pcc_c`` name for a hoisted ``while`` condition call."""
+        while True:
+            name = "pcc_c" if self.cond_counter == 1 else f"pcc_c{self.cond_counter}"
+            self.cond_counter += 1
+            if name not in self.used:
+                self.used.add(name)
+                return name
 
 
 def _is_self_call(node: ast.Call, func_name: str, renames: Mapping[str, str]) -> bool:
@@ -198,6 +252,83 @@ def _has_call_inside_boolop(node: ast.AST, func_name: str, renames: Mapping[str,
     if func_name in renames:
         return False
     return visit(node, False)
+
+
+def _project_key(name: str, ctx: _Ctx) -> str | None:
+    """The single callee qualname that ``name`` refers to, or ``None``.
+
+    ``None`` means no callee matches (an unknown call) or several do (ambiguous);
+    both raise ``"call <name>"``. A name bound to a local value is never a callee.
+    """
+    if name in ctx.types:
+        return None
+    matches = [key for key in ctx.callees if key == name or key.split(".")[-1] == name]
+    if len(matches) != 1:
+        return None
+    return matches[0]
+
+
+def _is_project_call(node: ast.Call, ctx: _Ctx) -> bool:
+    """Whether ``node`` calls a project callee (not the function itself)."""
+    func = node.func
+    if not isinstance(func, ast.Name):
+        return False
+    name = func.id
+    if name in ("len", "min", "sum", "range"):
+        return False
+    if name == ctx.func_name and name not in ctx.renames:
+        return False
+    return _project_key(name, ctx) is not None
+
+
+def _contains_proj_call(node: ast.AST, ctx: _Ctx) -> bool:
+    """Whether ``node`` contains a call to a project callee."""
+    return any(isinstance(child, ast.Call) and _is_project_call(child, ctx) for child in ast.walk(node))
+
+
+def _has_sc_proj_call(node: ast.expr, ctx: _Ctx) -> bool:
+    """Whether a project call sits in short-circuit position (mirrors the self-call check)."""
+
+    def visit(expr: ast.AST, in_sc: bool) -> bool:
+        if isinstance(expr, ast.Call) and _is_project_call(expr, ctx):
+            return in_sc
+        if isinstance(expr, ast.BoolOp):
+            return any(visit(value, in_sc or index > 0) for index, value in enumerate(expr.values))
+        if isinstance(expr, ast.IfExp):
+            if visit(expr.test, in_sc):
+                return True
+            return visit(expr.body, True) or visit(expr.orelse, True)
+        return any(visit(child, in_sc) for child in ast.iter_child_nodes(expr))
+
+    return visit(node, False)
+
+
+def _has_proj_inside_boolop(node: ast.AST, ctx: _Ctx) -> bool:
+    """Whether a project call sits anywhere inside ``and``/``or`` or a conditional."""
+
+    def visit(expr: ast.AST, inside: bool) -> bool:
+        if isinstance(expr, ast.Call) and _is_project_call(expr, ctx):
+            return inside
+        if isinstance(expr, (ast.BoolOp, ast.IfExp)):
+            return any(visit(child, True) for child in ast.iter_child_nodes(expr))
+        return any(visit(child, inside) for child in ast.iter_child_nodes(expr))
+
+    return visit(node, False)
+
+
+def _contains_any_call(node: ast.AST, func_name: str, ctx: _Ctx) -> bool:
+    """Whether ``node`` calls the function itself or a project callee."""
+    return _contains_self_call(node, func_name, ctx.renames) or _contains_proj_call(node, ctx)
+
+
+def _has_sc_any_call(node: ast.expr, func_name: str, ctx: _Ctx) -> bool:
+    """Whether a self or project call sits in short-circuit position."""
+    return _has_sc_self_call(node, func_name, ctx.renames) or _has_sc_proj_call(node, ctx)
+
+
+def _has_any_inside_boolop(node: ast.AST, func_name: str, ctx: _Ctx) -> bool:
+    """Whether a self or project call sits inside ``and``/``or`` or a conditional."""
+    return _has_call_inside_boolop(node, func_name, ctx.renames) or _has_proj_inside_boolop(node, ctx)
 
 
 def _fail(node: ast.stmt | ast.expr, construct: str) -> UnsupportedConstruct:
@@ -301,7 +432,9 @@ def _expr(node: ast.expr, ctx: _Ctx) -> _Typed:
         raise _fail(node, "dict literal")
     if isinstance(node, ast.Set):
         raise _fail(node, "set literal")
-    if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+    if isinstance(node, ast.ListComp):
+        return _comprehension(node, ctx, _expr)
+    if isinstance(node, (ast.SetComp, ast.DictComp, ast.GeneratorExp)):
         raise _fail(node, "comprehension")
     if isinstance(node, ast.Lambda):
         raise _fail(node, "lambda")
@@ -478,8 +611,121 @@ def _compare(node: ast.Compare, ctx: _Ctx) -> _Typed:
     raise _fail(node, "operand types")
 
 
+def _min_call(node: ast.Call, ctx: _Ctx, sub: Callable[[ast.expr, _Ctx], _Typed]) -> _Typed:
+    """``min(a, b)`` on exactly two ints to ``py_min(a, b)``."""
+    if node.keywords or len(node.args) != 2:
+        raise _fail(node, "min arguments")
+    args = [sub(arg, ctx) for arg in node.args]
+    for arg, original in zip(args, node.args, strict=True):
+        if _need(arg.tag, original) != _INT:
+            raise _fail(node, "min arguments")
+    return _Typed(f"py_min({args[0].code}, {args[1].code})", _INT)
+
+
+def _range_single_bound(call: ast.Call) -> ast.expr | None:
+    """The single ``range(n)`` bound in a comprehension, or ``None``."""
+    if call.keywords or len(call.args) != 1:
+        return None
+    return call.args[0]
+
+
+def _comprehension(node: ast.ListComp, ctx: _Ctx, sub: Callable[[ast.expr, _Ctx], _Typed]) -> _Typed:
+    """``[e for i in range(n)]`` to ``seq(n, i => e)`` with ``sub`` for the parts.
+
+    An element calling the function itself or a project callee raises
+    ``"call in comprehension"``: hoisting it into the outer ``pre`` would bind
+    the loop variable outside the ``seq`` lambda where it is unbound.
+    """
+    if len(node.generators) != 1:
+        raise _fail(node, "comprehension")
+    gen = node.generators[0]
+    if gen.is_async or gen.ifs or not isinstance(gen.target, ast.Name):
+        raise _fail(node, "comprehension")
+    if not isinstance(gen.iter, ast.Call):
+        raise _fail(node, "comprehension")
+    iter_func = gen.iter.func
+    if (
+        not isinstance(iter_func, ast.Name)
+        or iter_func.id != "range"
+        or "range" in ctx.types
+        or (bound_node := _range_single_bound(gen.iter)) is None
+    ):
+        raise _fail(node, "comprehension")
+    bound = sub(bound_node, ctx)
+    if _need(bound.tag, bound_node) != _INT:
+        raise _fail(node, "comprehension")
+    child = ctx.child()
+    child.types[gen.target.id] = _INT
+    if _contains_any_call(node.elt, ctx.func_name, child):
+        raise _fail(node, "call in comprehension")
+    elt = sub(node.elt, child)
+    elt_tag = _need(elt.tag, node.elt)
+    return _Typed(f"seq({bound.code}, {child.name(gen.target.id)} => {elt.code})", f"seq<{elt_tag}>")
+
+
+def _sum_call(node: ast.Call, ctx: _Ctx, sub: Callable[[ast.expr, _Ctx], _Typed]) -> _Typed:
+    """``sum(<bool> for v in xs)`` to ``py_count(xs, v => <bool>)``.
+
+    A predicate calling the function itself or a project callee raises
+    ``"call in sum"``: hoisting it into the outer ``pre`` would bind the loop
+    variable outside the ``py_count`` lambda where it is unbound.
+    """
+    if node.keywords or len(node.args) != 1 or not isinstance(node.args[0], ast.GeneratorExp):
+        raise _fail(node, "sum generator")
+    gen = node.args[0]
+    if len(gen.generators) != 1:
+        raise _fail(node, "sum generator")
+    comp = gen.generators[0]
+    if comp.is_async or comp.ifs or not isinstance(comp.target, ast.Name):
+        raise _fail(node, "sum generator")
+    seq_value = sub(comp.iter, ctx)
+    seq_tag = _need(seq_value.tag, comp.iter)
+    if not _is_seq(seq_tag):
+        raise _fail(node, "sum generator")
+    child = ctx.child()
+    child.types[comp.target.id] = _seq_elem(seq_tag)
+    if _contains_any_call(gen.elt, ctx.func_name, child):
+        raise _fail(node, "call in sum")
+    elt = sub(gen.elt, child)
+    if _need(elt.tag, gen.elt) != _BOOL:
+        raise _fail(node, "sum generator")
+    return _Typed(f"py_count({seq_value.code}, {child.name(comp.target.id)} => {elt.code})", _INT)
+
+
+def _project_call(
+    node: ast.Call, ctx: _Ctx, key: str, sub: Callable[[ast.expr, _Ctx], _Typed]
+) -> tuple[str, str | None]:
+    """The inline ``<Module>.<name>(args)`` code and return tag of a project call.
+
+    A list-typed variable passed to a callee outside ``read_only_callees`` raises
+    ``"shared list"``; anything but a plain argument list raises ``"call <name>"``.
+    """
+    name = node.func.id if isinstance(node.func, ast.Name) else "<call>"
+    if node.keywords:
+        raise _fail(node, f"call {name}")
+    module = ctx.callees[key]
+    codes: list[str] = []
+    for arg in node.args:
+        value = sub(arg, ctx)
+        _need(value.tag, arg)
+        if isinstance(arg, ast.Name) and _is_seq(value.tag or "") and key not in ctx.read_only:
+            raise _fail(node, "shared list")
+        codes.append(value.code)
+    return f"{module}.{name}({', '.join(codes)})", _callee_tag(ctx, key)
+
+
+def _callee_tag(ctx: _Ctx, key: str) -> str | None:
+    """The Dafny return tag for the callee ``key``, or ``None`` when unknown.
+
+    Looks up ``callee_types`` by exact qualname only. A short-name fallback
+    would pick an arbitrary entry when several qualnames share the short name,
+    so callers must record the type under the same qualname used in ``callees``.
+    """
+    return ctx.callee_types.get(key)
+
+
 def _call(node: ast.Call, ctx: _Ctx) -> _Typed:
-    """Translate ``len(x)``; every other call is rejected."""
+    """Translate ``len``/``min``/``sum`` and project calls; anything else is rejected."""
     func = node.func
     if isinstance(func, ast.Name) and func.id == "len" and "len" not in ctx.types:
         if node.keywords or len(node.args) != 1:
@@ -489,8 +735,19 @@ def _call(node: ast.Call, ctx: _Ctx) -> _Typed:
         if tag != _STR and not _is_seq(tag):
             raise _fail(node, "len operand")
         return _Typed(f"py_len({arg.code})", _INT)
+    if isinstance(func, ast.Name) and func.id == "min" and "min" not in ctx.types:
+        return _min_call(node, ctx, _expr)
+    if isinstance(func, ast.Name) and func.id == "sum" and "sum" not in ctx.types:
+        return _sum_call(node, ctx, _expr)
     if isinstance(func, ast.Name):
-        raise _fail(node, f"call {func.id}")
+        name = func.id
+        if _is_self_call(node, ctx.func_name, ctx.renames):
+            raise _fail(node, f"call {name}")
+        key = _project_key(name, ctx)
+        if key is not None:
+            code, call_tag = _project_call(node, ctx, key, _expr)
+            return _Typed(code, call_tag)
+        raise _fail(node, f"call {name}")
     if isinstance(func, ast.Attribute):
         value = _expr(func.value, ctx)
         if value.tag is None:
@@ -596,6 +853,8 @@ def _hoist_expr(node: ast.expr, ctx: _Ctx, st: _HoistState, pre: list[str]) -> _
         return _hoist_ifexp(node, ctx, st, pre)
     if isinstance(node, ast.List):
         return _hoist_list_display(node, ctx, st, pre)
+    if isinstance(node, ast.ListComp):
+        return _comprehension(node, ctx, lambda e, c: _hoist_expr(e, c, st, pre))
     return _expr(node, ctx)
 
 
@@ -713,7 +972,7 @@ def _hoist_compare(node: ast.Compare, ctx: _Ctx, st: _HoistState, pre: list[str]
 
 
 def _hoist_call(node: ast.Call, ctx: _Ctx, st: _HoistState, pre: list[str]) -> _Typed:
-    """``len(x)`` inline; a self-call hoisted to ``var pcc_tN``; anything else rejected."""
+    """``len``/``min``/``sum`` inline; self and project calls hoisted to ``var pcc_tN``."""
     func = node.func
     if isinstance(func, ast.Name) and func.id == st.func_name and func.id not in ctx.renames:
         if node.keywords:
@@ -734,8 +993,28 @@ def _hoist_call(node: ast.Call, ctx: _Ctx, st: _HoistState, pre: list[str]) -> _
         if tag != _STR and not _is_seq(tag):
             raise _fail(node, "len operand")
         return _Typed(f"py_len({hoisted_arg.code})", _INT)
+    if isinstance(func, ast.Name) and func.id == "min" and "min" not in ctx.types:
+        return _min_call(node, ctx, lambda e, c: _hoist_expr(e, c, st, pre))
+    if isinstance(func, ast.Name) and func.id == "sum" and "sum" not in ctx.types:
+        return _sum_call(node, ctx, lambda e, c: _hoist_expr(e, c, st, pre))
     if isinstance(func, ast.Name):
-        raise _fail(node, f"call {func.id}")
+        name = func.id
+        key = _project_key(name, ctx)
+        if key is not None:
+            if node.keywords:
+                raise _fail(node, f"call {name}")
+            arg_codes = []
+            for arg in node.args:
+                hoisted = _hoist_expr(arg, ctx, st, pre)
+                _need(hoisted.tag, arg)
+                if isinstance(arg, ast.Name) and _is_seq(hoisted.tag or "") and key not in ctx.read_only:
+                    raise _fail(node, "shared list")
+                arg_codes.append(hoisted.code)
+            module = ctx.callees[key]
+            temp = st.fresh()
+            pre.append(f"var {temp} := {module}.{name}({', '.join(arg_codes)});")
+            return _Typed(temp, _callee_tag(ctx, key))
+        raise _fail(node, f"call {name}")
     if isinstance(func, ast.Attribute):
         value = _hoist_expr(func.value, ctx, st, pre)
         for arg in node.args:
@@ -815,8 +1094,8 @@ def _hoist_list_display(node: ast.List, ctx: _Ctx, st: _HoistState, pre: list[st
 def _collect_assigned(stmts: list[ast.stmt]) -> set[str]:
     """Every name assigned anywhere in ``stmts``, for the rename map.
 
-    Only plain and annotated assignments and walrus targets count; loops and other
-    rejected statements never reach translation, so they contribute no renames.
+    Plain, annotated and augmented assignments, tuple targets and walrus targets
+    count, including inside ``if``, ``for`` and ``while`` bodies.
     """
     assigned: set[str] = set()
 
@@ -829,14 +1108,27 @@ def _collect_assigned(stmts: list[ast.stmt]) -> set[str]:
         elif isinstance(target, ast.Starred):
             targets(target.value)
 
+    def _subscript_target(target: ast.expr) -> None:
+        if isinstance(target, ast.Subscript):
+            _subscript_target(target.value)
+        else:
+            targets(target)
+
     def visit_block(block: list[ast.stmt]) -> None:
         for stmt in block:
             if isinstance(stmt, ast.Assign):
                 for target in stmt.targets:
-                    targets(target)
+                    _subscript_target(target)
             elif isinstance(stmt, (ast.AnnAssign, ast.AugAssign)):
-                targets(stmt.target)
+                _subscript_target(stmt.target)
             elif isinstance(stmt, ast.If):
+                visit_block(stmt.body)
+                visit_block(stmt.orelse)
+            elif isinstance(stmt, ast.For):
+                targets(stmt.target)
+                visit_block(stmt.body)
+                visit_block(stmt.orelse)
+            elif isinstance(stmt, ast.While):
                 visit_block(stmt.body)
                 visit_block(stmt.orelse)
             for child in ast.iter_child_nodes(stmt):
@@ -881,7 +1173,8 @@ def _statements(
             lines.extend(_indent(_assign(stmt, ctx, declared, st), depth))
             continue
         if isinstance(stmt, ast.AugAssign):
-            raise _augassign(stmt, ctx)
+            lines.extend(_indent(_augassign(stmt, ctx, declared, st), depth))
+            continue
         if isinstance(stmt, ast.If):
             block, done = _branch(stmt, ctx, declared, return_tag, st, depth=depth)
             lines.extend(block)
@@ -889,8 +1182,292 @@ def _statements(
                 returns = True
                 break
             continue
+        if isinstance(stmt, ast.For):
+            lines.extend(_for_stmt(stmt, ctx, declared, return_tag, st, depth=depth))
+            continue
+        if isinstance(stmt, ast.While):
+            lines.extend(_while_stmt(stmt, ctx, declared, return_tag, st, depth=depth))
+            continue
+        if isinstance(stmt, (ast.Break, ast.Continue)):
+            raise _fail(stmt, type(stmt).__name__.lower())
         raise _statement_error(stmt)
     return lines, returns
+
+
+def _is_range_call(node: ast.expr, ctx: _Ctx) -> bool:
+    """Whether ``node`` is a call to the ``range`` builtin (not a shadowed name)."""
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "range"
+        and "range" not in ctx.types
+    )
+
+
+def _merge_body_env(ctx: _Ctx, body_ctx: _Ctx) -> None:
+    """Merge a loop body environment back: new names stay body-local.
+
+    Assignments to names declared before the loop keep their (checked, unchanged)
+    types; names first bound inside the body are dropped, since the body may run
+    zero times and Dafny scopes them to the loop.
+    """
+    for name in list(body_ctx.types):
+        if name not in ctx.types:
+            del body_ctx.types[name]
+    ctx.types.update(body_ctx.types)
+
+
+def _body_lines(
+    body: list[ast.stmt],
+    ctx: _Ctx,
+    declared: set[str],
+    return_tag: str,
+    st: _HoistState,
+    *,
+    depth: int,
+) -> list[str]:
+    """Translate a loop body at ``depth`` without leaking its new names."""
+    body_ctx = ctx.child()
+    body_declared = set(declared)
+    body_lines, _ = _statements(body, body_ctx, body_declared, return_tag, st, depth=depth, first=False)
+    _merge_body_env(ctx, body_ctx)
+    return body_lines
+
+
+def _subscript_base_is(target: ast.expr, name: str) -> bool:
+    """Whether ``target`` stores through a subscript chain rooted at ``name``.
+
+    Plain rebinding (``xs = ...``) is not a subscript store and returns ``False``.
+    """
+    if not isinstance(target, ast.Subscript):
+        return False
+    base: ast.expr = target
+    while isinstance(base, ast.Subscript):
+        base = base.value
+    return isinstance(base, ast.Name) and base.id == name
+
+
+def _find_iterated_store(body: list[ast.stmt], name: str) -> ast.stmt | None:
+    """The first statement in ``body`` storing through ``name[...]``, or ``None``.
+
+    The ``for x in xs`` loop iterates a snapshot copy, so an element store to the
+    iterated list would be invisible to later iterations in Dafny while Python
+    would see it on the live list. Whole-variable rebinding is not a store.
+    """
+    for stmt in body:
+        for node in ast.walk(stmt):
+            if isinstance(node, ast.Assign):
+                if any(_subscript_base_is(target, name) for target in node.targets):
+                    return stmt
+            elif isinstance(node, (ast.AnnAssign, ast.AugAssign)) and _subscript_base_is(node.target, name):
+                return stmt
+    return None
+
+
+def _for_stmt(
+    stmt: ast.For, ctx: _Ctx, declared: set[str], return_tag: str, st: _HoistState, *, depth: int
+) -> list[str]:
+    """Translate ``for i in range(a[, b])`` and ``for x in xs`` to ``while`` loops."""
+    if stmt.orelse:
+        raise _fail(stmt, "loop else")
+    if stmt.type_comment is not None:
+        raise _fail(stmt, "for loop")
+    if not isinstance(stmt.target, ast.Name):
+        raise _fail(stmt, "for target")
+    var = stmt.target.id
+    dvar = ctx.name(var)
+    target_iter = stmt.iter
+    if isinstance(target_iter, ast.Call) and _is_range_call(target_iter, ctx):
+        if target_iter.keywords:
+            raise _fail(stmt, "range arguments")
+        return _for_range(stmt, var, dvar, target_iter, ctx, declared, return_tag, st, depth=depth)
+    pre: list[str] = []
+    if _has_any_inside_boolop(stmt.iter, st.func_name, ctx):
+        raise _fail(stmt, "call in short-circuit")
+    seq_value = _hoist_expr(stmt.iter, ctx, st, pre)
+    seq_tag = _need(seq_value.tag, stmt.iter)
+    if seq_tag is None:
+        raise _fail(stmt, "unknown type")
+    if not _is_seq(seq_tag):
+        raise _fail(stmt, "for iterable")
+    elem = _seq_elem(seq_tag)
+    if var in ctx.types and ctx.types[var] != elem:
+        raise _fail(stmt, "assignment type")
+    if isinstance(stmt.iter, ast.Name) and (offending := _find_iterated_store(stmt.body, stmt.iter.id)) is not None:
+        raise _fail(offending, "shared list")
+    ctx.types[var] = elem
+    snapshot = st.fresh()
+    index = st.fresh()
+    if var in declared:
+        bind = f"{dvar} := py_index({snapshot}, {index});"
+    else:
+        bind = f"var {dvar} := py_index({snapshot}, {index});"
+    pad = "  " * (depth + 1)
+    lines = _indent([*pre, f"var {snapshot} := {seq_value.code};", f"var {index} := 0;"], depth)
+    lines.append(f"{pad}while {index} < py_len({snapshot})")
+    lines.append(f"{pad}{{")
+    lines.extend(_indent([bind], depth + 1))
+    lines.extend(_body_lines(stmt.body, ctx, declared, return_tag, st, depth=depth + 1))
+    lines.extend(_indent([f"{index} := {index} + 1;"], depth + 1))
+    lines.append(f"{pad}}}")
+    return lines
+
+
+def _for_range(
+    stmt: ast.For,
+    var: str,
+    dvar: str,
+    call: ast.Call,
+    ctx: _Ctx,
+    declared: set[str],
+    return_tag: str,
+    st: _HoistState,
+    *,
+    depth: int,
+) -> list[str]:
+    """Translate ``for i in range(a[, b])`` to a counter ``while`` loop."""
+    args = call.args
+    if len(args) == 1:
+        lower_node: ast.expr | None = None
+        upper_node = args[0]
+    elif len(args) == 2:
+        lower_node = args[0]
+        upper_node = args[1]
+    elif len(args) == 3:
+        raise _fail(stmt, "range step")
+    else:
+        raise _fail(stmt, "range arguments")
+    if _has_any_inside_boolop(call, st.func_name, ctx):
+        raise _fail(stmt, "call in short-circuit")
+    pre: list[str] = []
+    lower = "0"
+    if lower_node is not None:
+        lower_value = _hoist_expr(lower_node, ctx, st, pre)
+        if _need(lower_value.tag, lower_node) != _INT:
+            raise _fail(stmt, "range arguments")
+        lower = lower_value.code
+    upper_value = _hoist_expr(upper_node, ctx, st, pre)
+    if _need(upper_value.tag, upper_node) != _INT:
+        raise _fail(stmt, "range arguments")
+    if var in ctx.types and ctx.types[var] != _INT:
+        raise _fail(stmt, "assignment type")
+    ctx.types[var] = _INT
+    bound = st.fresh()
+    head = [*pre]
+    if var not in declared:
+        head.append(f"var {dvar} := {lower};")
+        declared.add(var)
+    else:
+        head.append(f"{dvar} := {lower};")
+    head.append(f"var {bound} := {upper_value.code};")
+    pad = "  " * (depth + 1)
+    lines = _indent(head, depth)
+    lines.append(f"{pad}while {dvar} < {bound}")
+    lines.append(f"{pad}{{")
+    lines.extend(_body_lines(stmt.body, ctx, declared, return_tag, st, depth=depth + 1))
+    lines.extend(_indent([f"{dvar} := {dvar} + 1;"], depth + 1))
+    lines.append(f"{pad}}}")
+    return lines
+
+
+def _while_operand(node: ast.expr, ctx: _Ctx, st: _HoistState, pre: list[str]) -> str:
+    """Translate one ``while`` condition operand, hoisting calls for one evaluation.
+
+    A call that is the whole operand binds ``var pcc_c := ...``; calls nested in a
+    larger expression bind ``pcc_tN`` locals through ``_hoist_expr``. A project
+    call without a known type defaults to ``bool`` here, since the position
+    requires it; anything else must already be ``bool``.
+    """
+    if isinstance(node, ast.Call) and (_is_self_call(node, ctx.func_name, ctx.renames) or _is_project_call(node, ctx)):
+        if _is_self_call(node, ctx.func_name, ctx.renames):
+            if node.keywords:
+                raise _fail(node, f"call {ctx.func_name}")
+            arg_codes = []
+            for arg in node.args:
+                hoisted = _hoist_expr(arg, ctx, st, pre)
+                _need(hoisted.tag, arg)
+                arg_codes.append(hoisted.code)
+            code = f"{st.callee}({', '.join(arg_codes)})"
+            tag: str | None = st.return_tag
+        else:
+            assert isinstance(node.func, ast.Name)
+            key = _project_key(node.func.id, ctx)
+            assert key is not None
+            code, tag = _project_call(node, ctx, key, lambda e, c: _hoist_expr(e, c, st, pre))
+            tag = tag if tag is not None else _BOOL
+        if tag != _BOOL:
+            raise _fail(node, "non-bool condition")
+        temp = st.fresh_cond()
+        pre.append(f"var {temp} := {code};")
+        return temp
+    if _has_any_inside_boolop(node, st.func_name, ctx):
+        raise _fail(node, "while condition")
+    value = _hoist_expr(node, ctx, st, pre)
+    if _need(value.tag, node) != _BOOL:
+        raise _fail(node, "non-bool condition")
+    return value.code
+
+
+def _while_and_guards(operands: list[ast.expr], ctx: _Ctx, st: _HoistState, *, depth: int) -> list[str]:
+    """Guard lines for an ``and`` chain: each operand checked in order."""
+    lines: list[str] = []
+    for operand in operands:
+        pre: list[str] = []
+        code = _while_operand(operand, ctx, st, pre)
+        lines.extend(_indent(pre, depth))
+        lines.extend(_indent([f"if !{code} {{ break; }}"], depth))
+    return lines
+
+
+def _while_or_guards(operands: list[ast.expr], ctx: _Ctx, st: _HoistState, *, depth: int) -> list[str]:
+    """Guard lines for an ``or`` chain, nesting so Python order is kept."""
+    pre: list[str] = []
+    code = _while_operand(operands[0], ctx, st, pre)
+    lines = _indent(pre, depth)
+    if len(operands) == 1:
+        lines.extend(_indent([f"if !{code} {{ break; }}"], depth))
+        return lines
+    indented = "  " * (depth + 1)
+    lines.extend(_indent([f"if !{code} {{"], depth))
+    lines.extend(_while_or_guards(operands[1:], ctx, st, depth=depth + 1))
+    lines.append(f"{indented}}}")
+    return lines
+
+
+def _while_stmt(
+    stmt: ast.While, ctx: _Ctx, declared: set[str], return_tag: str, st: _HoistState, *, depth: int
+) -> list[str]:
+    """Translate ``while``: plain when call-free, else ``while true`` with hoists."""
+    if stmt.orelse:
+        raise _fail(stmt, "loop else")
+    test = stmt.test
+    pad = "  " * (depth + 1)
+    if not _contains_any_call(test, st.func_name, ctx):
+        cond = _expr(test, ctx)
+        if _need(cond.tag, test) != _BOOL:
+            raise _fail(stmt, "non-bool condition")
+        lines = [f"{pad}while {cond.code}", f"{pad}{{"]
+        lines.extend(_body_lines(stmt.body, ctx, declared, return_tag, st, depth=depth + 1))
+        lines.append(f"{pad}}}")
+        return lines
+    if isinstance(test, ast.BoolOp):
+        operands = list(test.values)
+        if any(isinstance(value, (ast.BoolOp, ast.IfExp)) for value in operands):
+            raise _fail(stmt, "while condition")
+        is_and = isinstance(test.op, ast.And)
+    elif isinstance(test, ast.IfExp):
+        raise _fail(stmt, "while condition")
+    else:
+        operands = [test]
+        is_and = True
+    lines = [f"{pad}while true", f"{pad}{{"]
+    if is_and:
+        lines.extend(_while_and_guards(operands, ctx, st, depth=depth + 1))
+    else:
+        lines.extend(_while_or_guards(operands, ctx, st, depth=depth + 1))
+    lines.extend(_body_lines(stmt.body, ctx, declared, return_tag, st, depth=depth + 1))
+    lines.append(f"{pad}}}")
+    return lines
 
 
 def _is_docstring(stmt: ast.stmt) -> bool:
@@ -917,25 +1494,35 @@ def _return_lines(
     *,
     depth: int,
 ) -> list[str]:
-    """``return`` with recursive calls hoisted, expanding short-circuit under ``return``."""
+    """``return`` with calls hoisted, expanding short-circuit under ``return``."""
     _ = declared
     if stmt.value is None:
         raise _fail(stmt, "empty return")
     expr = stmt.value
-    if not _contains_self_call(expr, st.func_name, ctx.renames):
-        value = _expr(expr, ctx)
+    if _contains_self_call(expr, st.func_name, ctx.renames):
+        if _has_sc_self_call(expr, st.func_name, ctx.renames):
+            if isinstance(expr, (ast.BoolOp, ast.IfExp)):
+                return _return_sc_lines(expr, stmt, ctx, st, return_tag, depth=depth)
+            raise _fail(stmt, "call in short-circuit")
+        pre: list[str] = []
+        value = _hoist_expr(expr, ctx, st, pre)
         if _need(value.tag, expr) != return_tag:
             raise _fail(stmt, "return type")
-        return _indent([f"return {value.code};"], depth)
-    if _has_sc_self_call(expr, st.func_name, ctx.renames):
-        if isinstance(expr, (ast.BoolOp, ast.IfExp)):
-            return _return_sc_lines(expr, stmt, ctx, st, return_tag, depth=depth)
-        raise _fail(stmt, "call in short-circuit")
-    pre: list[str] = []
-    value = _hoist_expr(expr, ctx, st, pre)
+        return _indent([*pre, f"return {value.code};"], depth)
+    if _contains_proj_call(expr, ctx):
+        if _has_sc_proj_call(expr, ctx):
+            if isinstance(expr, (ast.BoolOp, ast.IfExp)):
+                return _return_sc_lines(expr, stmt, ctx, st, return_tag, depth=depth)
+            raise _fail(stmt, "call in short-circuit")
+        pre_proj: list[str] = []
+        value = _hoist_expr(expr, ctx, st, pre_proj)
+        if _need(value.tag, expr) != return_tag:
+            raise _fail(stmt, "return type")
+        return _indent([*pre_proj, f"return {value.code};"], depth)
+    value = _expr(expr, ctx)
     if _need(value.tag, expr) != return_tag:
         raise _fail(stmt, "return type")
-    return _indent([*pre, f"return {value.code};"], depth)
+    return _indent([f"return {value.code};"], depth)
 
 
 def _return_expr_lines(
@@ -948,20 +1535,30 @@ def _return_expr_lines(
     depth: int,
 ) -> list[str]:
     """Lines for ``return <expr>`` at statement ``stmt`` (already indented)."""
-    if not _contains_self_call(expr, st.func_name, ctx.renames):
-        value = _expr(expr, ctx)
+    if _contains_self_call(expr, st.func_name, ctx.renames):
+        if _has_sc_self_call(expr, st.func_name, ctx.renames):
+            if isinstance(expr, (ast.BoolOp, ast.IfExp)):
+                return _return_sc_lines(expr, stmt, ctx, st, return_tag, depth=depth)
+            raise _fail(stmt, "call in short-circuit")
+        pre: list[str] = []
+        value = _hoist_expr(expr, ctx, st, pre)
         if _need(value.tag, expr) != return_tag:
             raise _fail(stmt, "return type")
-        return _indent([f"return {value.code};"], depth)
-    if _has_sc_self_call(expr, st.func_name, ctx.renames):
-        if isinstance(expr, (ast.BoolOp, ast.IfExp)):
-            return _return_sc_lines(expr, stmt, ctx, st, return_tag, depth=depth)
-        raise _fail(stmt, "call in short-circuit")
-    pre: list[str] = []
-    value = _hoist_expr(expr, ctx, st, pre)
+        return _indent([*pre, f"return {value.code};"], depth)
+    if _contains_proj_call(expr, ctx):
+        if _has_sc_proj_call(expr, ctx):
+            if isinstance(expr, (ast.BoolOp, ast.IfExp)):
+                return _return_sc_lines(expr, stmt, ctx, st, return_tag, depth=depth)
+            raise _fail(stmt, "call in short-circuit")
+        pre = []
+        value = _hoist_expr(expr, ctx, st, pre)
+        if _need(value.tag, expr) != return_tag:
+            raise _fail(stmt, "return type")
+        return _indent([*pre, f"return {value.code};"], depth)
+    value = _expr(expr, ctx)
     if _need(value.tag, expr) != return_tag:
         raise _fail(stmt, "return type")
-    return _indent([*pre, f"return {value.code};"], depth)
+    return _indent([f"return {value.code};"], depth)
 
 
 def _return_sc_lines(
@@ -997,7 +1594,7 @@ def _emit_and_list(
         return _return_expr_lines(values[0], stmt, ctx, st, return_tag, depth=depth)
     first = values[0]
     rest = values[1:]
-    if _has_sc_self_call(first, st.func_name, ctx.renames):
+    if _has_sc_any_call(first, st.func_name, ctx):
         # A nested ``and``/``or``/conditional inside the first operand is not
         # directly under ``return``, so it is rejected instead of expanded.
         raise _fail(stmt, "call in short-circuit")
@@ -1031,7 +1628,7 @@ def _emit_or_list(
         return _return_expr_lines(values[0], stmt, ctx, st, return_tag, depth=depth)
     first = values[0]
     rest = values[1:]
-    if _has_sc_self_call(first, st.func_name, ctx.renames):
+    if _has_sc_any_call(first, st.func_name, ctx):
         # A nested ``and``/``or``/conditional inside the first operand is not
         # directly under ``return``, so it is rejected instead of expanded.
         raise _fail(stmt, "call in short-circuit")
@@ -1059,7 +1656,7 @@ def _emit_ifexp(
     depth: int,
 ) -> list[str]:
     """``return a if c else b`` with short-circuit branches expanded."""
-    if _has_sc_self_call(node.test, st.func_name, ctx.renames):
+    if _has_sc_any_call(node.test, st.func_name, ctx):
         # A short-circuit call inside the condition is not directly under
         # ``return``, so it is rejected instead of expanded.
         raise _fail(stmt, "call in short-circuit")
@@ -1093,7 +1690,7 @@ def _assign_target(
     if isinstance(target, ast.Name):
         name = target.id
         if isinstance(value_node, ast.Name) and _is_seq(ctx.types.get(value_node.id) or "") and _is_seq(tag):
-            raise _fail(stmt, "mutated list")
+            raise _fail(stmt, "shared list")
         if name in ctx.types and ctx.types[name] != tag:
             raise _fail(stmt, "assignment type")
         return name, tag
@@ -1110,8 +1707,137 @@ def _assign_target(
     raise _fail(stmt, "destructuring")
 
 
+def _tuple_assign(
+    stmt: ast.Assign | ast.AnnAssign,
+    target: ast.Tuple | ast.List,
+    value_node: ast.expr,
+    declared_type: str | None,
+    ctx: _Ctx,
+    declared: set[str],
+    st: _HoistState,
+) -> list[str]:
+    """Translate ``a, b = e1, e2`` as a parallel Dafny assignment.
+
+    Both right-hand sides are evaluated before either left-hand side changes.
+    Mixing a fresh name with an already declared one raises ``"tuple assignment"``.
+    """
+    if declared_type is not None:
+        raise _fail(stmt, "tuple assignment")
+    if any(not isinstance(elt, ast.Name) for elt in target.elts):
+        raise _fail(stmt, "tuple assignment")
+    names = [elt.id for elt in target.elts if isinstance(elt, ast.Name)]
+    if not isinstance(value_node, ast.Tuple) or len(value_node.elts) != len(names):
+        raise _fail(stmt, "tuple assignment")
+    if _has_any_inside_boolop(value_node, st.func_name, ctx):
+        raise _fail(stmt, "call in short-circuit")
+    pre: list[str] = []
+    codes: list[str] = []
+    tags: list[str] = []
+    use_hoist = _contains_any_call(value_node, st.func_name, ctx)
+    for elt in value_node.elts:
+        value = _hoist_expr(elt, ctx, st, pre) if use_hoist else _expr(elt, ctx)
+        tag = _need(value.tag, elt)
+        if isinstance(elt, ast.Name) and _is_seq(ctx.types.get(elt.id) or "") and _is_seq(tag):
+            raise _fail(stmt, "shared list")
+        codes.append(value.code)
+        tags.append(tag)
+    for name, tag in zip(names, tags, strict=True):
+        if name in ctx.types and ctx.types[name] != tag:
+            raise _fail(stmt, "assignment type")
+    if any(tag != tags[0] for tag in tags[1:]):
+        raise _fail(stmt, "assignment type")
+    fresh = [name for name in names if name not in declared]
+    if fresh and len(fresh) != len(names):
+        raise _fail(stmt, "tuple assignment")
+    for name, tag in zip(names, tags, strict=True):
+        ctx.types[name] = tag
+    joined_names = ", ".join(ctx.name(name) for name in names)
+    line = f"{joined_names} := {', '.join(codes)};"
+    if fresh:
+        declared.update(names)
+        return [*pre, f"var {line}"]
+    return [*pre, line]
+
+
+def _store_subscript(
+    stmt: ast.Assign | ast.AnnAssign,
+    target: ast.Subscript,
+    value_node: ast.expr,
+    declared_type: str | None,
+    ctx: _Ctx,
+    declared: set[str],
+    st: _HoistState,
+) -> list[str]:
+    """Translate ``xs[i] = e`` on a local list to ``xs := py_set_index(xs, i, e)``.
+
+    Storing through a parameter raises ``"shared list"``; a slice store raises
+    ``"mutated list"``, as before.
+    """
+    _ = declared
+    if isinstance(target.slice, ast.Slice):
+        base = _expr(target.value, ctx)
+        base_tag = _need(base.tag, target.value)
+        if _is_seq(base_tag):
+            raise _fail(stmt, "mutated list")
+        if base_tag == _STR:
+            raise _fail(stmt, "mutated string")
+        raise _fail(stmt, "index assignment")
+    if not isinstance(target.value, ast.Name):
+        base = _expr(target.value, ctx)
+        base_tag = _need(base.tag, target.value)
+        if _is_seq(base_tag):
+            raise _fail(stmt, "mutated list")
+        if base_tag == _STR:
+            raise _fail(stmt, "mutated string")
+        raise _fail(stmt, "index assignment")
+    name = target.value.id
+    base_tag = _need(ctx.tag_of(name), target.value)
+    if not _is_seq(base_tag):
+        if base_tag == _STR:
+            raise _fail(stmt, "mutated string")
+        raise _fail(stmt, "index assignment")
+    if name in ctx.params:
+        raise _fail(stmt, "shared list")
+    elem = _seq_elem(base_tag)
+    if _has_any_inside_boolop(target.slice, st.func_name, ctx) or _has_any_inside_boolop(value_node, st.func_name, ctx):
+        raise _fail(stmt, "call in short-circuit")
+    pre: list[str] = []
+    use_hoist = _contains_any_call(target.slice, st.func_name, ctx) or _contains_any_call(value_node, st.func_name, ctx)
+    if use_hoist:
+        index = _hoist_expr(target.slice, ctx, st, pre)
+        value = _hoist_expr(value_node, ctx, st, pre)
+    else:
+        index = _expr(target.slice, ctx)
+        value = _expr(value_node, ctx)
+    if _need(index.tag, target.slice) != _INT:
+        raise _fail(stmt, "index type")
+    tag = _need(value.tag, value_node)
+    if tag != elem:
+        raise _fail(stmt, "assignment type")
+    if declared_type is not None and declared_type != elem:
+        raise _fail(stmt, "assignment type")
+    dname = ctx.name(name)
+    return [*pre, f"{dname} := py_set_index({dname}, {index.code}, {value.code});"]
+
+
+def _bind_scalar(
+    name: str,
+    tag: str,
+    code: str,
+    ctx: _Ctx,
+    declared: set[str],
+    pre: list[str],
+) -> list[str]:
+    """Emit ``var x := e;`` or ``x := e;`` for a scalar and record its type."""
+    ctx.types[name] = tag
+    if name in declared:
+        return [*pre, f"{ctx.name(name)} := {code};"]
+    declared.add(name)
+    return [*pre, f"var {ctx.name(name)} := {code};"]
+
+
 def _assign(stmt: ast.Assign | ast.AnnAssign, ctx: _Ctx, declared: set[str], st: _HoistState) -> list[str]:
-    """Translate ``x = e`` and ``x: T = e``, hoisting self-calls in ``e``."""
+    """Translate ``x = e`` and ``x: T = e``, hoisting self and project calls in ``e``."""
     target: ast.expr
     value_node: ast.expr | None
     if isinstance(stmt, ast.Assign):
@@ -1126,10 +1852,15 @@ def _assign(stmt: ast.Assign | ast.AnnAssign, ctx: _Ctx, declared: set[str], st:
         if value_node is None:
             raise _fail(stmt, "bare annotation")
         declared_type = dafny_type(stmt.annotation, lineno=stmt.lineno)
-    if isinstance(target, (ast.Tuple, ast.List)):
-        raise _fail(stmt, "destructuring")
     if isinstance(target, ast.Starred):
         raise _fail(stmt, "starred")
+    if isinstance(target, (ast.Tuple, ast.List)):
+        assert value_node is not None
+        return _tuple_assign(stmt, target, value_node, declared_type, ctx, declared, st)
+    if isinstance(target, ast.Subscript):
+        assert value_node is not None
+        return _store_subscript(stmt, target, value_node, declared_type, ctx, declared, st)
+    assert value_node is not None
     if _contains_self_call(value_node, st.func_name, ctx.renames):
         if _has_call_inside_boolop(value_node, st.func_name, ctx.renames):
             raise _fail(stmt, "call in short-circuit")
@@ -1138,40 +1869,108 @@ def _assign(stmt: ast.Assign | ast.AnnAssign, ctx: _Ctx, declared: set[str], st:
         name, tag = _assign_target(target, value_node, value, stmt, ctx)
         if declared_type is not None and declared_type != tag:
             raise _fail(stmt, "assignment type")
-        assert isinstance(target, ast.Name)
-        ctx.types[name] = tag
-        if name in declared:
-            return [*pre, f"{ctx.name(name)} := {value.code};"]
-        declared.add(name)
-        return [*pre, f"var {ctx.name(name)} := {value.code};"]
+        return _bind_scalar(name, tag, value.code, ctx, declared, pre)
+    if _contains_proj_call(value_node, ctx):
+        if _has_proj_inside_boolop(value_node, ctx):
+            raise _fail(stmt, "call in short-circuit")
+        if (
+            isinstance(value_node, ast.Call)
+            and _is_project_call(value_node, ctx)
+            and not any(_contains_any_call(arg, st.func_name, ctx) for arg in value_node.args)
+        ):
+            # A single `x = M.g(args)` with call-free args is a Dafny call
+            # statement, so it stays inline; anything composite must hoist.
+            value = _expr(value_node, ctx)
+            name, tag = _assign_target(target, value_node, value, stmt, ctx)
+            if declared_type is not None and declared_type != tag:
+                raise _fail(stmt, "assignment type")
+            return _bind_scalar(name, tag, value.code, ctx, declared, [])
+        pre_proj: list[str] = []
+        value = _hoist_expr(value_node, ctx, st, pre_proj)
+        name, tag = _assign_target(target, value_node, value, stmt, ctx)
+        if declared_type is not None and declared_type != tag:
+            raise _fail(stmt, "assignment type")
+        return _bind_scalar(name, tag, value.code, ctx, declared, pre_proj)
     value = _expr(value_node, ctx)
     name, tag = _assign_target(target, value_node, value, stmt, ctx)
     if declared_type is not None and declared_type != tag:
         raise _fail(stmt, "assignment type")
-    assert isinstance(target, ast.Name)
-    ctx.types[name] = tag
-    if name in declared:
-        return [f"{ctx.name(name)} := {value.code};"]
-    declared.add(name)
-    return [f"var {ctx.name(name)} := {value.code};"]
+    return _bind_scalar(name, tag, value.code, ctx, declared, [])
 
 
-def _augassign(stmt: ast.AugAssign, ctx: _Ctx) -> UnsupportedConstruct:
-    """``AugAssign`` on a list is element mutation; anything else is unsupported."""
+def _augassign(stmt: ast.AugAssign, ctx: _Ctx, declared: set[str], st: _HoistState) -> list[str]:
+    """Translate ``x += e`` on ints to ``x := x + e;`` and ``xs[i] += e`` to a store.
+
+    Anything else raises ``"augmented assignment"``; whole-list ``+=`` and slice
+    targets keep raising ``"mutated list"``, as before.
+    """
+    _ = declared
+    if not isinstance(stmt.op, ast.Add):
+        raise _fail(stmt, "augmented assignment")
     target = stmt.target
-    if isinstance(target, ast.Name) and _is_seq(ctx.types.get(target.id) or ""):
-        return _fail(stmt, "mutated list")
+    if isinstance(target, ast.Subscript) and isinstance(target.slice, ast.Slice):
+        base = _expr(target.value, ctx)
+        if base.tag is not None and _is_seq(base.tag):
+            raise _fail(stmt, "mutated list")
+        raise _fail(stmt, "augmented assignment")
+    if isinstance(target, ast.Name):
+        name = target.id
+        if ctx.tag_of(name) != _INT:
+            if _is_seq(ctx.types.get(name) or ""):
+                raise _fail(stmt, "mutated list")
+            raise _fail(stmt, "augmented assignment")
+        if _has_any_inside_boolop(stmt.value, st.func_name, ctx):
+            raise _fail(stmt, "call in short-circuit")
+        pre: list[str] = []
+        if _contains_any_call(stmt.value, st.func_name, ctx):
+            value = _hoist_expr(stmt.value, ctx, st, pre)
+        else:
+            value = _expr(stmt.value, ctx)
+        if _need(value.tag, stmt.value) != _INT:
+            raise _fail(stmt, "augmented assignment")
+        dname = ctx.name(name)
+        return [*pre, f"{dname} := {dname} + {value.code};"]
+    if isinstance(target, ast.Subscript) and isinstance(target.value, ast.Name):
+        name = target.value.id
+        base_tag = _need(ctx.tag_of(name), target.value)
+        if not _is_seq(base_tag):
+            raise _fail(stmt, "augmented assignment")
+        if name in ctx.params:
+            raise _fail(stmt, "shared list")
+        if _seq_elem(base_tag) != _INT:
+            raise _fail(stmt, "augmented assignment")
+        if _has_any_inside_boolop(target.slice, st.func_name, ctx) or _has_any_inside_boolop(
+            stmt.value, st.func_name, ctx
+        ):
+            raise _fail(stmt, "call in short-circuit")
+        pre = []
+        use_hoist = _contains_any_call(target.slice, st.func_name, ctx) or _contains_any_call(
+            stmt.value, st.func_name, ctx
+        )
+        if use_hoist:
+            index = _hoist_expr(target.slice, ctx, st, pre)
+            value = _hoist_expr(stmt.value, ctx, st, pre)
+        else:
+            index = _expr(target.slice, ctx)
+            value = _expr(stmt.value, ctx)
+        if _need(index.tag, target.slice) != _INT:
+            raise _fail(stmt, "index type")
+        if _need(value.tag, stmt.value) != _INT:
+            raise _fail(stmt, "augmented assignment")
+        dname = ctx.name(name)
+        read = f"py_index({dname}, {index.code})"
+        return [*pre, f"{dname} := py_set_index({dname}, {index.code}, {read} + {value.code});"]
     if isinstance(target, ast.Subscript):
         base = _expr(target.value, ctx)
         if base.tag is not None and _is_seq(base.tag):
-            return _fail(stmt, "mutated list")
-    return _fail(stmt, "augmented assignment")
+            raise _fail(stmt, "mutated list")
+    raise _fail(stmt, "augmented assignment")
 
 
 def _branch(
     stmt: ast.If, ctx: _Ctx, declared: set[str], return_tag: str, st: _HoistState, *, depth: int
 ) -> tuple[list[str], bool]:
-    """Translate an ``if``/``elif``/``else`` statement, hoisting self-calls in the condition."""
+    """Translate an ``if``/``elif``/``else`` statement, hoisting calls in the condition."""
     indented = "  " * (depth + 1)
     pre_cond: list[str] = []
     if _contains_self_call(stmt.test, st.func_name, ctx.renames):
@@ -1181,6 +1980,12 @@ def _branch(
         if _need(cond_hoisted.tag, stmt.test) != _BOOL:
             raise _fail(stmt, "non-bool condition")
         cond = cond_hoisted
+    elif _contains_proj_call(stmt.test, ctx):
+        if _has_proj_inside_boolop(stmt.test, ctx):
+            raise _fail(stmt, "call in short-circuit")
+        cond = _hoist_expr(stmt.test, ctx, st, pre_cond)
+        if _need(cond.tag, stmt.test) != _BOOL:
+            raise _fail(stmt, "non-bool condition")
     else:
         cond = _expr(stmt.test, ctx)
         if _need(cond.tag, stmt.test) != _BOOL:
@@ -1299,21 +2104,30 @@ def _parameters(
     return params, names, types
 
 
-def transpile_function(function: FunctionRef, *, callees: Mapping[str, str] = MappingProxyType({})) -> str:
+def transpile_function(
+    function: FunctionRef,
+    *,
+    callees: Mapping[str, str] = MappingProxyType({}),
+    read_only_callees: frozenset[str] = frozenset(),
+    callee_types: Mapping[str, str] = MappingProxyType({}),
+) -> str:
     """Code mode: executable Dafny built from ``pcc.pylib`` blocks.
 
     Returns ``method <name>(<params>) returns (result: <T>)`` with exactly one
     ``requires pre(<params>)`` clause and one ``ensures spec(<params>, result)``
     clause. ``<name>`` is ``verifier.layout.method_name`` of ``function``.
     ``callees`` maps the qualname of each callee in the project to its Dafny
-    module name, so callers use only the callee's spec; project calls other than
-    the function itself are owned by a later ticket, so any such call raises
-    ``UnsupportedConstruct`` here.
+    module name, so callers use only the callee's spec; a call to a project
+    function becomes ``<Module>.<name>(...)``. ``read_only_callees`` holds the
+    callee qualnames certified not to mutate or escape a list parameter, so a
+    list passed to them stays a value; a list passed to any other project callee
+    raises ``UnsupportedConstruct("shared list")``. ``callee_types`` maps a
+    callee qualname to its Dafny return type tag; without it the call has an
+    unknown type (a ``bool`` default applies in ``while`` conditions only).
 
     ``lineno`` of every error is relative to ``function.source``: line 1 is the
     first line of that source (the first decorator, if any).
     """
-    _ = callees  # Reserved for project calls in a later ticket; only self-calls are supported here.
     try:
         tree = ast.parse(function.source)
     except (SyntaxError, ValueError, MemoryError, RecursionError):
@@ -1334,7 +2148,15 @@ def transpile_function(function: FunctionRef, *, callees: Mapping[str, str] = Ma
         if extra not in renames:
             renames[extra] = extra + "_" if extra in RESERVED else extra
     declared = set(types)
-    ctx = _Ctx(renames, types)
+    ctx = _Ctx(
+        renames,
+        types,
+        params=frozenset(types),
+        func_name=func.name,
+        callees=callees,
+        callee_types=callee_types,
+        read_only=read_only_callees,
+    )
     st = _HoistState(func.name, method_name(function), return_tag, set(renames.values()))
     body, returns = _statements(func.body, ctx, declared, return_tag, st, depth=0, first=True)
     if not returns:
