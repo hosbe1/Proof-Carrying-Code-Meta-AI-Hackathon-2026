@@ -722,7 +722,9 @@ def test_dependency_hashes_agree_with_cli_stored_hashes() -> None:
     by_key: dict[tuple[str, str], tuple[tuple[str, str], ...]] = {key: ((callee.path, callee.qualname),)}
     specs = {(callee.path, callee.qualname): G_DAFNY_SPEC}
 
-    assert _hashes_for_key(key, by_key, specs) == pcc.pipeline.dependency_hashes(caller, {callee: proven_callee(callee)})
+    assert _hashes_for_key(key, by_key, specs) == pcc.pipeline.dependency_hashes(
+        caller, {callee: proven_callee(callee)}
+    )
 
 
 def test_run_many_serializes_model_calls() -> None:
