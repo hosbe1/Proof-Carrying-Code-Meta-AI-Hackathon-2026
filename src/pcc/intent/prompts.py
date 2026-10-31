@@ -27,6 +27,7 @@ SCHEMA: dict[str, object] = {
                     "sources": {"type": "array", "items": {"type": "integer", "minimum": 1}},
                 },
                 "required": ["text", "sources"],
+                "additionalProperties": False,
             },
         },
         "contradictions": {
@@ -38,12 +39,14 @@ SCHEMA: dict[str, object] = {
                     "sources": {"type": "array", "items": {"type": "integer", "minimum": 1}},
                 },
                 "required": ["description", "sources"],
+                "additionalProperties": False,
             },
         },
         "checkable": {"type": "boolean"},
         "reason": {"type": "string"},
     },
     "required": ["summary", "claims", "contradictions", "checkable", "reason"],
+    "additionalProperties": False,
 }
 
 

@@ -16,6 +16,14 @@ from tests.helpers import function_ref
 SOURCE = "def maximum(xs: list[int]) -> int:\n    return xs[0]  # SENTINEL-7f3a9c-body"
 
 
+def test_intent_schema_is_strict_for_meta_structured_output() -> None:
+    assert SCHEMA["additionalProperties"] is False
+    properties = cast(dict[str, Any], SCHEMA["properties"])
+    for name in ("claims", "contradictions"):
+        items = properties[name]["items"]
+        assert items["additionalProperties"] is False
+
+
 def make_context() -> Context:
     function = function_ref(source=SOURCE, path="src/shop.py", qualname="maximum", lineno=7)
     evidence = (
