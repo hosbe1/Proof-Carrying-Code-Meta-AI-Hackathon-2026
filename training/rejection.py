@@ -14,8 +14,10 @@ reward is exactly 1.0; 0 and -1 are not verified.
 
 Files next to ``<out>``: ``<out>.attempts.jsonl`` (every raw attempt ever sampled, with
 ``task_id``, ``prompt_sha256``, ``prompt`` and ``answer``), ``<out>.tasks.jsonl`` (one
-line per finished task with ``prompt_sha256``, ``attempts`` and ``solved``) and
-``<out>.summary.json`` (this invocation's ``RoundSummary``). ``<out>`` itself is
+line per finished task with ``prompt_sha256``, ``attempts`` and ``solved``),
+``<out>.summary.json`` (this invocation's ``RoundSummary``) and ``<out>.skipped.json``
+(this invocation's skip report: total, eligible and skipped counts with the sorted
+skipped task IDs). ``<out>`` itself is
 rewritten from the verified attempts at the end of each run: per task, distinct answers
 in first-occurrence order, at most ``max_per_task`` lines.
 """
@@ -182,6 +184,26 @@ def _load_retained(path: Path) -> dict[str, list[tuple[str, str]]]:
     return retained
 
 
+def _write_skipped_report(
+    path: Path, *, total_tasks: int, eligible: dict[int, str], skipped_ids: Sequence[str]
+) -> None:
+    """Write the ``<out>.skipped.json`` sibling report with exactly its four keys."""
+    ordered = sorted(skipped_ids)
+    path.write_text(
+        json.dumps(
+            {
+                "total_tasks": total_tasks,
+                "eligible_tasks": len(eligible),
+                "skipped_count": len(ordered),
+                "skipped_ids": ordered,
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
 def _split_chat_line(line: dict[str, Any], path: Path) -> tuple[str, str]:
     """The ``(user, assistant)`` contents of a stored chat line."""
     messages = line.get("messages")
@@ -235,6 +257,16 @@ def run(
     the verified attempts, retaining resumed lines; ``<out>.summary.json`` and the
     returned summary describe this invocation only.
 
+    Tasks whose prompt cannot be built (``build_prompt`` raises ``ValueError``, e.g.
+    Vericoding rows with an empty ``vc-spec`` and no ``prompt`` stub) are skipped
+    deterministically on every invocation, including ``--resume``: they are never
+    sampled, verified, costed or recorded in ``<out>.tasks.jsonl``. The skip is
+    reported in the ``<out>.skipped.json`` sibling file (``total_tasks``,
+    ``eligible_tasks``, ``skipped_count``, sorted ``skipped_ids``) with a concise
+    warning; ``tasks_run`` counts only eligible tasks. Only ``ValueError`` from
+    ``build_prompt`` is skipped: bad arguments, corrupt resume files, model errors
+    and reward failures still raise or stop the run as before.
+
     With ``max_cost_usd`` the client is wrapped in
     ``BudgetedClient(client, max_cost_usd=cap, max_calls=sys.maxsize,
     max_seconds=float("inf"))`` so only the dollar cap constrains the run. The call
@@ -259,10 +291,17 @@ def run(
     attempts_path = Path(str(out_path) + ".attempts.jsonl")
     tasks_path = Path(str(out_path) + ".tasks.jsonl")
     summary_path = Path(str(out_path) + ".summary.json")
+    skipped_path = Path(str(out_path) + ".skipped.json")
 
     check_fn = reward_fn if reward_fn is not None else _default_reward
-    prompts = [build_prompt(task) for task in tasks]
-    shas = [prompt_sha256(task) for task in tasks]
+    prompts: dict[int, str] = {}
+    skipped_ids: list[str] = []
+    for index, task in enumerate(tasks):
+        try:
+            prompts[index] = build_prompt(task)
+        except ValueError:
+            skipped_ids.append(task.id)
+    shas = {index: hashlib.sha256(prompt.encode("utf-8")).hexdigest() for index, prompt in prompts.items()}
     skipped = _load_skip_prompts(skip_solved)
     finished = _load_finished(tasks_path) if resume else set()
     retained = _load_retained(attempts_path) if resume else {}
@@ -271,18 +310,25 @@ def run(
         attempts_path.touch(exist_ok=True)
     else:
         attempts_path.write_text("", encoding="utf-8")
+    if skipped_ids:
+        warnings.warn(
+            f"skipped {len(skipped_ids)} of {len(tasks)} tasks with unbuildable prompts; see {skipped_path}",
+            UserWarning,
+            stacklevel=2,
+        )
 
     if len(tasks) == 0:
         warnings.warn("no tasks to sample; writing an empty output file", UserWarning, stacklevel=2)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text("", encoding="utf-8")
         tasks_path.write_text("", encoding="utf-8")
+        _write_skipped_report(skipped_path, total_tasks=0, eligible={}, skipped_ids=[])
         summary = RoundSummary(0, 0, 0, 0, 0, 0.0, time.monotonic() - start, "done")
         summary_path.write_text(json.dumps(dataclasses.asdict(summary), sort_keys=True) + "\n", encoding="utf-8")
         print(summary)
         return summary
 
-    order = [index for index in range(len(tasks)) if shas[index] not in finished and prompts[index] not in skipped]
+    order = [index for index in prompts if shas[index] not in finished and prompts[index] not in skipped]
     needed = {index: max(0, attempts - len(retained.get(shas[index], []))) for index in order}
 
     active: ModelClient = client
@@ -374,7 +420,7 @@ def run(
 
     merged: list[dict[str, Any]] = []
     emitted: set[tuple[str, str]] = set()
-    current_prompts = {prompts[index] for index in range(len(tasks))}
+    current_prompts = set(prompts.values())
 
     def _emit(line: dict[str, Any]) -> None:
         user, assistant = _split_chat_line(line, out_path)
@@ -383,9 +429,12 @@ def run(
             merged.append(line)
 
     for index in range(len(tasks)):
-        for line in prev_line_by_prompt.get(prompts[index], []):
+        eligible_prompt = prompts.get(index)
+        if eligible_prompt is None:
+            continue
+        for line in prev_line_by_prompt.get(eligible_prompt, []):
             _emit(line)
-        for line in new_line_by_prompt.get(prompts[index], []):
+        for line in new_line_by_prompt.get(eligible_prompt, []):
             _emit(line)
     for line in prev_lines:
         user, _ = _split_chat_line(line, out_path)
@@ -418,6 +467,7 @@ def run(
         wall_seconds=time.monotonic() - start,
         stop_reason=stop or "done",
     )
+    _write_skipped_report(skipped_path, total_tasks=len(tasks), eligible=prompts, skipped_ids=skipped_ids)
     summary_path.write_text(json.dumps(dataclasses.asdict(summary), sort_keys=True) + "\n", encoding="utf-8")
     print(summary)
     return summary

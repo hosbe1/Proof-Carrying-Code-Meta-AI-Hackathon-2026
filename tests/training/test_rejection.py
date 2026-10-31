@@ -57,6 +57,11 @@ def fake_boom_reward(answer: str, task_spec: str) -> float:
     raise ToolError("boom: reward failed")
 
 
+def fake_value_reward(answer: str, task_spec: str) -> float:
+    """Module-level fake reward (picklable) that fails with ``ValueError``."""
+    raise ValueError("boom: broken scorer")
+
+
 def fake_graded_reward(answer: str, task_spec: str, *, resource_limit: int) -> float:
     """Module-level fake for the ``reward`` binding: 1.0 for ``ok`` answers.
 
@@ -1444,6 +1449,244 @@ def test_os_environ_not_leaked_into_errors(monkeypatch: pytest.MonkeyPatch, tmp_
     text = (tmp_path / "out.jsonl.summary.json").read_text(encoding="utf-8")
     assert "meta-test-value" not in text
     assert os.environ["META_API_KEY"] == "meta-test-value"
+
+
+def _unsupported_task(row_id: str, *, source: str = "apps") -> Task:
+    """One Vericoding-style row whose prompt cannot be built.
+
+    This mirrors the real train rows with an empty ``vc-spec`` (no ``prompt``
+    stub either), so ``build_prompt`` raises ``ValueError`` for it.
+    """
+    payload: dict[str, Any] = {
+        "id": row_id,
+        "language": "dafny",
+        "source": source,
+        "source-id": f"{source}_{row_id}",
+        "vc-description": f"Prove task {row_id}.",
+        "vc-preamble": "",
+        "vc-helpers": "",
+        "vc-spec": "",
+        "vc-code": "{ r := 0; }",
+        "vc-postamble": "",
+    }
+    return Task(
+        id=f"vericoding/{row_id}",
+        source_task=f"vericoding/{source}/{source}_{row_id}",
+        payload=payload,
+    )
+
+
+def _read_skipped(out: Path) -> dict[str, Any]:
+    """The parsed ``<out>.skipped.json`` sibling report of a run."""
+    payload: dict[str, Any] = json.loads(Path(str(out) + ".skipped.json").read_text(encoding="utf-8"))
+    return payload
+
+
+def test_unsupported_rows_skipped_with_report(tmp_path: Path) -> None:
+    """Eligible tasks sample normally while empty-vc-spec rows are skipped and reported."""
+    tasks = [_task("DA0001", TASK_ONE), _unsupported_task("DA0060"), _task("DA0002", TASK_TWO)]
+    out = tmp_path / "out.jsonl"
+    client = MarkerClient({TASK_ONE: ["ok-1"], TASK_TWO: ["ok-2"]})
+    with pytest.warns(UserWarning, match="skipped 1"):
+        summary = run(
+            tuple(tasks),
+            client,
+            model="m",
+            attempts=1,
+            out=out,
+            reward_fn=fake_ok_reward,
+            concurrency=1,
+        )
+    assert len(client.calls) == 2
+    assert summary.tasks_run == 2
+    assert summary.tasks_solved == 2
+    assert summary.stop_reason == "done"
+    skipped = _read_skipped(out)
+    assert set(skipped.keys()) == {"total_tasks", "eligible_tasks", "skipped_count", "skipped_ids"}
+    assert skipped["total_tasks"] == 3
+    assert skipped["eligible_tasks"] == 2
+    assert skipped["skipped_count"] == 1
+    assert skipped["skipped_ids"] == ["vericoding/DA0060"]
+    assert isinstance(skipped["total_tasks"], int)
+    assert isinstance(skipped["eligible_tasks"], int)
+    assert isinstance(skipped["skipped_count"], int)
+    lines = _read_jsonl(out)
+    assert len(lines) == 2
+    assert {_user_of(line) for line in lines} == {build_prompt(tasks[0]), build_prompt(tasks[2])}
+    task_lines = _read_jsonl(Path(str(out) + ".tasks.jsonl"))
+    assert len(task_lines) == 2
+    assert {line["prompt_sha256"] for line in task_lines} == {
+        prompt_sha256(tasks[0]),
+        prompt_sha256(tasks[2]),
+    }
+    assert len(_read_jsonl(Path(str(out) + ".attempts.jsonl"))) == 2
+    summary_payload = json.loads((tmp_path / "out.jsonl.summary.json").read_text(encoding="utf-8"))
+    assert set(summary_payload.keys()) == {
+        "tasks_solved",
+        "tasks_run",
+        "attempts",
+        "input_tokens",
+        "output_tokens",
+        "cost_usd",
+        "wall_seconds",
+        "stop_reason",
+    }
+
+
+def test_skipped_ids_sorted_and_exact_schema(tmp_path: Path) -> None:
+    """The skip report holds exactly four keys with sorted task IDs."""
+    tasks = [_unsupported_task("DA0099"), _task("DA0001", TASK_ONE), _unsupported_task("DA0060")]
+    out = tmp_path / "out.jsonl"
+    client = MarkerClient({TASK_ONE: ["ok-1"]})
+    with pytest.warns(UserWarning, match="skipped 2"):
+        summary = run(
+            tuple(tasks),
+            client,
+            model="m",
+            attempts=1,
+            out=out,
+            reward_fn=fake_ok_reward,
+            concurrency=1,
+        )
+    assert summary.tasks_run == 1
+    skipped = _read_skipped(out)
+    assert set(skipped.keys()) == {"total_tasks", "eligible_tasks", "skipped_count", "skipped_ids"}
+    assert skipped == {
+        "total_tasks": 3,
+        "eligible_tasks": 1,
+        "skipped_count": 2,
+        "skipped_ids": ["vericoding/DA0060", "vericoding/DA0099"],
+    }
+
+
+def test_all_rows_skipped_finishes_done(tmp_path: Path) -> None:
+    """When every row is unsupported the run finishes done with no model call."""
+    tasks = [_unsupported_task("DA0060"), _unsupported_task("DA0099")]
+    out = tmp_path / "out.jsonl"
+    client = MarkerClient({})
+    with pytest.warns(UserWarning, match="skipped 2"):
+        summary = run(
+            tuple(tasks),
+            client,
+            model="m",
+            attempts=2,
+            out=out,
+            reward_fn=fake_ok_reward,
+            concurrency=1,
+        )
+    assert client.calls == []
+    assert summary.tasks_run == 0
+    assert summary.tasks_solved == 0
+    assert summary.attempts == 0
+    assert summary.stop_reason == "done"
+    assert out.read_text(encoding="utf-8") == ""
+    assert _read_jsonl(Path(str(out) + ".tasks.jsonl")) == []
+    skipped = _read_skipped(out)
+    assert skipped == {
+        "total_tasks": 2,
+        "eligible_tasks": 0,
+        "skipped_count": 2,
+        "skipped_ids": ["vericoding/DA0060", "vericoding/DA0099"],
+    }
+
+
+def test_skip_redetected_on_resume(tmp_path: Path) -> None:
+    """Skipped rows are re-detected on --resume and never recorded as finished."""
+    tasks = [_task("DA0001", TASK_ONE), _unsupported_task("DA0060")]
+    out = tmp_path / "out.jsonl"
+    first = MarkerClient({TASK_ONE: ["ok-1"]})
+    with pytest.warns(UserWarning, match="skipped 1"):
+        run(
+            tuple(tasks),
+            first,
+            model="m",
+            attempts=1,
+            out=out,
+            reward_fn=fake_ok_reward,
+            concurrency=1,
+        )
+    assert len(_read_jsonl(Path(str(out) + ".tasks.jsonl"))) == 1
+    second = MarkerClient({TASK_ONE: ["ok-new"]})
+    with pytest.warns(UserWarning, match="skipped 1"):
+        summary = run(
+            tuple(tasks),
+            second,
+            model="m",
+            attempts=1,
+            out=out,
+            reward_fn=fake_ok_reward,
+            concurrency=1,
+            resume=True,
+        )
+    assert second.calls == []
+    assert summary.tasks_run == 0
+    assert summary.attempts == 0
+    assert summary.stop_reason == "done"
+    assert len(_read_jsonl(Path(str(out) + ".tasks.jsonl"))) == 1
+    skipped = _read_skipped(out)
+    assert skipped["skipped_ids"] == ["vericoding/DA0060"]
+    assert skipped["total_tasks"] == 2
+    assert skipped["eligible_tasks"] == 1
+
+
+def test_skip_does_not_swallow_endpoint_error(tmp_path: Path) -> None:
+    """An endpoint failure on eligible rows still stops the run despite skipped rows."""
+    tasks = [_unsupported_task("DA0060"), _task("DA0001", TASK_ONE), _task("DA0002", TASK_TWO)]
+    out = tmp_path / "out.jsonl"
+    client = FlakyClient({TASK_ONE: ["ok-1", "ok-2"], TASK_TWO: ["ok-3", "ok-4"]}, fail_from=1)
+    with pytest.warns(UserWarning, match="skipped 1"):
+        summary = run(
+            tuple(tasks),
+            client,
+            model="m",
+            attempts=2,
+            out=out,
+            reward_fn=fake_ok_reward,
+            concurrency=1,
+        )
+    assert summary.stop_reason.startswith("endpoint: ")
+    skipped = _read_skipped(out)
+    assert skipped["skipped_ids"] == ["vericoding/DA0060"]
+    assert skipped["total_tasks"] == 3
+    assert skipped["eligible_tasks"] == 2
+
+
+def test_skip_does_not_swallow_corrupt_resume(tmp_path: Path) -> None:
+    """A corrupt resume file still raises ToolError when skipped rows are present."""
+    tasks = [_unsupported_task("DA0060"), _task("DA0001", TASK_ONE)]
+    out = tmp_path / "out.jsonl"
+    tasks_path = Path(str(out) + ".tasks.jsonl")
+    tasks_path.write_text("not json\n", encoding="utf-8")
+    client = MarkerClient({TASK_ONE: ["ok-1"]})
+    with pytest.raises(ToolError, match="cannot resume from tasks"):
+        run(
+            tuple(tasks),
+            client,
+            model="m",
+            attempts=1,
+            out=out,
+            reward_fn=fake_ok_reward,
+            concurrency=1,
+            resume=True,
+        )
+    assert client.calls == []
+
+
+def test_reward_value_error_propagates_despite_skipped_rows(tmp_path: Path) -> None:
+    """A ValueError from the reward is not mistaken for an unbuildable prompt."""
+    tasks = [_unsupported_task("DA0060"), _task("DA0001", TASK_ONE)]
+    out = tmp_path / "out.jsonl"
+    client = MarkerClient({TASK_ONE: ["ok-1"]})
+    with pytest.warns(UserWarning, match="skipped 1"), pytest.raises(ValueError, match="boom: broken scorer"):
+        run(
+            tuple(tasks),
+            client,
+            model="m",
+            attempts=1,
+            out=out,
+            reward_fn=fake_value_reward,
+            concurrency=1,
+        )
 
 
 def test_reward_signature_matches_grpo() -> None:
