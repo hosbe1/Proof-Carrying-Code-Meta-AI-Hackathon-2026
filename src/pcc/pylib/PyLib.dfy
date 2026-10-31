@@ -88,6 +88,8 @@ module PyLib {
   // sum(1 for v in xs if p(v)) in Python: the number of elements satisfying p.
   function py_count<T>(xs: seq<T>, p: T -> bool): int
     ensures 0 <= py_count(xs, p) <= |xs|
+    ensures |xs| == 0 ==> py_count(xs, p) == 0
+    ensures |xs| > 0 ==> py_count(xs, p) == (if p(xs[0]) then 1 else 0) + py_count(xs[1..], p)
     decreases |xs|
   {
     if |xs| == 0 then 0 else (if p(xs[0]) then 1 else 0) + py_count(xs[1..], p)

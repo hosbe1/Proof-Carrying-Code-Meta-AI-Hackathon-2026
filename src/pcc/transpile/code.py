@@ -1316,6 +1316,8 @@ def _for_range(
     if var not in declared:
         head.append(f"var {dvar} := {lower};")
         declared.add(var)
+    else:
+        head.append(f"{dvar} := {lower};")
     head.append(f"var {bound} := {upper_value.code};")
     pad = "  " * (depth + 1)
     lines = _indent(head, depth)
@@ -1471,10 +1473,11 @@ def _return_lines(
             if isinstance(expr, (ast.BoolOp, ast.IfExp)):
                 return _return_sc_lines(expr, stmt, ctx, st, return_tag, depth=depth)
             raise _fail(stmt, "call in short-circuit")
-        value = _expr(expr, ctx)
+        pre_proj: list[str] = []
+        value = _hoist_expr(expr, ctx, st, pre_proj)
         if _need(value.tag, expr) != return_tag:
             raise _fail(stmt, "return type")
-        return _indent([f"return {value.code};"], depth)
+        return _indent([*pre_proj, f"return {value.code};"], depth)
     value = _expr(expr, ctx)
     if _need(value.tag, expr) != return_tag:
         raise _fail(stmt, "return type")
@@ -1689,7 +1692,7 @@ def _tuple_assign(
     pre: list[str] = []
     codes: list[str] = []
     tags: list[str] = []
-    use_hoist = _contains_self_call(value_node, st.func_name, ctx.renames)
+    use_hoist = _contains_any_call(value_node, st.func_name, ctx)
     for elt in value_node.elts:
         value = _hoist_expr(elt, ctx, st, pre) if use_hoist else _expr(elt, ctx)
         tag = _need(value.tag, elt)
@@ -1758,9 +1761,7 @@ def _store_subscript(
     if _has_any_inside_boolop(target.slice, st.func_name, ctx) or _has_any_inside_boolop(value_node, st.func_name, ctx):
         raise _fail(stmt, "call in short-circuit")
     pre: list[str] = []
-    use_hoist = _contains_self_call(target.slice, st.func_name, ctx.renames) or _contains_self_call(
-        value_node, st.func_name, ctx.renames
-    )
+    use_hoist = _contains_any_call(target.slice, st.func_name, ctx) or _contains_any_call(value_node, st.func_name, ctx)
     if use_hoist:
         index = _hoist_expr(target.slice, ctx, st, pre)
         value = _hoist_expr(value_node, ctx, st, pre)
@@ -1795,7 +1796,7 @@ def _bind_scalar(
 
 
 def _assign(stmt: ast.Assign | ast.AnnAssign, ctx: _Ctx, declared: set[str], st: _HoistState) -> list[str]:
-    """Translate ``x = e`` and ``x: T = e``, hoisting self-calls in ``e``."""
+    """Translate ``x = e`` and ``x: T = e``, hoisting self and project calls in ``e``."""
     target: ast.expr
     value_node: ast.expr | None
     if isinstance(stmt, ast.Assign):
@@ -1831,11 +1832,24 @@ def _assign(stmt: ast.Assign | ast.AnnAssign, ctx: _Ctx, declared: set[str], st:
     if _contains_proj_call(value_node, ctx):
         if _has_proj_inside_boolop(value_node, ctx):
             raise _fail(stmt, "call in short-circuit")
-        value = _expr(value_node, ctx)
+        if (
+            isinstance(value_node, ast.Call)
+            and _is_project_call(value_node, ctx)
+            and not any(_contains_any_call(arg, st.func_name, ctx) for arg in value_node.args)
+        ):
+            # A single `x = M.g(args)` with call-free args is a Dafny call
+            # statement, so it stays inline; anything composite must hoist.
+            value = _expr(value_node, ctx)
+            name, tag = _assign_target(target, value_node, value, stmt, ctx)
+            if declared_type is not None and declared_type != tag:
+                raise _fail(stmt, "assignment type")
+            return _bind_scalar(name, tag, value.code, ctx, declared, [])
+        pre_proj: list[str] = []
+        value = _hoist_expr(value_node, ctx, st, pre_proj)
         name, tag = _assign_target(target, value_node, value, stmt, ctx)
         if declared_type is not None and declared_type != tag:
             raise _fail(stmt, "assignment type")
-        return _bind_scalar(name, tag, value.code, ctx, declared, [])
+        return _bind_scalar(name, tag, value.code, ctx, declared, pre_proj)
     value = _expr(value_node, ctx)
     name, tag = _assign_target(target, value_node, value, stmt, ctx)
     if declared_type is not None and declared_type != tag:
@@ -1867,7 +1881,7 @@ def _augassign(stmt: ast.AugAssign, ctx: _Ctx, declared: set[str], st: _HoistSta
         if _has_any_inside_boolop(stmt.value, st.func_name, ctx):
             raise _fail(stmt, "call in short-circuit")
         pre: list[str] = []
-        if _contains_self_call(stmt.value, st.func_name, ctx.renames):
+        if _contains_any_call(stmt.value, st.func_name, ctx):
             value = _hoist_expr(stmt.value, ctx, st, pre)
         else:
             value = _expr(stmt.value, ctx)
@@ -1889,8 +1903,8 @@ def _augassign(stmt: ast.AugAssign, ctx: _Ctx, declared: set[str], st: _HoistSta
         ):
             raise _fail(stmt, "call in short-circuit")
         pre = []
-        use_hoist = _contains_self_call(target.slice, st.func_name, ctx.renames) or _contains_self_call(
-            stmt.value, st.func_name, ctx.renames
+        use_hoist = _contains_any_call(target.slice, st.func_name, ctx) or _contains_any_call(
+            stmt.value, st.func_name, ctx
         )
         if use_hoist:
             index = _hoist_expr(target.slice, ctx, st, pre)
@@ -1928,7 +1942,7 @@ def _branch(
     elif _contains_proj_call(stmt.test, ctx):
         if _has_proj_inside_boolop(stmt.test, ctx):
             raise _fail(stmt, "call in short-circuit")
-        cond = _expr(stmt.test, ctx)
+        cond = _hoist_expr(stmt.test, ctx, st, pre_cond)
         if _need(cond.tag, stmt.test) != _BOOL:
             raise _fail(stmt, "non-bool condition")
     else:

@@ -143,8 +143,14 @@ def test_for_range_single_bound_starts_at_zero() -> None:
 def test_for_range_reuses_declared_counter() -> None:
     source = "def f(n: int) -> int:\n    i = 0\n    for i in range(n):\n        i = i\n    return i\n"
     out = transpile(source)
-    assert "  var i := 0;\n  var pcc_t1 := n;\n  while i < pcc_t1\n  {\n" in out
+    assert "  var i := 0;\n  i := 0;\n  var pcc_t1 := n;\n  while i < pcc_t1\n  {\n" in out
     assert "    i := i;\n    i := i + 1;\n" in out
+
+
+def test_for_range_declared_counter_restarts_at_lower() -> None:
+    source = "def f(n: int) -> int:\n    i = 0\n    for i in range(1, n):\n        i = i\n    return i\n"
+    out = transpile(source)
+    assert "  var i := 0;\n  i := 1;\n  var pcc_t1 := n;\n  while i < pcc_t1\n  {\n" in out
 
 
 def test_for_range_counter_type_mismatch() -> None:
@@ -409,7 +415,7 @@ def test_list_passed_to_read_only_callee_is_allowed() -> None:
         callee_types={"g": "int"},
         read_only_callees=frozenset({"g"}),
     )
-    assert "  return GoldenG.g(xs);\n" in out
+    assert "  var pcc_t1 := GoldenG.g(xs);\n  return pcc_t1;\n" in out
 
 
 def test_list_passed_to_self_call_is_allowed() -> None:
@@ -423,7 +429,75 @@ def test_str_passed_to_uncertified_callee_is_allowed() -> None:
         callees={"g": "GoldenG"},
         callee_types={"g": "int"},
     )
-    assert "  return GoldenG.g(s);\n" in out
+    assert "  var pcc_t1 := GoldenG.g(s);\n  return pcc_t1;\n" in out
+
+
+def test_project_call_in_return_hoisted() -> None:
+    out = transpile(
+        "def f(a: int) -> int:\n    return g(a)\n",
+        callees={"g": "GoldenG"},
+        callee_types={"g": "int"},
+    )
+    assert "  var pcc_t1 := GoldenG.g(a);\n  return pcc_t1;\n" in out
+
+
+def test_project_call_composite_assign_hoisted() -> None:
+    out = transpile(
+        "def f(a: int) -> int:\n    x = g(a) + 1\n    return x\n",
+        callees={"g": "GoldenG"},
+        callee_types={"g": "int"},
+    )
+    assert "  var pcc_t1 := GoldenG.g(a);\n  var x := pcc_t1 + 1;\n  return x;\n" in out
+    assert "GoldenG.g(a) + 1" not in out
+
+
+def test_project_call_composite_return_hoisted() -> None:
+    out = transpile(
+        "def f(a: int) -> int:\n    return g(a) + 1\n",
+        callees={"g": "GoldenG"},
+        callee_types={"g": "int"},
+    )
+    assert "  var pcc_t1 := GoldenG.g(a);\n  return pcc_t1 + 1;\n" in out
+
+
+def test_project_call_in_if_hoisted() -> None:
+    out = transpile(
+        "def f(a: int) -> int:\n    x = 0\n    if g(a):\n        x = 1\n    return x\n",
+        callees={"g": "GoldenG"},
+        callee_types={"g": "bool"},
+    )
+    assert "  var pcc_t1 := GoldenG.g(a);\n" in out
+    assert "  if pcc_t1 {\n" in out
+
+
+def test_tuple_with_project_call_hoisted() -> None:
+    out = transpile(
+        "def f(a: int) -> int:\n    x, y = g(a), 1\n    return x\n",
+        callees={"g": "GoldenG"},
+        callee_types={"g": "int"},
+    )
+    assert "  var pcc_t1 := GoldenG.g(a);\n" in out
+    assert "  var x, y := pcc_t1, 1;\n  return x;\n" in out
+
+
+def test_subscript_store_with_project_call_hoisted() -> None:
+    out = transpile(
+        "def f(n: int, a: int) -> list[int]:\n    xs = [0 for i in range(n)]\n    xs[0] = g(a)\n    return xs\n",
+        callees={"g": "GoldenG"},
+        callee_types={"g": "int"},
+    )
+    assert "  var pcc_t1 := GoldenG.g(a);\n" in out
+    assert "  xs := py_set_index(xs, 0, pcc_t1);\n  return xs;\n" in out
+
+
+def test_augassign_with_project_call_hoisted() -> None:
+    out = transpile(
+        "def f(a: int) -> int:\n    x = 0\n    x += g(a)\n    return x\n",
+        callees={"g": "GoldenG"},
+        callee_types={"g": "int"},
+    )
+    assert "  var pcc_t1 := GoldenG.g(a);\n" in out
+    assert "  x := x + pcc_t1;\n  return x;\n" in out
 
 
 def test_ambiguous_project_call_rejected() -> None:

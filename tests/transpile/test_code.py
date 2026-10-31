@@ -264,7 +264,7 @@ def test_callees_lower_project_calls() -> None:
     assert "return a + 1;" in out
     typed = function_ref(source="def f(a: int) -> int:\n    return other(a)\n", path="src/mod.py", qualname="f")
     out = transpile_function(typed, callees={"other": "PCC_other"}, callee_types={"other": "int"})
-    assert "return PCC_other.other(a);" in out
+    assert "  var pcc_t1 := PCC_other.other(a);\n  return pcc_t1;\n" in out
     check_unsupported("def f(a: int) -> int:\n    return unknown(a)\n", "call unknown", lineno=2)
 
 
