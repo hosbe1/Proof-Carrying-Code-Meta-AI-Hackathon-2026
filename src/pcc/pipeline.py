@@ -463,7 +463,7 @@ def _translate(
     mismatch: Counterexample | None = None
     try:
         # Calls to project functions are not translated yet: the rule that turns them into
-        # `<Module>.<name>(...)` calls with the mapping below lands with the subset of #44.
+        # `<Module>.<name>(...)` calls with the mapping below is follow-up ticket #44.
         transpiled: str | None = transpile_function(function, callees=callee_modules)
     except UnsupportedConstruct:
         transpiled = None
