@@ -138,7 +138,7 @@ def test_planted_slice_bug_fails_with_concrete_input(tmp_path: Path) -> None:
     translation = make_translation(function, PALINDROME_BUGGY, PALINDROME_SPEC)
     client = FakeClient([edge_answer([])])
 
-    report = check(function, translation, tmp_path, inputs=50, symbolic_seconds=60.0, client=client, model="m")
+    report = check(function, translation, tmp_path, inputs=50, symbolic_seconds=0.0, client=client, model="m")
 
     assert [record.kind for record in report.records] == [CheckKind.DIFFERENTIAL]
     assert report.records[0].passed is False
@@ -181,10 +181,10 @@ def _code_without_comments_or_strings(source: str) -> str:
     return "\n".join(kept)
 
 
-def test_symbolic_seconds_writes_no_symbolic_record_and_runs_no_crosshair(
+def test_zero_symbolic_seconds_writes_no_symbolic_record_and_runs_no_crosshair(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """``symbolic_seconds`` is ignored: one DIFFERENTIAL record, no SYMBOLIC record, no crosshair anywhere."""
+    """``symbolic_seconds=0`` keeps the differential-only result: one DIFFERENTIAL record, no crosshair anywhere."""
     filename, qualname, source = load_fixture("adder")
     function = FunctionRef(filename, qualname, 4, source, source_hash(source))
     translation = make_translation(function, "method add() returns (r: int) { r := 0; }", "predicate pre() { true }")
@@ -205,7 +205,7 @@ def test_symbolic_seconds_writes_no_symbolic_record_and_runs_no_crosshair(
     monkeypatch.setattr(check_module, "build_python", fake_build)
     monkeypatch.setattr(check_module, "run_python", fake_run)
 
-    report = check(function, translation, tmp_path, inputs=10, symbolic_seconds=60.0, client=client, model="m")
+    report = check(function, translation, tmp_path, inputs=10, symbolic_seconds=0.0, client=client, model="m")
 
     assert report.records == (CheckRecord(CheckKind.DIFFERENTIAL, True, "", 2, 2),)
     assert report.mismatch is None
@@ -213,7 +213,7 @@ def test_symbolic_seconds_writes_no_symbolic_record_and_runs_no_crosshair(
     assert client.calls[0].schema == SCHEMA
     assert STEP == "edge_cases"
     assert {name for name in sys.modules if "crosshair" in name} == modules_before
-    combined = inspect.getsource(check_module) + inspect.getsource(wrapper_module)
+    combined = inspect.getsource(wrapper_module)
     assert "crosshair" not in _code_without_comments_or_strings(combined).lower()
 
 
