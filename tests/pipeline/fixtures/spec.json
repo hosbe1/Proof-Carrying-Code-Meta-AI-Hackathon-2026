@@ -1,0 +1,1 @@
+{"predicate": "def spec(s, result):\n    return result == (s == s[::-1])\n", "precondition": null, "precondition_sources": []}
