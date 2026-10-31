@@ -437,6 +437,7 @@ def test_prove_signatures() -> None:
             ("function_lines", KWO, NoDefault),
             ("extra_modules", KWO, ()),
             ("assumptions_module", KWO, ""),
+            ("imports", KWO, ()),
         ],
         ProofOutcome,
     )

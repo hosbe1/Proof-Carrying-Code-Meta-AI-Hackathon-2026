@@ -104,16 +104,82 @@ def _callee_gate(
     return None
 
 
+def _skip_atom(text: str, index: int) -> int | None:
+    """End index of the string, char literal or comment starting at ``index``, or ``None``.
+
+    A ``'`` starts a char literal only where it does not follow an identifier character, since Dafny identifiers may
+    contain ``'``. A ``"`` preceded by ``@`` starts a verbatim string, where ``""`` is an escaped quote.
+    """
+    if text.startswith("//", index):
+        end = text.find("\n", index)
+        return len(text) if end == -1 else end
+    if text.startswith("/*", index):
+        depth = 0
+        pos = index
+        while pos < len(text):
+            if text.startswith("/*", pos):
+                depth += 1
+                pos += 2
+            elif text.startswith("*/", pos):
+                depth -= 1
+                pos += 2
+                if depth == 0:
+                    return pos
+            else:
+                pos += 1
+        return len(text)
+    if text[index] == '"' and index > 0 and text[index - 1] == "@":
+        pos = index + 1
+        while pos < len(text):
+            if text.startswith('""', pos):
+                pos += 2
+            elif text[pos] == '"':
+                return pos + 1
+            else:
+                pos += 1
+        return len(text)
+    if text[index] == '"':
+        pos = index + 1
+        while pos < len(text) and text[pos] != "\n":
+            if text[pos] == "\\":
+                pos += 2
+            elif text[pos] == '"':
+                return pos + 1
+            else:
+                pos += 1
+        return pos
+    if text[index] == "'" and (index == 0 or not (text[index - 1].isalnum() or text[index - 1] in "_'")):
+        pos = index + 1
+        while pos < len(text) and text[pos] != "\n":
+            if text[pos] == "\\":
+                pos += 2
+            elif text[pos] == "'":
+                return pos + 1
+            else:
+                pos += 1
+        return pos
+    return None
+
+
 def _match_brace(text: str, opening: int) -> int | None:
-    """Index of the ``}`` matching the ``{`` at ``opening``, or ``None`` when unbalanced."""
+    """Index of the ``}`` matching the ``{`` at ``opening``, or ``None`` when unbalanced.
+
+    Braces inside strings, char literals and comments do not count.
+    """
     depth = 0
-    for index in range(opening, len(text)):
+    index = opening
+    while index < len(text):
+        skipped = _skip_atom(text, index)
+        if skipped is not None:
+            index = skipped
+            continue
         if text[index] == "{":
             depth += 1
         elif text[index] == "}":
             depth -= 1
             if depth == 0:
                 return index
+        index += 1
     return None
 
 
@@ -122,13 +188,18 @@ def _body_start(text: str) -> int | None:
 
     A ``{`` inside parentheses or brackets, or a group that more header text follows, holds a contract
     expression (a set display such as ``{0, 1}`` or an attribute argument) rather than the body: only a
-    group whose match runs to the end of the text opens the body.
+    group whose match runs to the end of the text opens the body. Braces inside strings, char literals
+    and comments do not count.
     """
     depth_paren = 0
     depth_brack = 0
     index = 0
     size = len(text)
     while index < size:
+        skipped = _skip_atom(text, index)
+        if skipped is not None:
+            index = skipped
+            continue
         char = text[index]
         if char == "(":
             depth_paren += 1
@@ -171,15 +242,16 @@ def _assumption_method(outcome: Result) -> str | None:
 
 def _callee_wiring(
     direct: tuple[FunctionRef, ...], callees: Mapping[FunctionRef, Result]
-) -> tuple[dict[str, str], tuple[str, ...], tuple[Assumption, ...], str]:
-    """The callee info for the transpiler and the prover: module names, extra modules, assumptions, module source.
+) -> tuple[dict[str, str], tuple[str, ...], tuple[Assumption, ...], str, tuple[str, ...]]:
+    """The callee info for the transpiler and the prover: modules, extras, assumptions, source, imports.
 
     A proven callee passes its certificate source as an extra module, under its Dafny module name. An unproven
     (``open``) callee becomes an ``UNPROVEN_CALLEE`` assumption with a body-less method together with the callee's
     Dafny spec in the generated ``PCC_assume_<hash>`` module, where ``<hash>`` is the first 8 hex digits of the
     sha256 of the assumed specs (the same truncation ``verifier.layout.module_name`` uses). An open callee with no
     translated method is still listed, with empty Dafny text, so the caller records what it rests on. With no open
-    callee that has a translated method the module source is empty.
+    callee that has a translated method the module source is empty. ``imports`` holds the Dafny module names the
+    caller links against: every proven callee module, plus the generated assumptions module when there is one.
     """
     modules: dict[str, str] = {}
     extra: list[str] = []
@@ -207,12 +279,15 @@ def _callee_wiring(
                 )
             )
     assumptions_module = ""
+    assume_name = ""
     if methods:
         digest = hashlib.sha256("\n".join(specs).encode("utf-8")).hexdigest()[:8]
+        assume_name = f"PCC_assume_{digest}"
         blocks = [*specs, *methods]
         body = "\n".join(f"  {line}" if line.strip() else "" for block in blocks for line in block.split("\n"))
-        assumptions_module = f"module PCC_assume_{digest} {{\n{body}\n}}\n"
-    return modules, tuple(extra), tuple(assumptions), assumptions_module
+        assumptions_module = f"module {assume_name} {{\n{body}\n}}\n"
+    imports = (*modules.values(), assume_name) if assume_name else tuple(modules.values())
+    return modules, tuple(extra), tuple(assumptions), assumptions_module, imports
 
 
 def dependency_hashes(function: FunctionRef, callees: Mapping[FunctionRef, Result]) -> tuple[Dependency, ...]:
@@ -338,15 +413,16 @@ def run(
 
     ``callees`` holds the results of already-run callees in the project. Callees the function never calls are
     ignored; a callee with a counterexample or a ``not_checkable`` callee ends the run before any step, mutual
-    recursion ends it ``open``. Otherwise a proven callee is linked by its certificate source and an unproven one
-    by a generated assumptions module, and the run uses only the callees' specs. Expected step failures become
-    result states; ``ToolError`` and malformed model answers from the advisory steps escape.
+    recursion ends it ``open``. Otherwise a proven callee is linked by its certificate source under its Dafny module
+    name (plus an import) and an unproven one by a generated assumptions module, and the run uses only the callees'
+    specs. Expected step failures become result states; ``ToolError`` and malformed model answers from the advisory
+    steps escape.
     """
     direct = _direct_callees(function, callees)
     gated = _callee_gate(function, direct, callees)
     if gated is not None:
         return gated
-    callee_modules, extra_modules, assumptions, assumptions_module = _callee_wiring(direct, callees)
+    callee_modules, extra_modules, assumptions, assumptions_module, callee_imports = _callee_wiring(direct, callees)
     intent: Intent | None = None
     spec: Spec | None = None
     translation: Translation | None = None
@@ -367,6 +443,7 @@ def run(
             function_lines=len(function.source.splitlines()),
             extra_modules=extra_modules,
             assumptions_module=assumptions_module,
+            imports=callee_imports,
         )
     except (NotCheckable, UnsupportedConstruct) as error:
         return Result(function, State.NOT_CHECKABLE, str(error) or "not checkable", intent, spec, translation)

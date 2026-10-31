@@ -128,6 +128,7 @@ class _Recorded:
     def __init__(self) -> None:
         self.transpile_callees: list[dict[str, str]] = []
         self.prove_extra: list[tuple[str, ...]] = []
+        self.prove_imports: list[tuple[str, ...]] = []
         self.prove_assumptions: list[tuple[Assumption, ...]] = []
         self.prove_assumptions_module: list[str] = []
         self.prove_outcome = ProofOutcome(True, CALLER_PROOF_SOURCE, 1, "glimmer")
@@ -210,9 +211,11 @@ def _install_steps(monkeypatch: pytest.MonkeyPatch, recorded: _Recorded) -> None
         function_lines: int,
         extra_modules: Sequence[str] = (),
         assumptions_module: str = "",
+        imports: Sequence[str] = (),
     ) -> ProofOutcome:
         _ = (translation, client, stages, resource_limit, function_lines)
         recorded.prove_extra.append(tuple(extra_modules))
+        recorded.prove_imports.append(tuple(imports))
         recorded.prove_assumptions.append(tuple(assumptions))
         recorded.prove_assumptions_module.append(assumptions_module)
         return recorded.prove_outcome
@@ -271,6 +274,7 @@ def test_proven_callee_passes_module_and_import_with_no_assumptions(
     assert result.assumptions == ()
     assert recorded.transpile_callees == [{"g": module_name(callee)}]
     assert recorded.prove_extra == [(G_PROOF_SOURCE,)]
+    assert recorded.prove_imports == [(module_name(callee),)]
     assert recorded.prove_assumptions_module == [""]
 
 
@@ -289,7 +293,11 @@ def test_open_callee_becomes_unproven_callee_assumption(monkeypatch: pytest.Monk
     assert "method {:axiom} g(" in assumption.dafny
     assert recorded.prove_extra == [()]
     (module,) = recorded.prove_assumptions_module
-    assert re.fullmatch(r"module PCC_assume_[0-9a-f]{8} \{\n(?:.*\n)*\}\n", module) is not None
+    match = re.fullmatch(r"module (PCC_assume_[0-9a-f]{8}) \{\n(?:.*\n)*\}\n", module)
+    assert match is not None
+    (assume_name,) = match.groups()
+    assert recorded.prove_imports == [(assume_name,)]
+    assert module.startswith(f"module {assume_name} {{\n")
     assert "predicate spec(x: int, result: int)" in module
     assert "result == x" in module
     assert "method {:axiom} g(x: int) returns (result: int)\n    requires pre(x)\n    ensures spec(x, result)" in module
@@ -325,6 +333,80 @@ def test_open_callee_with_braces_in_contract_keeps_full_header(monkeypatch: pyte
     assert "ensures result in {0, 1}" in assumption.dafny
     (module,) = recorded.prove_assumptions_module
     assert "ensures result in {0, 1}" in module
+
+
+BRACE_STRING_FUNCTION = (
+    "method g(s: string) returns (result: bool)\n"
+    '  requires s != "{"\n'
+    "  ensures spec(s, result)\n"
+    "{\n"
+    '  result := s != "{";\n'
+    "}\n"
+)
+
+
+def test_open_callee_with_brace_in_string_keeps_full_header(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    recorded = _Recorded()
+    _install_steps(monkeypatch, recorded)
+    callee = g_ref()
+    translation = make_translation(callee, dafny_function=BRACE_STRING_FUNCTION, dafny_spec=G_DAFNY_SPEC)
+    outcome = Result(
+        callee,
+        State.OPEN,
+        "no proof found",
+        make_intent(callee),
+        make_spec(callee),
+        translation,
+        (),
+        None,
+        None,
+    )
+
+    result = _run(f_ref(), tmp_path, {callee: outcome})
+
+    assert result.state is State.PROVEN
+    (assumption,) = result.assumptions
+    assert assumption.dafny.count("{:axiom}") == 1
+    assert 'requires s != "{"' in assumption.dafny
+    (module,) = recorded.prove_assumptions_module
+    assert 'requires s != "{"' in module
+
+
+COMMENT_BRACE_FUNCTION = (
+    "method g(x: int) returns (result: int)\n"
+    "  requires pre(x) // { checked later\n"
+    "  ensures spec(x, result)\n"
+    "{\n"
+    "  result := x;\n"
+    "}\n"
+)
+
+
+def test_open_callee_with_brace_in_comment_keeps_full_header(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    recorded = _Recorded()
+    _install_steps(monkeypatch, recorded)
+    callee = g_ref()
+    translation = make_translation(callee, dafny_function=COMMENT_BRACE_FUNCTION, dafny_spec=G_DAFNY_SPEC)
+    outcome = Result(
+        callee,
+        State.OPEN,
+        "no proof found",
+        make_intent(callee),
+        make_spec(callee),
+        translation,
+        (),
+        None,
+        None,
+    )
+
+    result = _run(f_ref(), tmp_path, {callee: outcome})
+
+    assert result.state is State.PROVEN
+    (assumption,) = result.assumptions
+    assert assumption.dafny.count("{:axiom}") == 1
+    assert "requires pre(x) // { checked later" in assumption.dafny
+    (module,) = recorded.prove_assumptions_module
+    assert "requires pre(x) // { checked later" in module
 
 
 def test_mutual_recursion_ends_open_without_prove(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -392,6 +474,7 @@ def test_self_call_uses_no_callee_wiring(monkeypatch: pytest.MonkeyPatch, tmp_pa
     assert result.assumptions == ()
     assert recorded.transpile_callees == [{}]
     assert recorded.prove_extra == [()]
+    assert recorded.prove_imports == [()]
     assert recorded.prove_assumptions_module == [""]
 
 
@@ -407,6 +490,7 @@ def test_run_many_passes_earlier_level_results(monkeypatch: pytest.MonkeyPatch, 
     assert recorded.transpile_callees == [{}, {"g": module_name(callee)}]
     assert results[1].proof is not None
     assert recorded.prove_extra == [(), (results[1].proof.dafny_source,)]
+    assert recorded.prove_imports == [(), (module_name(callee),)]
     assert recorded.prove_assumptions_module == ["", ""]
 
 
@@ -453,6 +537,7 @@ def test_open_callee_without_translation_lists_assumption_without_dafny(
     assert assumption.subject == "g"
     assert assumption.dafny == ""
     assert recorded.prove_extra == [()]
+    assert recorded.prove_imports == [()]
     assert recorded.prove_assumptions_module == [""]
 
 
@@ -468,6 +553,7 @@ def test_ai_fallback_still_passes_callee_modules(monkeypatch: pytest.MonkeyPatch
     assert result.translation is not None
     assert result.translation.function_path is TranslationPath.AI
     assert recorded.prove_extra == [(G_PROOF_SOURCE,)]
+    assert recorded.prove_imports == [(module_name(callee),)]
 
 
 def test_failed_proof_searches_counterexample(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

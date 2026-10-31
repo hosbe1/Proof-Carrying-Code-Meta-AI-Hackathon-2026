@@ -8,7 +8,7 @@ from collections.abc import Sequence
 import pytest
 
 import pcc.prove.agent as prove_agent
-from pcc.config import ProverStage
+from pcc.config import Config, ProverStage
 from pcc.core import DafnyError, ToolError, Translation
 from pcc.models import Completion, FakeClient, Message
 from pcc.prove import prove
@@ -92,6 +92,8 @@ class _VerifyStub:
     def __init__(self, outcomes: list[VerifyOutcome]) -> None:
         self._outcomes = list(outcomes)
         self.calls: list[str] = []
+        self.assumptions_modules: list[str] = []
+        self.extra_modules: list[tuple[str, ...]] = []
 
     def __call__(
         self,
@@ -102,8 +104,10 @@ class _VerifyStub:
         timeout_seconds: float | None = None,
         extra_modules: Sequence[str] = (),
     ) -> VerifyOutcome:
-        _ = (assumptions_module, resource_limit, timeout_seconds, extra_modules)
+        _ = (resource_limit, timeout_seconds)
         self.calls.append(dafny_code)
+        self.assumptions_modules.append(assumptions_module)
+        self.extra_modules.append(tuple(extra_modules))
         assert self._outcomes, "verify called more often than scripted"
         return self._outcomes.pop(0)
 
@@ -420,6 +424,128 @@ def test_non_empty_assumptions_are_accepted(monkeypatch: pytest.MonkeyPatch) -> 
 
     assert outcome.proven is True
     assert client.requests != []
+    assert "module PCC_assume_12345678 {\n}\n" in verifier.calls[0]
+    assert "  import PCC_assume_12345678\n" in verifier.calls[0]
+    assert verifier.assumptions_modules == ["PCC_assume_12345678"]
+    assert verifier.extra_modules == [("module Callee {}\n",)]
+
+
+def test_imports_become_import_lines(monkeypatch: pytest.MonkeyPatch) -> None:
+    proven = make_translation()
+    client = FakeClient([proof_answer("", METHOD_WITH_DECREASES)])
+    verifier = _VerifyStub([VerifyOutcome(True, (), 0.1)])
+    monkeypatch.setattr(prove_agent, "verify", verifier)
+
+    outcome = prove(
+        proven,
+        (),
+        client=client,
+        stages=(ProverStage("spark", "m", 1),),
+        resource_limit=1000,
+        function_lines=10,
+        extra_modules=("module Callee {}\n",),
+        imports=("Callee",),
+    )
+
+    assert outcome.proven is True
+    assert "  import Callee\n" in verifier.calls[0]
+    assert verifier.extra_modules == [("module Callee {}\n",)]
+    assert verifier.assumptions_modules == [""]
+
+
+ASSUME_SOURCE = (
+    "module PCC_assume_12345678 {\n"
+    "  predicate spec(x: int, result: int)\n"
+    "  {\n"
+    "    result == x\n"
+    "  }\n"
+    "  method {:axiom} g(x: int) returns (result: int)\n"
+    "    requires pre(x)\n"
+    "    ensures spec(x, result)\n"
+    "}\n"
+)
+
+
+def test_assumptions_module_source_is_appended_and_named(monkeypatch: pytest.MonkeyPatch) -> None:
+    proven = make_translation()
+    client = FakeClient([proof_answer("", METHOD_WITH_DECREASES)])
+    verifier = _VerifyStub([VerifyOutcome(True, (), 0.1)])
+    monkeypatch.setattr(prove_agent, "verify", verifier)
+
+    outcome = prove(
+        proven,
+        (assumption(),),
+        client=client,
+        stages=(ProverStage("spark", "m", 1),),
+        resource_limit=1000,
+        function_lines=10,
+        assumptions_module=ASSUME_SOURCE,
+    )
+
+    assert outcome.proven is True
+    (checked,) = verifier.calls
+    assert ASSUME_SOURCE in checked
+    assert "  import PCC_assume_12345678\n" in checked
+    assert outcome.dafny_source == checked
+    assert verifier.assumptions_modules == ["PCC_assume_12345678"]
+
+
+def test_assumptions_module_without_module_name_raises() -> None:
+    proven = make_translation()
+
+    with pytest.raises(ValueError, match="assumptions_module"):
+        prove(
+            proven,
+            (),
+            client=FakeClient([]),
+            stages=(ProverStage("spark", "m", 1),),
+            resource_limit=1000,
+            function_lines=10,
+            assumptions_module="predicate spec(x: int, r: int)\n{\n  r == x\n}\n",
+        )
+
+
+ASSUME_TRUSTED_SOURCE = (
+    "module PCC_assume_abcdef12 {\n  method {:axiom} g(x: int) returns (r: int)\n    ensures r == x + 1\n}\n"
+)
+
+CALLER_SPEC = "predicate spec(x: int, result: int)\n{\n  result == x + 2\n}\n"
+
+CALLER_USING_ASSUMED_CALLEE = (
+    "method f(x: int) returns (result: int)\n"
+    "  ensures spec(x, result)\n"
+    "{\n"
+    "  var t := PCC_assume_abcdef12.g(x);\n"
+    "  result := t + 1;\n"
+    "}\n"
+)
+
+
+@pytest.mark.dafny
+def test_assumed_callee_verifies_for_real() -> None:
+    function = function_ref(
+        source="def f(x: int) -> int:\n    return g(x) + 1\n",
+        path="pkg/calls.py",
+        qualname="f",
+        lineno=5,
+    )
+    proven = translation(function, dafny_function=CALLER_USING_ASSUMED_CALLEE, dafny_spec=CALLER_SPEC)
+    client = FakeClient([proof_answer("", CALLER_USING_ASSUMED_CALLEE)])
+
+    outcome = prove(
+        proven,
+        (assumption(),),
+        client=client,
+        stages=(ProverStage("spark", "m", 1),),
+        resource_limit=Config().dafny.resource_limit,
+        function_lines=3,
+        assumptions_module=ASSUME_TRUSTED_SOURCE,
+    )
+
+    assert outcome.proven is True
+    assert outcome.errors == ()
+    assert ASSUME_TRUSTED_SOURCE in outcome.dafny_source
+    assert "  import PCC_assume_abcdef12\n" in outcome.dafny_source
 
 
 def test_tool_error_from_client_passes_through() -> None:

@@ -17,6 +17,7 @@ from pcc.verifier import anti_cheat, assemble, same_executable, verify
 STEP = "proof"
 
 _METHOD_RE = re.compile(r"(?<![A-Za-z0-9_'])method(?![A-Za-z0-9_'])")
+_ASSUMPTIONS_MODULE_RE = re.compile(r"(?<![A-Za-z0-9_'])module\s+([A-Za-z_][A-Za-z0-9_']*)")
 _DECREASES_RE = re.compile(r"(?<![A-Za-z0-9_'])decreases(?![A-Za-z0-9_'])")
 _LEMMA_RE = re.compile(r"(?m)^\s*lemma\s+([A-Za-z_][A-Za-z0-9_']*)")
 _METHOD_DECL_RE = re.compile(r"(?m)^\s*method\s+[A-Za-z_]")
@@ -45,6 +46,12 @@ def _parse_answer(text: str) -> tuple[str, str]:
 def _lemma_names(lemmas: str) -> tuple[str, ...]:
     """The names declared with ``lemma`` in ``lemmas``, in order without duplicates."""
     return tuple(dict.fromkeys(_LEMMA_RE.findall(lemmas)))
+
+
+def _assumptions_name(assumptions_module: str) -> str:
+    """The module declared by the ``assumptions_module`` source, or ``""`` when there is none."""
+    match = _ASSUMPTIONS_MODULE_RE.search(assumptions_module)
+    return match.group(1) if match is not None else ""
 
 
 def _reject_method_in_lemmas(lemmas: str) -> None:
@@ -177,6 +184,7 @@ def prove(
     function_lines: int,
     extra_modules: Sequence[str] = (),
     assumptions_module: str = "",
+    imports: Sequence[str] = (),
 ) -> ProofOutcome:
     """Add invariants, lemmas and hints until ``pcc.verifier.verify`` passes, feeding Dafny's errors back after each
     attempt. Every attempt goes through ``pcc.verifier.anti_cheat``; the spec stays frozen.
@@ -187,11 +195,18 @@ def prove(
     not a ``{lemmas, method}`` object, changes the header or the executable code, declares a method in ``lemmas`` or
     trips the anti-cheat scan fails that attempt without stopping the run. The first verified attempt is returned;
     otherwise the last outcome, with ``stage`` set to the last stage tried. ``assumptions`` lists what the proof
-    rests on (unproven callees, contracts); the checkable side travels with ``extra_modules`` and
-    ``assumptions_module``, which ``verify`` links and scans. ``ToolError`` from the model client or the verifier
-    passes through.
+    rests on (unproven callees, contracts). ``extra_modules`` holds complete, already-checked callee modules, and
+    ``imports`` the Dafny module names the caller uses: each entry becomes an ``import`` line in the checked file, so
+    Dafny links the caller against the callee specs. ``assumptions_module`` holds the generated assumptions module
+    source (``""`` when every callee is proven): it is appended to the checked file, its module is imported, and its
+    name is passed to ``verify`` and ``anti_cheat``, so ``{:axiom}`` is allowed only there. ``ToolError`` from the
+    model client or the verifier passes through.
     """
     _ = assumptions
+    assume_name = _assumptions_name(assumptions_module)
+    if assumptions_module and not assume_name:
+        raise ValueError("assumptions_module holds no module")
+    import_names = (*imports, assume_name) if assume_name else tuple(imports)
     pylib_signatures = signatures()
     failures: list[str] = []
     attempts = 0
@@ -214,19 +229,23 @@ def prove(
             attempt_errors: tuple[DafnyError, ...] = ()
             try:
                 lemmas, method = _parse_answer(completion.text)
-                full = assemble(translation.function, translation.dafny_spec, method, lemmas=lemmas)
+                full = assemble(
+                    translation.function, translation.dafny_spec, method, lemmas=lemmas, imports=import_names
+                )
+                if assumptions_module:
+                    full += assumptions_module if full.endswith("\n") else "\n" + assumptions_module
                 last_full = full
                 _reject_unless_header_kept(translation.dafny_function, method)
                 lemma_names = _lemma_names(lemmas)
                 if not same_executable(translation.dafny_function, method, lemma_names=lemma_names):
                     raise _AttemptFailed("executable code changed")
                 _reject_method_in_lemmas(lemmas)
-                violations = anti_cheat(full, translation.dafny_spec)
+                violations = anti_cheat(full, translation.dafny_spec, assumptions_module=assume_name)
                 if violations:
                     raise _AttemptFailed(f"anti-cheat: {_cheat_form(violations[0])}")
                 outcome = verify(
                     full,
-                    assumptions_module=assumptions_module,
+                    assumptions_module=assume_name,
                     resource_limit=resource_limit,
                     extra_modules=extra_modules,
                 )
