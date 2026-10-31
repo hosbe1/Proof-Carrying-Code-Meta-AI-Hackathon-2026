@@ -22,11 +22,10 @@ from training.export_sft import (
     SAMPLES_FILENAME,
     TaskIndex,
     build_index,
-    build_prompt,
     collect_lines,
     main,
 )
-from training.prompts import SYSTEM_MESSAGE
+from training.prompts import SYSTEM_MESSAGE, build_prompt
 
 from pcc.evaluation import datasets
 from pcc.evaluation.datasets import Task
@@ -486,24 +485,6 @@ def test_empty_run_warns(tmp_path: Path) -> None:
     with pytest.warns(UserWarning, match="no training lines"):
         lines = collect_lines((run,), (), index=INDEX)
     assert lines == []
-
-
-def test_build_prompt_holds_spec_but_not_reference_answer() -> None:
-    prompt = build_prompt(TRAIN_A)
-    assert "method solve(n: int) returns (result: int)" in prompt
-    assert "{ result := a + b; }" not in prompt
-
-
-def test_build_prompt_skips_empty_blocks() -> None:
-    prompt = build_prompt(TRAIN_B)
-    assert "\n\n\n" not in prompt
-    assert prompt.strip() != ""
-
-
-def test_build_prompt_rejects_unknown_payload_shape() -> None:
-    task = Task(id="x/Y", source_task="x", payload={"id": "Y"})
-    with pytest.raises(ValueError, match="prompt"):
-        build_prompt(task)
 
 
 def _fixture_cache_and_splits(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> tuple[Path, Path, dict[str, Task]]:

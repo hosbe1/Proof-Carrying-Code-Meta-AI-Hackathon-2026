@@ -7,7 +7,7 @@ but the package never imports it.
 
 | File | Does |
 | --- | --- |
-| `prompts.py` | `SYSTEM_MESSAGE`, sent verbatim by every data line and every sampling tool |
+| `prompts.py` | `SYSTEM_MESSAGE` and `build_prompt`, shared verbatim by every data line and every sampling tool |
 | `reward.py` | The graded proof reward: 1 verified, 0 not verified, −1 cheat or changed spec |
 | `export_sft.py` | `python -m training.export_sft`: verified solutions become Fireworks SFT data |
 
@@ -31,10 +31,12 @@ format:
 ```
 
 For `samples.jsonl` lines the user turn is rebuilt with `build_prompt` from
-`training/export_sft.py` (instructions plus the task description, preamble, helpers, spec
-and postamble; never `vc-code`, which is the reference answer). The sampling harness and
-the round 0 tool must import that same `build_prompt` instead of copying it, so their user
-messages compare byte-identical with the test-split prompt guard. For `proofs.jsonl` lines it
+`training/prompts.py`: for a Vericoding row it is the Dafny instructions plus the task
+description, preamble, helpers, spec and postamble (never `vc-code`, which is the
+reference answer); for a HumanEvalFix row it is the Python fix instructions plus the
+`prompt` stub. The sampling harness and the round 0 tool must import that same
+`build_prompt` instead of copying it, so their user messages compare byte-identical with
+the test-split prompt guard. For `proofs.jsonl` lines it
 is the stored prompt, with `answer` appended as the assistant turn. `--include` merges
 files that already have the chat format, such as the round 0 output. A `proofs.jsonl` or
 `--include` line whose first message is not the shared `SYSTEM_MESSAGE`, or which holds
@@ -55,9 +57,10 @@ task ID.
    (Datasets page, chat format: one `{messages: [...]}` object per line). Note the dataset
    ID for the training job.
 2. Launch a supervised fine-tuning job on the base Glimmer model with that dataset,
-   following docs/plan.md (Training): LoRA SFT, rank 16, over the exported proofs. SFT is
-   free until November 30, either through the dashboard or through the Serverless Training
-   API when dataset uploads are disabled for the account.
-3. When the job finishes, download the adapter in PEFT format and serve it with the
-   configured `--lora-modules`. Record the job ID and the spend in the training issue, as
-   every training run does.
+   following docs/plan.md (Training): LoRA SFT, rank 16, over the exported proofs. The
+   plan notes SFT is free until November 30, either through the dashboard or through the
+   Serverless Training API when dataset uploads are disabled for the account; confirm the
+   current account status in the training issue before launching.
+3. When the job finishes, download the adapter in PEFT format. Record the job ID and the
+   spend in the training issue, as every training run does; serving and evaluation follow
+   the training issues.

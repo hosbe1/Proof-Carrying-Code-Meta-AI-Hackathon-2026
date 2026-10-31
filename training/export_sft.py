@@ -7,10 +7,11 @@ one chat line per verified, deduplicated solution. ``--include`` merges lines th
 the chat format (the round 0 output). Only train-split tasks are used: a task ID from a test
 split, or a user message equal to the prompt of a test-split task, raises ``ValueError``.
 
-``build_prompt`` is the reference Vericoding prompt used both to rebuild the user message of a
-run solution and to guard the test split; the sampling harness (#46) and the round 0 tool
-(#69) must import this same function instead of copying it, so their prompts compare
-byte-identical with the test-split guard, which relies on exact equality.
+``build_prompt`` (from ``training/prompts.py``, re-exported here) is the reference task prompt
+used both to rebuild the user message of a run solution and to guard the test split; the
+sampling harness (#46) and the round 0 tool (#69) must import that same function instead of
+copying it, so their prompts compare byte-identical with the test-split guard, which relies
+on exact equality.
 """
 
 from __future__ import annotations
@@ -26,14 +27,12 @@ from typing import Any, TypedDict
 
 from pcc.evaluation import datasets
 from pcc.evaluation.datasets import Task
-from training.prompts import SYSTEM_MESSAGE
+from training.prompts import SYSTEM_MESSAGE, build_prompt
 
 SAMPLES_FILENAME = "samples.jsonl"
 PROOFS_FILENAME = "proofs.jsonl"
 
 _ROLES = ("system", "user", "assistant")
-
-_PROMPT_INSTRUCTIONS = "Complete the Dafny method below so that it verifies. Return only the complete Dafny program."
 
 
 class ChatMessage(TypedDict):
@@ -56,37 +55,6 @@ class TaskIndex:
     tasks: Mapping[str, Task]
     test_ids: frozenset[str]
     test_prompts: frozenset[str]
-
-
-def build_prompt(task: Task) -> str:
-    """The Vericoding user prompt for ``task``: instructions plus spec, never the answer.
-
-    This is the reference contract for the sampling harness (#46) and the round 0 tool
-    (#69): both must import this function so their user messages compare byte-identical
-    with the test-split prompt guard, which relies on exact equality.
-    For a Vericoding row this joins the description, preamble, helpers, spec and postamble,
-    skipping blank parts; ``vc-code`` holds the reference answer, so it stays out. For a
-    HumanEvalFix row it is the instructions plus the ``prompt`` stub. Anything else raises
-    ``ValueError`` instead of guessing a prompt.
-    """
-    payload = task.payload
-    spec = payload.get("vc-spec")
-    if isinstance(spec, str) and spec.strip():
-        blocks = [
-            payload.get("vc-description"),
-            payload.get("vc-preamble"),
-            payload.get("vc-helpers"),
-            spec,
-            payload.get("vc-postamble"),
-        ]
-        body = "\n\n".join(block for block in blocks if isinstance(block, str) and block.strip())
-        if body:
-            return f"{_PROMPT_INSTRUCTIONS}\n\n{body}"
-        return _PROMPT_INSTRUCTIONS
-    stub = payload.get("prompt")
-    if isinstance(stub, str) and stub.strip():
-        return f"{_PROMPT_INSTRUCTIONS}\n\n{stub}"
-    raise ValueError(f"cannot build a training prompt for task {task.id!r}: unsupported payload")
 
 
 def _records(path: Path) -> Iterator[tuple[int, Any]]:
@@ -200,7 +168,12 @@ def _iter_run_samples(run_dir: Path, *, index: TaskIndex) -> Iterator[tuple[str,
 
 
 def _iter_run_proofs(run_dir: Path, *, index: TaskIndex) -> Iterator[tuple[str, str, list[ChatMessage]]]:
-    """The ``(user, answer, messages)`` triples of the run's ``proofs.jsonl`` lines, if any."""
+    """The ``(user, answer, messages)`` triples of the run's ``proofs.jsonl`` lines, if any.
+
+    The ticket schema gives ``proofs.jsonl`` no verdict field, so these lines skip the
+    verified check: they are trusted as verified sampler output, and the sampler must only
+    write proofs that Dafny verified with a clean anti-cheat scan.
+    """
     path = run_dir / PROOFS_FILENAME
     if not path.is_file():
         return
