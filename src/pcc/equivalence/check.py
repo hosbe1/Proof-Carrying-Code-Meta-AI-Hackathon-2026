@@ -3,8 +3,13 @@
 The translation is compiled back to Python (``dafny build --target:py``) and compared with the original on
 ``inputs`` random Hypothesis inputs plus up to 20 model-proposed edge cases, all run in the sandbox. Only inputs on
 which the compiled Dafny ``pre`` holds count (a missing ``pre`` counts every input). The first mismatch becomes the
-``mismatch`` counterexample. ``symbolic_seconds`` stays in the signature for #75 and is ignored here: no SYMBOLIC
-record is written.
+``mismatch`` counterexample.
+
+When ``symbolic_seconds > 0``, the differential test is followed by the stretch symbolic search (#75): one importable
+sandbox module defines ``original`` and ``translated`` with the original's exact typed signature, both guarded by the
+compiled Dafny ``pre``, and ``diffbehavior`` compares them with ``--per_condition_timeout <symbolic_seconds>``. The
+sandbox wall timeout is ``symbolic_seconds + 30``. The outcome is one more SYMBOLIC record; a symbolic input only
+becomes ``mismatch`` when the differential test found none. ``symbolic_seconds == 0`` writes no SYMBOLIC record.
 """
 
 from __future__ import annotations
@@ -24,9 +29,9 @@ from pcc.core import (
     Translation,
     UnsupportedConstruct,
 )
-from pcc.equivalence.wrapper import wrapper_source
+from pcc.equivalence.wrapper import symbolic_module_source, wrapper_source
 from pcc.models import Message, ModelClient
-from pcc.sandbox import run_python, strategies_source, target_loader
+from pcc.sandbox import RunOutcome, run_python, strategies_source, target_loader
 from pcc.verifier import assemble, build_python, module_name, python_name
 
 #: The model step name for edge-case inputs, for cost reporting.
@@ -45,6 +50,17 @@ _MAX_EDGE_CASES = 20
 
 _DETAIL_NEVER = "precondition never holds"
 _DETAIL_TIMEOUT = "timeout"
+
+#: The importable sandbox module the symbolic search compares entry points of.
+_CROSSHAIR_MODULE = "pcc_symbolic"
+#: The wall timeout on top of ``symbolic_seconds`` bounding the whole symbolic sandbox run.
+_SYMBOLIC_GRACE_SECONDS = 30.0
+#: Outcome of a crashed symbolic run with blank stderr.
+_DETAIL_CROSSHAIR_FAILED = "crosshair failed"
+#: Outcome of a symbolic run that found no difference.
+_DETAIL_NO_DIFFERENCES = "no differences found"
+#: The success line crosshair diffbehavior prints on exit 0 (capital N, with a period).
+_CROSSHAIR_NO_DIFFERENCES = "No differences found."
 
 #: Prefix marking the collected-inputs line on stdout, so prints from the target cannot be mistaken for it.
 _MARKER_INPUTS = "PCC_EQUIV_INPUTS "
@@ -564,6 +580,145 @@ def _mismatch_counterexample(
     )
 
 
+def _symbolic_argv(symbolic_seconds: float) -> list[str]:
+    """The prescribed ``diffbehavior`` invocation: per-condition budget, then the two entry points."""
+    return [
+        "crosshair",
+        "diffbehavior",
+        "--per_condition_timeout",
+        str(symbolic_seconds),
+        f"{_CROSSHAIR_MODULE}.original",
+        f"{_CROSSHAIR_MODULE}.translated",
+    ]
+
+
+def _symbolic_script(module_source: str, built: Path, symbolic_seconds: float) -> str:
+    """A sandbox script writing ``module_source`` next to the build and running the prescribed call in-process.
+
+    The module lands as ``pcc_symbolic.py`` in the compiled ``m-py`` directory (already on ``sys.path``, cleaned up
+    with the build directory), then ``sys.argv`` is set and ``crosshair.main.main()`` is called. No executable runs.
+    """
+    chunks = [
+        "import pathlib",
+        "import sys",
+        f"sys.path.insert(0, {str(built)!r})",
+        f"pathlib.Path({str(built)!r}, {_CROSSHAIR_MODULE + '.py'!r}).write_text({module_source!r}, encoding='utf-8')",
+        f"sys.argv = {_symbolic_argv(symbolic_seconds)!r}",
+        "import crosshair.main",
+        "crosshair.main.main()",
+        "",
+    ]
+    return "\n".join(chunks)
+
+
+def _given_arguments(stdout: str) -> str | None:
+    """The call-argument source of the first ``Given: (...)`` line, or ``None`` when there is none."""
+    for line in stdout.splitlines():
+        if not line.startswith("Given:"):
+            continue
+        text = line[len("Given:") :].strip()
+        if text.endswith(","):
+            text = text[:-1].strip()
+        if len(text) >= 2 and text.startswith("(") and text.endswith(")"):
+            return text[1:-1]
+        return None
+    return None
+
+
+def _parse_describe(text: str) -> tuple[str, str] | None:
+    """The ``(kind, payload)`` of a ``diffbehavior`` result description, or ``None`` when unreadable."""
+    core = text.split(", after execution ", 1)[0].strip()
+    if core.startswith("returns "):
+        return ("return", core[len("returns ") :].strip())
+    if core.startswith("raises "):
+        rest = core[len("raises ") :].split()
+        return ("raises", rest[0]) if rest else None
+    return None
+
+
+def _symbolic_difference(stdout: str) -> tuple[str, tuple[str, str] | None, tuple[str, str] | None] | None:
+    """The differing input of an exit-1 run: arguments plus the two parsed outcomes (``None`` when unreadable)."""
+    arguments = _given_arguments(stdout)
+    if arguments is None:
+        return None
+    original: tuple[str, str] | None = None
+    translated: tuple[str, str] | None = None
+    for line in stdout.splitlines():
+        stripped = line.strip()
+        for entry, slot in (
+            (f"{_CROSSHAIR_MODULE}.original", "original"),
+            (f"{_CROSSHAIR_MODULE}.translated", "translated"),
+        ):
+            if not stripped.startswith(entry + " :"):
+                continue
+            describe = stripped.split(" : ", 1)[1] if " : " in stripped else ""
+            parsed = _parse_describe(describe)
+            if slot == "original":
+                original = parsed
+            else:
+                translated = parsed
+    return (arguments, original, translated)
+
+
+def _replay_test_source(function: FunctionRef, arguments: str) -> str:
+    """A ready-to-run pytest module replaying ``arguments`` against the original without asserting an outcome."""
+    chunks = [
+        target_loader(function),
+        f"def {_test_name(function.qualname)}():\n    target({arguments})\n",
+    ]
+    return "\n".join(chunk.rstrip("\n") for chunk in chunks) + "\n"
+
+
+def _symbolic_counterexample(
+    function: FunctionRef,
+    arguments: str,
+    original: tuple[str, str] | None,
+    translated: tuple[str, str] | None,
+) -> Counterexample:
+    """A ``Counterexample`` for a symbolic input: parsed outcomes when readable, a replay test otherwise."""
+    if original is not None and translated is not None:
+        return _mismatch_counterexample(function, arguments, [original[0], original[1]], [translated[0], translated[1]])
+    expected = _describe(original[0], original[1]) if original is not None else "unknown"
+    actual = _describe(translated[0], translated[1]) if translated is not None else "unknown"
+    return Counterexample(
+        arguments=arguments,
+        expected=expected,
+        actual=actual,
+        test=_replay_test_source(function, arguments),
+    )
+
+
+def _symbolic_record(
+    symbolic_seconds: float, outcome: RunOutcome
+) -> tuple[CheckRecord, tuple[str, tuple[str, str] | None, tuple[str, str] | None] | None]:
+    """The SYMBOLIC record for a sandbox ``outcome``, plus the differing input when one was found.
+
+    Exit 0 with ``No differences found.`` passes; the wall timeout passes with the within-budget detail because no
+    difference was found. Exit 1 with a ``Given: (...)`` line fails on that input (with the parsed outcomes, which
+    may be ``None`` when unreadable); exit 2 or malformed output fails with the last nonblank stderr line
+    (``crosshair failed`` when blank). Only a found input yields a difference; a crash never does. A ``ToolError``
+    from the sandbox run escapes from the caller.
+    """
+    if outcome.timed_out:
+        return CheckRecord(CheckKind.SYMBOLIC, True, f"no differences found within {symbolic_seconds:g} s"), None
+    if outcome.returncode == 0 and _CROSSHAIR_NO_DIFFERENCES in outcome.stdout:
+        return CheckRecord(CheckKind.SYMBOLIC, True, _DETAIL_NO_DIFFERENCES), None
+    if outcome.returncode == 1:
+        difference = _symbolic_difference(outcome.stdout)
+        if difference is not None:
+            arguments, original, translated = difference
+            if original is not None and translated is not None:
+                detail = (
+                    f"{arguments} -> original {_describe(original[0], original[1])}, "
+                    f"translation {_describe(translated[0], translated[1])}"
+                )
+            else:
+                detail = arguments
+            return CheckRecord(CheckKind.SYMBOLIC, False, detail), difference
+    tail = [line for line in outcome.stderr.splitlines() if line.strip()]
+    return CheckRecord(CheckKind.SYMBOLIC, False, tail[-1].strip() if tail else _DETAIL_CROSSHAIR_FAILED), None
+
+
 def check(
     function: FunctionRef,
     translation: Translation,
@@ -578,9 +733,11 @@ def check(
 
     ``inputs`` random Hypothesis inputs plus up to 20 model-proposed edge cases (one ``edge_cases`` call) run
     against both implementations; only inputs on which the compiled Dafny ``pre`` holds count. The result carries
-    one DIFFERENTIAL record; ``symbolic_seconds`` is ignored and no SYMBOLIC record is written (#75 fills it in).
+    one DIFFERENTIAL record, plus one SYMBOLIC record when ``symbolic_seconds > 0``: the stretch symbolic search
+    compares the original with the back-compiled translation on symbolic inputs. The symbolic input only becomes
+    ``mismatch`` when the differential test found none; a crash never sets one. ``symbolic_seconds == 0`` keeps the
+    differential-only result. A ``ToolError`` from the sandbox escapes.
     """
-    _ = symbolic_seconds  # reserved for the symbolic search in #75; ignored here
     _require_convertible_hints(function)
     dafny_code = assemble(function, translation.dafny_spec, translation.dafny_function)
     dafny_mod = module_name(function)
@@ -613,40 +770,50 @@ def check(
         done = _marker_payload(outcome.stdout, _MARKER_DONE)
         if done is None:
             if outcome.timed_out:
-                return _timeout_report(function, wrapper, built, combined, repo_root, pre_name, outcome.stdout)
-            raise ToolError(
-                "equivalence sandbox run produced no result "
-                f"(exit {outcome.returncode}, timed out {outcome.timed_out}): {outcome.stderr.strip()}"
-            )
-        tried = done.get("tried")
-        total = done.get("total")
-        mismatch = done.get("mismatch")
-        if not isinstance(tried, int) or not isinstance(total, int):
-            raise ToolError(f"equivalence script returned a malformed result: {done!r}")
-        if tried == 0:
-            record = CheckRecord(CheckKind.DIFFERENTIAL, False, _DETAIL_NEVER, 0, total)
-            return EquivalenceReport(records=(record,), mismatch=None)
-        if mismatch is None:
-            record = CheckRecord(CheckKind.DIFFERENTIAL, True, "", tried, total)
-            return EquivalenceReport(records=(record,), mismatch=None)
-        if not isinstance(mismatch, dict):
-            raise ToolError(f"equivalence script returned a malformed mismatch: {done!r}")
-        arguments = mismatch.get("arguments")
-        orig = mismatch.get("orig")
-        trans = mismatch.get("trans")
-        if not isinstance(arguments, str) or not isinstance(orig, list) or not isinstance(trans, list):
-            raise ToolError(f"equivalence script returned a malformed mismatch: {done!r}")
-        detail = (
-            f"{arguments} -> original {_describe(str(orig[0]), str(orig[1]))}, "
-            f"translation {_describe(str(trans[0]), str(trans[1]))}"
-        )
-        record = CheckRecord(CheckKind.DIFFERENTIAL, False, detail, tried, total)
-        return EquivalenceReport(
-            records=(record,),
-            mismatch=_mismatch_counterexample(
-                function, arguments, [str(orig[0]), str(orig[1])], [str(trans[0]), str(trans[1])]
-            ),
-        )
+                diff_record, diff_mismatch = _timeout_report(
+                    function, wrapper, built, combined, repo_root, pre_name, outcome.stdout
+                )
+            else:
+                raise ToolError(
+                    "equivalence sandbox run produced no result "
+                    f"(exit {outcome.returncode}, timed out {outcome.timed_out}): {outcome.stderr.strip()}"
+                )
+        else:
+            tried = done.get("tried")
+            total = done.get("total")
+            mismatch = done.get("mismatch")
+            if not isinstance(tried, int) or not isinstance(total, int):
+                raise ToolError(f"equivalence script returned a malformed result: {done!r}")
+            if tried == 0:
+                diff_record = CheckRecord(CheckKind.DIFFERENTIAL, False, _DETAIL_NEVER, 0, total)
+                diff_mismatch = None
+            elif mismatch is None:
+                diff_record = CheckRecord(CheckKind.DIFFERENTIAL, True, "", tried, total)
+                diff_mismatch = None
+            else:
+                if not isinstance(mismatch, dict):
+                    raise ToolError(f"equivalence script returned a malformed mismatch: {done!r}")
+                arguments = mismatch.get("arguments")
+                orig = mismatch.get("orig")
+                trans = mismatch.get("trans")
+                if not isinstance(arguments, str) or not isinstance(orig, list) or not isinstance(trans, list):
+                    raise ToolError(f"equivalence script returned a malformed mismatch: {done!r}")
+                detail = (
+                    f"{arguments} -> original {_describe(str(orig[0]), str(orig[1]))}, "
+                    f"translation {_describe(str(trans[0]), str(trans[1]))}"
+                )
+                diff_record = CheckRecord(CheckKind.DIFFERENTIAL, False, detail, tried, total)
+                diff_mismatch = _mismatch_counterexample(
+                    function, arguments, [str(orig[0]), str(orig[1])], [str(trans[0]), str(trans[1])]
+                )
+        if symbolic_seconds <= 0:
+            return EquivalenceReport(records=(diff_record,), mismatch=diff_mismatch)
+        symbolic_record, difference = _run_symbolic(function, wrapper, built, dafny_mod, symbolic_seconds, repo_root)
+        final_mismatch = diff_mismatch
+        if difference is not None and final_mismatch is None:
+            symbolic_arguments, symbolic_orig, symbolic_trans = difference
+            final_mismatch = _symbolic_counterexample(function, symbolic_arguments, symbolic_orig, symbolic_trans)
+        return EquivalenceReport(records=(diff_record, symbolic_record), mismatch=final_mismatch)
 
 
 def _timeout_report(
@@ -657,7 +824,7 @@ def _timeout_report(
     repo_root: Path,
     pre_name: str,
     stdout: str,
-) -> EquivalenceReport:
+) -> tuple[CheckRecord, Counterexample | None]:
     """Pinpoint the hanging input after an evaluation timeout and report it as a timeout mismatch."""
 
     last = _progress_index(stdout)
@@ -674,7 +841,7 @@ def _timeout_report(
         # counterexample, so the check fails without a mismatch instead of one with identical
         # expected and actual outcomes.
         record = CheckRecord(CheckKind.DIFFERENTIAL, False, f"{hanging} -> both sides timeout", None, len(combined))
-        return EquivalenceReport(records=(record,), mismatch=None)
+        return record, None
     record = CheckRecord(CheckKind.DIFFERENTIAL, False, f"{hanging} -> {_DETAIL_TIMEOUT}", None, len(combined))
     # For the timeout case the translation never answered; the original outcome (when known) is expected.
     counterexample = Counterexample(
@@ -683,7 +850,28 @@ def _timeout_report(
         actual=_DETAIL_TIMEOUT,
         test=_test_source(function, hanging, orig_kind, orig_payload, "timeout", _DETAIL_TIMEOUT),
     )
-    return EquivalenceReport(records=(record,), mismatch=counterexample)
+    return record, counterexample
+
+
+def _run_symbolic(
+    function: FunctionRef,
+    wrapper: str,
+    built: Path,
+    dafny_mod: str,
+    symbolic_seconds: float,
+    repo_root: Path,
+) -> tuple[CheckRecord, tuple[str, tuple[str, str] | None, tuple[str, str] | None] | None]:
+    """Run the stretch symbolic search and interpret its outcome (a ``ToolError`` escapes).
+
+    The ``pcc_symbolic`` module (both sides guarded by the compiled Dafny ``pre``) is written next to the build
+    and compared with the prescribed ``diffbehavior`` call, bounded by ``symbolic_seconds + 30`` wall seconds.
+    ``wrapper`` is only named for signature clarity: the symbolic module embeds the differential wrapper itself.
+    """
+    _ = wrapper  # embedded in the symbolic module; kept for signature clarity
+    module_source = symbolic_module_source(function, dafny_mod)
+    script = _symbolic_script(module_source, built, symbolic_seconds)
+    outcome = run_python(script, cwd=repo_root, timeout_seconds=symbolic_seconds + _SYMBOLIC_GRACE_SECONDS)
+    return _symbolic_record(symbolic_seconds, outcome)
 
 
 def _pinpoint_hanging(
