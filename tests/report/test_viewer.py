@@ -10,6 +10,7 @@ import json
 import socket
 import threading
 import time
+import tomllib
 import urllib.error
 import urllib.request
 import webbrowser
@@ -298,3 +299,18 @@ def test_view_uses_no_model_sandbox_or_pipeline(
         captured["server"].shutdown()
         thread.join(timeout=10)
     assert codes == [0]
+
+
+def test_viewer_html_ships_in_the_wheel() -> None:
+    """``viewer.html`` is installed with the wheel, so ``page_html`` works outside the source tree.
+
+    The wheel target ships whole package directories (``packages = ["src/pcc"]``), so the page has to
+    live inside one of them; otherwise an installed ``pcc-check view`` would not find its page.
+    """
+    assert viewer.page_html().strip()
+    repo_root = Path(__file__).resolve().parents[2]
+    data = tomllib.loads((repo_root / "pyproject.toml").read_text(encoding="utf-8"))
+    packages = data["tool"]["hatch"]["build"]["targets"]["wheel"]["packages"]
+    html = Path("src/pcc/report/viewer.html")
+    assert (repo_root / html).is_file()
+    assert any(str(html).startswith(pkg.rstrip("/") + "/") for pkg in packages)
