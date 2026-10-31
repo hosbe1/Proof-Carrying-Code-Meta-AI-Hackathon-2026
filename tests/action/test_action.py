@@ -49,6 +49,20 @@ def test_optional_inputs_have_documented_defaults() -> None:
     assert "GITHUB_BASE_REF" in body, "an empty base must fall back to the pull request base"
 
 
+def test_empty_base_prefers_origin_prefixed_pr_base() -> None:
+    body = _read(ACTION)
+    assert "GITHUB_BASE_REF" in body, "an empty base must fall back to the pull request base"
+    assert "origin/$base" in body or "origin/${GITHUB_BASE_REF" in body, (
+        "the pull request base must be resolved to origin/<branch> so git diff finds it"
+    )
+
+
+def test_last_step_runs_even_after_a_failure() -> None:
+    body = _read(ACTION)
+    section = body.split("Fail on findings", 1)[1]
+    assert "always()" in section, "the last step must run even after a failed comment step"
+
+
 def test_fork_step_sets_skip_and_prints_notice() -> None:
     body = _read(ACTION)
     assert "id: fork" in body, "the first step must be the fork check with id fork"

@@ -67,6 +67,12 @@ runs:
         base="${{ inputs.base }}"
         if [ -z "$base" ]; then
           base="${GITHUB_BASE_REF:-}"
+          if [ -n "$base" ]; then
+            case "$base" in
+              origin/*) ;;
+              *) base="origin/$base" ;;
+            esac
+          fi
         fi
         if [ -z "$base" ]; then
           base="origin/main"
@@ -119,6 +125,7 @@ runs:
         fi
 
     - name: Fail on findings
+      if: always()
       shell: bash
       run: |
         code="${{ steps.check.outputs.exit_code }}"
