@@ -197,6 +197,7 @@ def run(
     "all groups dropped" and calls no ``train``. ``save()`` runs once on every normal stop,
     except when the pre-pass alone exceeded the cap (then no step ran and ``save()`` is skipped).
     A ``ToolError`` from the backend propagates, after ``save()`` when at least one step finished.
+    A ``ToolError`` from ``reward_fn`` propagates without calling ``save()``.
     """
     if reward_fn is None:
         resource_limit = Config().dafny.resource_limit
@@ -236,39 +237,44 @@ def run(
     estimate = (spend / prepass_samples if prepass_samples else 0.0) * config.tasks_per_step * config.samples_per_task
     steps_done = 0
     stop_reason = "spend cap"
-    try:
-        while True:
-            if spend + estimate > config.max_spend_usd:
-                stop_reason = "spend cap"
-                break
-            batch: list[tuple[str, str, float]] = []
-            step_prompt_tokens = 0
-            step_sample_tokens = 0
-            for task in rng.sample(kept, min(config.tasks_per_step, len(kept))):
-                task_spec = _task_spec(task)
-                prompt = _render_prompt(task_spec)
+    while True:
+        if spend + estimate > config.max_spend_usd:
+            stop_reason = "spend cap"
+            break
+        batch: list[tuple[str, str, float]] = []
+        step_prompt_tokens = 0
+        step_sample_tokens = 0
+        for task in rng.sample(kept, min(config.tasks_per_step, len(kept))):
+            task_spec = _task_spec(task)
+            prompt = _render_prompt(task_spec)
+            try:
                 samples = backend.sample(prompt, config.samples_per_task)
-                step_prompt_tokens += sum(sample.prompt_tokens for sample in samples)
-                step_sample_tokens += sum(sample.completion_tokens for sample in samples)
-                rewards = [reward_fn(sample.text, task_spec) for sample in samples]
-                advantages = _advantages(rewards)
-                if advantages is None:
-                    continue
-                batch.extend(
-                    (prompt, sample.text, advantage) for sample, advantage in zip(samples, advantages, strict=True)
-                )
-            if not batch:
-                spend += estimate_spend(step_prompt_tokens, step_sample_tokens, 0, config)
-                stop_reason = "all groups dropped"
-                break
+            except ToolError:
+                if steps_done >= 1:
+                    backend.save()
+                raise
+            step_prompt_tokens += sum(sample.prompt_tokens for sample in samples)
+            step_sample_tokens += sum(sample.completion_tokens for sample in samples)
+            rewards = [reward_fn(sample.text, task_spec) for sample in samples]
+            advantages = _advantages(rewards)
+            if advantages is None:
+                continue
+            batch.extend(
+                (prompt, sample.text, advantage) for sample, advantage in zip(samples, advantages, strict=True)
+            )
+        if not batch:
+            spend += estimate_spend(step_prompt_tokens, step_sample_tokens, 0, config)
+            stop_reason = "all groups dropped"
+            break
+        try:
             stats = backend.train(batch)
-            estimate = estimate_spend(step_prompt_tokens, step_sample_tokens, stats.tokens, config)
-            spend += estimate
-            steps_done += 1
-    except ToolError:
-        if steps_done >= 1:
-            backend.save()
-        raise
+        except ToolError:
+            if steps_done >= 1:
+                backend.save()
+            raise
+        estimate = estimate_spend(step_prompt_tokens, step_sample_tokens, stats.tokens, config)
+        spend += estimate
+        steps_done += 1
     return RunResult(steps_done=steps_done, spend_usd=spend, adapter_id=backend.save(), stop_reason=stop_reason)
 
 

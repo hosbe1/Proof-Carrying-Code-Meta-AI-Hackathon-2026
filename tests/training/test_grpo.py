@@ -357,6 +357,26 @@ def test_tool_error_after_finished_step_saves_then_raises(monkeypatch: pytest.Mo
     assert backend.save_calls == 1
 
 
+def test_reward_tool_error_after_finished_step_saves_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    tasks = [make_task("TASK-V")]
+    _stub_split(monkeypatch, tasks)
+    backend = FakeBackend({"TASK-V": 1}, prepass_sample_calls=1)
+    config = make_config(tasks_per_step=1, prepass_tasks=1, samples_per_task=2)
+    calls = {"count": 0}
+
+    def flaky_reward(answer: str, task_spec: str) -> float:
+        calls["count"] += 1
+        # Pre-pass (2 calls) and the first step (2 calls) succeed; the second step fails.
+        if calls["count"] > 4:
+            raise ToolError("boom: reward failed")
+        return good_reward(answer, task_spec)
+
+    with pytest.raises(ToolError, match="boom"):
+        run(config, backend, reward_fn=flaky_reward)
+    assert len(backend.train_calls) == 1
+    assert backend.save_calls == 0
+
+
 def test_default_reward_binds_config_resource_limit(monkeypatch: pytest.MonkeyPatch) -> None:
     tasks = [make_task("TASK-D")]
     _stub_split(monkeypatch, tasks)
