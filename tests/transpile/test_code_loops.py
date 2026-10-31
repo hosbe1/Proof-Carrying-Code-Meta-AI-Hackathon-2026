@@ -21,8 +21,7 @@ from tests.helpers import function_ref
 GOLDEN_DIR = Path(__file__).parent / "golden"
 
 GO_NEXT_SOURCE = (
-    "def go_next(s: str, i: int, z: list[int]) -> bool:\n"
-    "    return i + z[i] < len(s) and s[z[i]] == s[i + z[i]]\n"
+    "def go_next(s: str, i: int, z: list[int]) -> bool:\n    return i + z[i] < len(s) and s[z[i]] == s[i + z[i]]\n"
 )
 
 Z_FUNCTION_SOURCE = (
@@ -125,14 +124,18 @@ def test_read_only_callees_defaults_to_empty() -> None:
 
 
 def test_for_range_two_bounds_uses_counter_loop() -> None:
-    source = "def f(n: int) -> int:\n    total = 0\n    for i in range(1, n):\n        total = total + i\n    return total\n"
+    source = (
+        "def f(n: int) -> int:\n    total = 0\n    for i in range(1, n):\n        total = total + i\n    return total\n"
+    )
     out = transpile(source)
     assert "  var i := 1;\n  var pcc_t1 := n;\n  while i < pcc_t1\n  {\n" in out
     assert "    total := total + i;\n    i := i + 1;\n  }\n  return total;\n" in out
 
 
 def test_for_range_single_bound_starts_at_zero() -> None:
-    source = "def f(n: int) -> int:\n    total = 0\n    for i in range(n):\n        total = total + i\n    return total\n"
+    source = (
+        "def f(n: int) -> int:\n    total = 0\n    for i in range(n):\n        total = total + i\n    return total\n"
+    )
     out = transpile(source)
     assert "  var i := 0;\n  var pcc_t1 := n;\n  while i < pcc_t1\n  {\n" in out
 
@@ -247,21 +250,19 @@ def test_while_with_len_stays_inline() -> None:
 
 
 def test_while_single_call_hoisted_once_per_iteration() -> None:
-    source = "def f(n: int) -> bool:\n    while f(n):\n        n = n\n    return n\n"
+    source = "def f(n: int) -> bool:\n    while f(n):\n        n = n\n    return True\n"
     out = transpile(source)
     assert "  while true\n  {\n    var pcc_c := f(n);\n    if !pcc_c { break; }\n    n := n;\n  }\n" in out
 
 
 def test_while_project_call_hoisted() -> None:
-    source = "def f(n: int) -> bool:\n    while go(n):\n        n = n\n    return n\n"
-    out = transpile(
-        source, callees={"go": "GoldenGo"}, callee_types={"go": "bool"}, read_only_callees=frozenset()
-    )
+    source = "def f(n: int) -> bool:\n    while go(n):\n        n = n\n    return True\n"
+    out = transpile(source, callees={"go": "GoldenGo"}, callee_types={"go": "bool"}, read_only_callees=frozenset())
     assert "    var pcc_c := GoldenGo.go(n);\n    if !pcc_c { break; }\n" in out
 
 
 def test_while_project_call_bool_default_without_callee_types() -> None:
-    source = "def f(n: int) -> bool:\n    while go(n):\n        n = n\n    return n\n"
+    source = "def f(n: int) -> bool:\n    while go(n):\n        n = n\n    return True\n"
     out = transpile(source, callees={"go": "GoldenGo"})
     assert "    var pcc_c := GoldenGo.go(n);\n    if !pcc_c { break; }\n" in out
 
@@ -320,9 +321,7 @@ def test_augassign_undeclared_rejected() -> None:
 
 
 def test_augassign_str_rejected() -> None:
-    check_unsupported(
-        'def f(s: str) -> str:\n    s += "x"\n    return s\n', "augmented assignment", lineno=2
-    )
+    check_unsupported('def f(s: str) -> str:\n    s += "x"\n    return s\n', "augmented assignment", lineno=2)
 
 
 def test_tuple_first_assignment_declares() -> None:
@@ -364,9 +363,7 @@ def test_subscript_store_negative_index() -> None:
 
 
 def test_subscript_store_on_param_is_shared() -> None:
-    check_unsupported(
-        "def f(xs: list[int]) -> int:\n    xs[0] = 1\n    return xs[0]\n", "shared list", lineno=2
-    )
+    check_unsupported("def f(xs: list[int]) -> int:\n    xs[0] = 1\n    return xs[0]\n", "shared list", lineno=2)
 
 
 def test_subscript_store_type_mismatch() -> None:
@@ -384,9 +381,7 @@ def test_subscript_augassign_on_local_list() -> None:
 
 
 def test_aliasing_a_list_is_shared() -> None:
-    check_unsupported(
-        "def f(xs: list[int]) -> list[int]:\n    ys = xs\n    return ys\n", "shared list", lineno=2
-    )
+    check_unsupported("def f(xs: list[int]) -> list[int]:\n    ys = xs\n    return ys\n", "shared list", lineno=2)
 
 
 def test_alias_then_mutate_is_shared() -> None:
@@ -451,12 +446,7 @@ def test_project_call_without_type_in_value_position() -> None:
 
 
 def test_project_call_result_binds_mutable_list() -> None:
-    source = (
-        "def f(s: str) -> list[int]:\n"
-        "    z = g(s)\n"
-        "    z[0] = 1\n"
-        "    return z\n"
-    )
+    source = "def f(s: str) -> list[int]:\n    z = g(s)\n    z[0] = 1\n    return z\n"
     out = transpile(source, callees={"g": "GoldenG"}, callee_types={"g": "seq<int>"})
     assert "  var z := GoldenG.g(s);\n  z := py_set_index(z, 0, 1);\n  return z;\n" in out
 
@@ -512,41 +502,29 @@ def test_min_two_ints() -> None:
 
 
 def test_min_arity_rejected() -> None:
-    check_unsupported(
-        "def f(a: int, b: int, c: int) -> int:\n    return min(a, b, c)\n", "min arguments", lineno=2
-    )
+    check_unsupported("def f(a: int, b: int, c: int) -> int:\n    return min(a, b, c)\n", "min arguments", lineno=2)
 
 
 def test_min_non_int_rejected() -> None:
-    check_unsupported(
-        'def f(a: str, b: str) -> str:\n    return min(a, b)\n', "min arguments", lineno=2
-    )
+    check_unsupported("def f(a: str, b: str) -> str:\n    return min(a, b)\n", "min arguments", lineno=2)
 
 
 def test_min_keyword_rejected() -> None:
-    check_unsupported(
-        "def f(a: int, b: int) -> int:\n    return min(a, b, default=0)\n", "min arguments", lineno=2
-    )
+    check_unsupported("def f(a: int, b: int) -> int:\n    return min(a, b, default=0)\n", "min arguments", lineno=2)
 
 
 def test_sum_bool_generator() -> None:
-    out = transpile(
-        "def f(xs: list[int], n: int) -> int:\n    return sum(v >= n for v in xs)\n"
-    )
+    out = transpile("def f(xs: list[int], n: int) -> int:\n    return sum(v >= n for v in xs)\n")
     assert out.endswith("{\n  return py_count(xs, v => v >= n);\n}")
 
 
 def test_sum_over_slice() -> None:
-    out = transpile(
-        "def f(xs: list[int], n: int) -> int:\n    return sum(v >= n for v in xs[n:])\n"
-    )
+    out = transpile("def f(xs: list[int], n: int) -> int:\n    return sum(v >= n for v in xs[n:])\n")
     assert out.endswith("{\n  return py_count(py_slice(xs, n, py_len(xs)), v => v >= n);\n}")
 
 
 def test_sum_non_bool_rejected() -> None:
-    check_unsupported(
-        "def f(xs: list[int]) -> int:\n    return sum(v for v in xs)\n", "sum generator", lineno=2
-    )
+    check_unsupported("def f(xs: list[int]) -> int:\n    return sum(v for v in xs)\n", "sum generator", lineno=2)
 
 
 def test_sum_with_filter_rejected() -> None:
@@ -558,9 +536,7 @@ def test_sum_with_filter_rejected() -> None:
 
 
 def test_sum_non_sequence_rejected() -> None:
-    check_unsupported(
-        "def f(s: str) -> int:\n    return sum(v for v in s)\n", "sum generator", lineno=2
-    )
+    check_unsupported("def f(s: str) -> int:\n    return sum(v for v in s)\n", "sum generator", lineno=2)
 
 
 def test_go_next_matches_golden() -> None:

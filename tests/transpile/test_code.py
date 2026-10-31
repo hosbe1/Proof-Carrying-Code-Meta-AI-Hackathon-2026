@@ -258,11 +258,14 @@ def test_translate_expr_unknown_type_raises() -> None:
     assert exc_info.value.construct == "unknown type"
 
 
-def test_callees_accepted_but_project_call_rejected() -> None:
+def test_callees_lower_project_calls() -> None:
     function = function_ref(source="def f(a: int) -> int:\n    return a + 1\n", path="src/mod.py", qualname="f")
     out = transpile_function(function, callees={"other": "PCC_other"})
     assert "return a + 1;" in out
-    check_unsupported("def f(a: int) -> int:\n    return other(a)\n", "call other", lineno=2)
+    typed = function_ref(source="def f(a: int) -> int:\n    return other(a)\n", path="src/mod.py", qualname="f")
+    out = transpile_function(typed, callees={"other": "PCC_other"}, callee_types={"other": "int"})
+    assert "return PCC_other.other(a);" in out
+    check_unsupported("def f(a: int) -> int:\n    return unknown(a)\n", "call unknown", lineno=2)
 
 
 def test_example2_str_comparison() -> None:
@@ -311,11 +314,11 @@ def test_type_errors() -> None:
 
 
 def test_mutated_list() -> None:
-    check_unsupported("def f(xs: list[int]) -> int:\n    xs[0] = 1\n    return xs[0]\n", "mutated list", lineno=2)
+    check_unsupported("def f(xs: list[int]) -> int:\n    xs[0] = 1\n    return xs[0]\n", "shared list", lineno=2)
     check_unsupported("def f(xs: list[int]) -> int:\n    xs[0:1] = [2]\n    return xs[0]\n", "mutated list", lineno=2)
     check_unsupported("def f(xs: list[int]) -> list[int]:\n    xs += [1]\n    return xs\n", "mutated list", lineno=2)
     check_unsupported("def f(xs: list[int]) -> list[int]:\n    xs.append(1)\n    return xs\n", "mutated list", lineno=2)
-    check_unsupported("def f(xs: list[int]) -> list[int]:\n    ys = xs\n    return ys\n", "mutated list", lineno=2)
+    check_unsupported("def f(xs: list[int]) -> list[int]:\n    ys = xs\n    return ys\n", "shared list", lineno=2)
 
 
 def test_mutating_method_names() -> None:
@@ -366,10 +369,8 @@ def test_bool_and_char_comparisons() -> None:
 
 
 def test_unsupported_statements() -> None:
-    loop_for = "def f(xs: list[int]) -> int:\n    for x in xs:\n        return x\n    return 0\n"
-    check_unsupported(loop_for, "loop", lineno=2)
-    loop_while = "def f(a: int) -> int:\n    while a > 0:\n        return a\n    return 0\n"
-    check_unsupported(loop_while, "loop", lineno=2)
+    check_unsupported("def f(a: int) -> int:\n    break\n    return a\n", "break", lineno=2)
+    check_unsupported("def f(a: int) -> int:\n    continue\n    return a\n", "continue", lineno=2)
     check_unsupported("def f(a: int) -> int:\n    raise ValueError\n    return a\n", "raise", lineno=2)
     check_unsupported(
         "def f(a: int) -> int:\n    try:\n        return a\n    except ValueError:\n        return 0\n",
@@ -383,8 +384,8 @@ def test_unsupported_statements() -> None:
     check_unsupported("def f(a: int) -> int:\n    nonlocal g\n    return a\n", "nonlocal", lineno=2)
     check_unsupported("def f(a: int) -> int:\n    assert a > 0\n    return a\n", "assert", lineno=2)
     check_unsupported("def f(a: int) -> int:\n    x = y = a\n    return x\n", "multiple assignment", lineno=2)
-    check_unsupported("def f(a: int) -> int:\n    x, y = a, a\n    return x\n", "destructuring", lineno=2)
-    check_unsupported("def f(a: int) -> int:\n    a += 1\n    return a\n", "augmented assignment", lineno=2)
+    check_unsupported("def f(a: int) -> int:\n    x, y = a\n    return x\n", "tuple assignment", lineno=2)
+    check_unsupported("def f(a: int) -> int:\n    x += 1\n    return a\n", "augmented assignment", lineno=2)
     check_unsupported("def f(a: int) -> int:\n    x: int\n    return a\n", "bare annotation", lineno=2)
     check_unsupported("def f(a: int) -> int:\n    ...\n", "ellipsis", lineno=2)
     check_unsupported(

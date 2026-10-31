@@ -160,3 +160,70 @@ def test_index_edge_cases(pylib: ModuleType, xs: str | list[int], i: int, expect
 )
 def test_reversed_edge_cases(pylib: ModuleType, xs: str | list[int], expected: str | list[int]) -> None:
     assert from_dafny(pylib.py__reversed(to_dafny(xs))) == list(expected) == list(xs[::-1])
+
+
+@settings(max_examples=2000)
+@given(a=st.integers(), b=st.integers())
+def test_min_matches_cpython(pylib: ModuleType, a: int, b: int) -> None:
+    assert pylib.py__min(a, b) == min(a, b)
+
+
+@pytest.mark.parametrize(
+    ("a", "b", "expected"),
+    [(3, 7, 3), (7, 3, 3), (5, 5, 5), (-2, -8, -8), (0, -1, -1), (-5, 4, -5)],
+)
+def test_min_edge_cases(pylib: ModuleType, a: int, b: int, expected: int) -> None:
+    assert pylib.py__min(a, b) == expected == min(a, b)
+
+
+@settings(max_examples=500)
+@given(xs=int_lists, n=st.integers())
+def test_count_matches_cpython(pylib: ModuleType, xs: list[int], n: int) -> None:
+    assert pylib.py__count(to_dafny(xs), lambda v: v >= n) == sum(1 for v in xs if v >= n)
+
+
+@settings(max_examples=500)
+@given(xs=no_surrogates)
+def test_count_chars_matches_cpython(pylib: ModuleType, xs: str) -> None:
+    assert pylib.py__count(to_dafny(xs), lambda v: v == "a") == sum(1 for v in xs if v == "a")
+
+
+@pytest.mark.parametrize(
+    ("xs", "predicate", "expected"),
+    [
+        ([], lambda v: v >= 0, 0),
+        ([1, 2, 3], lambda v: v >= 5, 0),
+        ([1, 2, 3], lambda v: v >= 0, 3),
+        ([1, -1, 2, -2], lambda v: v < 0, 2),
+        ("abca", lambda v: v == "a", 2),
+    ],
+)
+def test_count_edge_cases(pylib: ModuleType, xs: str | list[int], predicate: Any, expected: int) -> None:
+    assert pylib.py__count(to_dafny(xs), predicate) == expected
+
+
+@settings(max_examples=500)
+@given(xs=int_lists, offset=st.integers(), v=st.integers())
+def test_set_index_matches_cpython(pylib: ModuleType, xs: list[int], offset: int, v: int) -> None:
+    assume(len(xs) > 0)
+    i = offset % (2 * len(xs)) - len(xs)
+    expected = list(xs)
+    expected[i] = v
+    assert from_dafny(pylib.py__set__index(to_dafny(xs), i, v)) == expected
+
+
+@pytest.mark.parametrize(
+    ("xs", "i", "v", "expected"),
+    [
+        ([1, 2, 3], 0, 9, [9, 2, 3]),
+        ([1, 2, 3], -1, 9, [1, 2, 9]),
+        ([1, 2, 3], -3, 9, [9, 2, 3]),
+        ([1], 0, 9, [9]),
+        ([1], -1, 9, [9]),
+        ([1, 2, 3], 2, 7, [1, 2, 7]),
+    ],
+)
+def test_set_index_edge_cases(pylib: ModuleType, xs: list[int], i: int, v: int, expected: list[int]) -> None:
+    result = list(xs)
+    result[i] = v
+    assert from_dafny(pylib.py__set__index(to_dafny(xs), i, v)) == expected == result

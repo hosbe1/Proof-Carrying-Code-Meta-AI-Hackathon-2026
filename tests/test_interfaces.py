@@ -367,7 +367,12 @@ def test_transpile_signatures() -> None:
     assert transpile_spec_module.transpile_spec is pcc.transpile.transpile_spec
     assert_sig(
         pcc.transpile.transpile_function,
-        [("function", POS, NoDefault), ("callees", KWO, MappingProxyType({}))],
+        [
+            ("function", POS, NoDefault),
+            ("callees", KWO, MappingProxyType({})),
+            ("read_only_callees", KWO, frozenset()),
+            ("callee_types", KWO, MappingProxyType({})),
+        ],
         str,
     )
     # transpile_function is implemented (issue #23); only its signature is locked here.
