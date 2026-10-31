@@ -59,7 +59,9 @@ def run_python(script: str, *, cwd: Path, timeout_seconds: float = 60.0, memory_
     secrets never reach the untrusted code. Standard input is closed (``/dev/null``), so a script that reads it gets
     end-of-file instead of hanging.
 
-    The process runs in its own session. On timeout the whole process group and the main process itself get
+    The process runs in its own session. On Linux it also receives SIGKILL if its supervising parent dies, so an
+    interrupted test or agent cannot leave a CPU-bound sandbox child behind. On timeout the whole process group and
+    the main process itself get
     SIGKILL (the direct kill covers a script that left its process group, e.g. via ``fork`` plus ``setsid``). The
     group and the main process are also killed after the main process exits, so a forked child cannot hold the pipes
     open. Waiting for the process and for the output pumps is bounded: even a fully detached descendant cannot hang
@@ -85,7 +87,7 @@ def run_python(script: str, *, cwd: Path, timeout_seconds: float = 60.0, memory_
     full_script = _preamble(root) + script
     env = {name: os.environ[name] for name in _ALLOWED_ENV_VARS if name in os.environ}
     env["PYTHONHASHSEED"] = "0"
-    preexec = None if sys.platform == "darwin" else _memory_cap(memory_mb)
+    preexec = None if sys.platform == "darwin" else _memory_cap(memory_mb, os.getpid())
     start = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="pcc-sandbox-") as tmp:
         entry = Path(tmp) / "script.py"
@@ -187,10 +189,19 @@ def _preamble(root: Path) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _memory_cap(memory_mb: int) -> Callable[[], None]:
-    """A ``preexec_fn`` that caps the child's address space at ``memory_mb`` MB (Linux)."""
+def _memory_cap(memory_mb: int, parent_pid: int) -> Callable[[], None]:
+    """Cap address space and kill the child if its supervisor dies (Linux)."""
 
     def _preexec() -> None:
+        if sys.platform == "linux":
+            import ctypes
+
+            libc = ctypes.CDLL(None, use_errno=True)
+            if libc.prctl(1, signal.SIGKILL, 0, 0, 0) != 0:  # PR_SET_PDEATHSIG
+                raise OSError(ctypes.get_errno(), "cannot set sandbox parent-death signal")
+            # The parent may have died between fork() and prctl().
+            if os.getppid() != parent_pid:
+                os._exit(1)
         import resource
 
         cap = memory_mb * 1024 * 1024
