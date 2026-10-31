@@ -144,7 +144,7 @@ def _run_command(
         # A stale certificate is a finding unless its function was proven again in this run.
         if match is None or match.state is not State.PROVEN:
             finding_stale.append(cert)
-    text = report_module.render(results, stale=stale)
+    text = report_module.render(results, stale=finding_stale)
     report_path.write_text(text + "\n", encoding="utf-8")
     json_path.write_text(serialize.dumps(tuple(results)) + "\n", encoding="utf-8")
     print(_summary_line(results))

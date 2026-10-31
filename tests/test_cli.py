@@ -282,3 +282,58 @@ def test_run_stale_certificate_with_open_result_exits_1(monkeypatch: pytest.Monk
     assert _run(monkeypatch, tmp_path, _default_argv(tmp_path)) == 1
     report = (tmp_path / "report.md").read_text(encoding="utf-8")
     assert "pkg/mod.py::add" in report
+
+
+def test_run_pylib_change_with_successful_reverification_refreshes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_repo(tmp_path)
+    _patch_models(monkeypatch)
+    _patch_affected_identity(monkeypatch)
+    function = _discover(tmp_path)
+    proofs = tmp_path / "proofs"
+    write(from_result(_proven_result(function), Config()), proofs)
+    sidecar = tmp_path / "proofs" / "pkg" / "mod" / "add.json"
+    data = json.loads(sidecar.read_text(encoding="utf-8"))
+    data["pylib_sha256"] = "0" * 64
+    sidecar.write_text(json.dumps(data, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    verify_calls: list[str] = []
+
+    def fake_verify(dafny_code: str, **kwargs: object) -> VerifyOutcome:
+        verify_calls.append(dafny_code)
+        return VerifyOutcome(True, (), 0.0)
+
+    monkeypatch.setattr(verifier, "verify", fake_verify)
+    calls: list[tuple[FunctionRef, ...]] = []
+    _patch_run_many(monkeypatch, [], calls=calls)
+    assert _run(monkeypatch, tmp_path, _default_argv(tmp_path)) == 0
+    assert len(verify_calls) == 1
+    assert calls == []
+    results = _read_results(tmp_path)
+    assert len(results) == 1
+    assert results[0].state is State.PROVEN
+    assert results[0].reason == "certificate"
+    refreshed = json.loads(sidecar.read_text(encoding="utf-8"))
+    assert refreshed["pylib_sha256"] != "0" * 64
+    report = (tmp_path / "report.md").read_text(encoding="utf-8")
+    assert "Stale certificates" not in report
+    assert capsys.readouterr().out.strip() == "1 proven"
+
+
+def test_run_reproven_stale_certificate_is_not_reported(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _write_repo(tmp_path)
+    _patch_models(monkeypatch)
+    _patch_affected_identity(monkeypatch)
+    function = _discover(tmp_path)
+    proofs = tmp_path / "proofs"
+    write(from_result(_proven_result(function), Config()), proofs)
+    (tmp_path / REL_PATH).write_text("def add(a: int, b: int) -> int:\n    return a - b\n", encoding="utf-8")
+    stale_function = _discover(tmp_path)
+    _patch_run_many(monkeypatch, [_proven_result(stale_function)])
+    assert _run(monkeypatch, tmp_path, _default_argv(tmp_path)) == 0
+    results = _read_results(tmp_path)
+    assert len(results) == 1
+    assert results[0].state is State.PROVEN
+    report = (tmp_path / "report.md").read_text(encoding="utf-8")
+    assert "Stale certificates" not in report
+    assert "pkg/mod.py::add" in report
