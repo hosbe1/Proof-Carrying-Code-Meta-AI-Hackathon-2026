@@ -14,7 +14,7 @@ from pathlib import Path
 
 from pcc.core import CheckKind, CheckRecord, FunctionRef, NotCheckable, Spec, ToolError
 from pcc.sandbox import RunOutcome, run_python
-from pcc.verifier import assemble, build_python
+from pcc.verifier import assemble, build_python, module_name, python_name
 
 #: Sandbox script template. Placeholders (``@TOKEN@``) are filled in by :func:`check_spec` with JSON values, so no
 #: quoting is needed. The script prints one line per problem and ``OK <n>`` when every case agrees:
@@ -26,12 +26,12 @@ from pcc.verifier import assemble, build_python
 #:
 #: Every predicate call is guarded: an exception counts as ``False``, because a predicate that raises does not
 #: hold. Compiled Dafny code does not enforce ``requires`` at run time, so the script only calls the Dafny
-#: ``spec`` where the Python and Dafny ``pre`` agree that it holds.
+#: ``spec`` where the Python and Dafny ``pre`` agree that it holds. The compiled module is imported by its
+#: derived name (``python_name(module_name(function))``), the same way the differential check imports it.
 _SCRIPT_TEMPLATE = """\
 import ast as _ast
 import importlib as _importlib
 import importlib.util as _importlib_util
-import pathlib as _pathlib
 import sys as _sys
 import typing as _typing
 
@@ -46,24 +46,17 @@ _sys.modules["pcc_check_spec_convert"] = _CONVERT
 _CONVERT_SPEC.loader.exec_module(_CONVERT)
 _to_dafny = _CONVERT.to_dafny
 
-# Files the Dafny Python backend always emits next to the compiled module. The compiled predicates live in the
-# single remaining file: its name is the Dafny module name with the backend's escaping applied (for example `_`
-# becomes `__`), so it is discovered instead of derived. ``assemble`` always opens ``PyLib``, hence ``PyLib``.
-_RUNTIME_MODULES = frozenset({"__main__", "module_", "PyLib"})
-_candidates = sorted(
-    _p.stem for _p in _pathlib.Path(@MODULE_DIR@).glob("*.py") if _p.stem not in _RUNTIME_MODULES
-)
-if len(_candidates) != 1:
-    print(f"ERROR tool cannot identify the compiled spec module: {_candidates}")
-    raise SystemExit(1)
+# The compiled predicates live in the module derived from the function, escaped the way the Dafny Python
+# backend escapes it (``_`` becomes ``__``); every check runs in a fresh sandbox process, so a rebuilt module
+# with the same name is never shadowed by an earlier import.
 try:
-    _DAFNY = _importlib.import_module(_candidates[0]).default__
-    if not hasattr(_DAFNY, "spec"):
-        raise ImportError(f"{_candidates[0]} defines no spec predicate")
+    _DAFNY_MOD = _importlib.import_module(@MODULE_NAME@)
+    _DAFNY = _DAFNY_MOD.default__
+    _dafny_spec_fn = getattr(_DAFNY, @SPEC_NAME@)
 except Exception as _error:
     print(f"ERROR tool cannot import the compiled spec module: {_error}")
     raise SystemExit(1)
-_DAFNY_PRE = getattr(_DAFNY, "pre", None)
+_DAFNY_PRE = getattr(_DAFNY, @PRE_NAME@, None)
 
 _PY_NAMESPACE: dict = {}
 try:
@@ -199,7 +192,7 @@ for _index, (_args_source, _result_source) in enumerate(@CASES@):
     except Exception:
         _python_spec = False
     try:
-        _dafny_spec = bool(_DAFNY.spec(*_dafny_args, _dafny_result))
+        _dafny_spec = bool(_dafny_spec_fn(*_dafny_args, _dafny_result))
     except Exception:
         _dafny_spec = False
     if _python_spec != _dafny_spec:
@@ -250,6 +243,9 @@ def _script(
     """The sandbox script that evaluates ``cases``, with every value embedded as JSON."""
     replacements = {
         "@MODULE_DIR@": json.dumps(str(module_dir)),
+        "@MODULE_NAME@": json.dumps(python_name(module_name(function))),
+        "@SPEC_NAME@": json.dumps(python_name("spec")),
+        "@PRE_NAME@": json.dumps(python_name("pre")),
         "@CONVERT_PATH@": json.dumps(str(Path(__file__).with_name("convert.py"))),
         "@FUNC_SOURCE@": json.dumps(function.source),
         "@PREDICATE@": json.dumps(spec.predicate),
