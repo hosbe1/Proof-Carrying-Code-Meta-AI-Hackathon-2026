@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Proof-carrying code results</title>
+<style>
+body { font-family: sans-serif; margin: 2em; color: #222; }
+.controls { display: flex; gap: 1em; margin: 1em 0; flex-wrap: wrap; }
+table { border-collapse: collapse; width: 100%; }
+th, td { border: 1px solid #ccc; padding: 0.4em 0.6em; text-align: left; }
+th { background: #f0f0f0; }
+tbody tr { cursor: pointer; }
+tbody tr:hover { background: #f7f7f7; }
+#detail { border: 1px solid #999; padding: 1em; margin-top: 1.5em; }
+#detail h3 { margin-bottom: 0.2em; }
+#detail pre { background: #f4f4f4; padding: 0.6em; overflow-x: auto; }
+.field { margin: 0.2em 0; }
+.label { font-weight: bold; }
+</style>
+</head>
+<body>
+<h1>Proof-carrying code results</h1>
+<p id="summary"></p>
+<div class="controls">
+<label>State
+<select id="state-filter">
+<option value="">all</option>
+<option value="proven">proven</option>
+<option value="counterexample">counterexample</option>
+<option value="open">open</option>
+<option value="not_checkable">not_checkable</option>
+</select>
+</label>
+<label>Project
+<select id="project-filter">
+<option value="">all</option>
+</select>
+</label>
+<label>Search
+<input id="search" type="search" placeholder="path, qualname or reason">
+</label>
+</div>
+<table>
+<thead>
+<tr><th>project</th><th>path</th><th>qualname</th><th>state</th><th>reason</th><th>cost</th></tr>
+</thead>
+<tbody id="rows"></tbody>
+</table>
+<section id="detail" hidden></section>
+<script>
+"use strict";
+const MISSING = "–";
+let entries = [];
+
+function show(value) {
+  if (value === null || value === undefined) {
+    return MISSING;
+  }
+  return String(value);
+}
+
+function costOf(result) {
+  let total = 0;
+  for (const step of result.usage || []) {
+    total += step.cost_usd || 0;
+  }
+  return total;
+}
+
+function cell(text) {
+  const entry = document.createElement("td");
+  entry.textContent = text;
+  return entry;
+}
+
+function heading(level, text) {
+  const item = document.createElement(level);
+  item.textContent = text;
+  return item;
+}
+
+function field(container, label, value) {
+  const line = document.createElement("div");
+  line.className = "field";
+  const name = document.createElement("span");
+  name.className = "label";
+  name.textContent = label + ": ";
+  const data = document.createElement("span");
+  data.textContent = show(value);
+  line.appendChild(name);
+  line.appendChild(data);
+  container.appendChild(line);
+}
+
+function codeBlock(container, label, value) {
+  container.appendChild(heading("h3", label));
+  const block = document.createElement("pre");
+  block.textContent = show(value);
+  container.appendChild(block);
+}
+
+function renderDetail(entry) {
+  const detail = document.getElementById("detail");
+  while (detail.firstChild) {
+    detail.removeChild(detail.firstChild);
+  }
+  detail.hidden = false;
+  const result = entry.result;
+  const fn = result.function || {};
+  detail.appendChild(heading("h2", show(fn.path) + " :: " + show(fn.qualname)));
+  field(detail, "project", entry.project);
+  field(detail, "state", result.state);
+  field(detail, "reason", result.reason);
+
+  detail.appendChild(heading("h3", "intent"));
+  const intent = result.intent;
+  if (intent === null || intent === undefined) {
+    field(detail, "intent", null);
+  } else {
+    field(detail, "summary", intent.summary);
+    const claims = intent.claims || [];
+    for (const claim of claims) {
+      field(detail, "claim", claim.text);
+    }
+  }
+
+  detail.appendChild(heading("h3", "spec"));
+  const spec = result.spec;
+  if (spec === null || spec === undefined) {
+    field(detail, "pre", null);
+    field(detail, "spec", null);
+  } else {
+    field(detail, "pre", spec.precondition);
+    codeBlock(detail, "predicate", spec.predicate);
+  }
+
+  detail.appendChild(heading("h3", "translation"));
+  const translation = result.translation;
+  if (translation === null || translation === undefined) {
+    field(detail, "translation", null);
+  } else {
+    codeBlock(detail, "dafny_function", translation.dafny_function);
+    codeBlock(detail, "dafny_spec", translation.dafny_spec);
+  }
+
+  detail.appendChild(heading("h3", "proof"));
+  const proof = result.proof;
+  if (proof === null || proof === undefined) {
+    field(detail, "proof", null);
+  } else {
+    field(detail, "proven", proof.proven);
+    field(detail, "stage", proof.stage);
+    field(detail, "attempts", proof.attempts);
+    field(detail, "last_error", proof.last_error);
+    const errors = proof.errors || [];
+    for (const item of errors) {
+      field(detail, "error", show(item.line) + ":" + show(item.column) + " " + show(item.message));
+    }
+  }
+
+  detail.appendChild(heading("h3", "counterexample"));
+  const counterexample = result.counterexample;
+  if (counterexample === null || counterexample === undefined) {
+    field(detail, "counterexample", null);
+  } else {
+    field(detail, "arguments", counterexample.arguments);
+    field(detail, "expected", counterexample.expected);
+    field(detail, "actual", counterexample.actual);
+    codeBlock(detail, "test", counterexample.test);
+  }
+
+  detail.appendChild(heading("h3", "second_opinion"));
+  const second = result.second_opinion;
+  if (second === null || second === undefined) {
+    field(detail, "second_opinion", null);
+  } else {
+    field(detail, "agrees", second.agrees);
+    codeBlock(detail, "alternative_predicate", second.alternative_predicate);
+    field(detail, "note", second.note);
+  }
+
+  detail.appendChild(heading("h3", "cost"));
+  const usage = result.usage || [];
+  field(detail, "total_usd", costOf(result).toFixed(2));
+  for (const step of usage) {
+    field(
+      detail,
+      "usage",
+      show(step.step) + " " + show(step.model) + " " + show(step.cost_usd) + " USD"
+    );
+  }
+}
+
+function matches(entry) {
+  const stateFilter = document.getElementById("state-filter").value;
+  const projectFilter = document.getElementById("project-filter").value;
+  const query = document.getElementById("search").value.toLowerCase();
+  const result = entry.result;
+  const fn = result.function || {};
+  if (stateFilter && result.state !== stateFilter) {
+    return false;
+  }
+  if (projectFilter && entry.project !== projectFilter) {
+    return false;
+  }
+  if (query) {
+    const haystack = show(fn.path) + " " + show(fn.qualname) + " " + show(result.reason);
+    if (!haystack.toLowerCase().includes(query)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function renderTable() {
+  const rows = document.getElementById("rows");
+  while (rows.firstChild) {
+    rows.removeChild(rows.firstChild);
+  }
+  let visible = 0;
+  for (const entry of entries) {
+    if (!matches(entry)) {
+      continue;
+    }
+    visible += 1;
+    const result = entry.result;
+    const fn = result.function || {};
+    const line = document.createElement("tr");
+    line.appendChild(cell(show(entry.project)));
+    line.appendChild(cell(show(fn.path)));
+    line.appendChild(cell(show(fn.qualname)));
+    line.appendChild(cell(show(result.state)));
+    line.appendChild(cell(show(result.reason)));
+    line.appendChild(cell(costOf(result).toFixed(2)));
+    line.addEventListener("click", () => renderDetail(entry));
+    rows.appendChild(line);
+  }
+  const summary = document.getElementById("summary");
+  summary.textContent = visible + " of " + entries.length + " functions";
+}
+
+function fillProjects() {
+  const picker = document.getElementById("project-filter");
+  const names = [];
+  for (const entry of entries) {
+    if (!names.includes(entry.project)) {
+      names.push(entry.project);
+    }
+  }
+  names.sort();
+  for (const name of names) {
+    const option = document.createElement("option");
+    option.value = name;
+    option.textContent = name;
+    picker.appendChild(option);
+  }
+}
+
+async function load() {
+  const response = await fetch("/api/results");
+  entries = await response.json();
+  fillProjects();
+  renderTable();
+}
+
+document.getElementById("state-filter").addEventListener("change", renderTable);
+document.getElementById("project-filter").addEventListener("change", renderTable);
+document.getElementById("search").addEventListener("input", renderTable);
+load();
+</script>
+</body>
+</html>

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import dataclasses
 import hashlib
 import json
 import re
 import sys
 import traceback
+import webbrowser
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -30,6 +32,7 @@ from pcc.core import (
     serialize,
 )
 from pcc.project.calls import subset_edges
+from pcc.report import viewer as viewer_module
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -50,6 +53,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     scan.add_argument("--out", default="scan.jsonl", help="file every result is appended to as JSONL")
     scan.add_argument("--resume", action="store_true", help="skip functions already recorded in --out")
     scan.add_argument("--contributor", action="store_true", help="run the models in contributor mode for this scan")
+    view = sub.add_parser("view", help="serve a scan file in the browser without starting any run")
+    view.add_argument("scan", help="scan.jsonl file written by pcc-check scan")
+    view.add_argument("--port", type=int, default=8765, help="local port to listen on (0 picks a free port)")
     sub.add_parser("version", help="print the version")
     args = parser.parse_args(argv)
     if args.command == "version":
@@ -64,6 +70,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _survey_command(repo_root=Path(args.repo), as_json=args.json)
         if args.command == "scan":
             return _scan_command(repo=args.repo, out=args.out, resume=args.resume, contributor=args.contributor)
+        if args.command == "view":
+            return _view_command(scan=args.scan, port=args.port)
         return _run_command(
             paths=args.paths,
             base=args.base,
@@ -457,6 +465,30 @@ def _scan_command(*, repo: str, out: str, resume: bool, contributor: bool) -> in
             print(_scan_line(ref, result))
     if any(result.state is State.COUNTEREXAMPLE for result in results):
         return 1
+    return 0
+
+
+def _view_command(*, scan: str, port: int) -> int:
+    """Serve the results recorded in ``scan`` on ``127.0.0.1`` and open them in the browser (issue #67).
+
+    The whole file is read and validated before the server starts, so a malformed line stops the command
+    with exit 2 and names the line number, and no server is left running. A missing file and a port that
+    is already in use also exit 2. The viewer is read-only: it makes no model, sandbox or pipeline call.
+    Ctrl-C stops the server with exit 0.
+    """
+    entries = viewer_module.load_entries(Path(scan))
+    try:
+        server = viewer_module.create_server(entries, port)
+    except OSError as exc:
+        raise ToolError(f"cannot bind port {port}: {exc}") from exc
+    with server:
+        # create_server binds 127.0.0.1 only, so only the port is read back (0 picks a free one).
+        bound_port: int = server.server_address[1]
+        url = f"http://127.0.0.1:{bound_port}/"
+        print(f"Serving {scan} at {url}")
+        webbrowser.open(url)
+        with contextlib.suppress(KeyboardInterrupt):
+            server.serve_forever()
     return 0
 
 
