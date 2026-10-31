@@ -630,7 +630,8 @@ def _maybe_review(
 
     At most one call: for a counterexample, a final ``open`` result, or contradictions in the intent, and only
     when both ``context`` and the result's ``spec`` exist. Advisory only: the state and the counterexample never
-    change. ``BudgetExceeded`` and ``ToolError`` from the review escape to the caller.
+    change, so a ``BudgetExceeded`` from the review keeps the result without an opinion (a refused advisory call
+    records no usage). ``ToolError`` from the review escapes to the caller.
     """
     if result.second_opinion is not None:
         return result
@@ -643,7 +644,10 @@ def _maybe_review(
         return result
     if context is None or result.spec is None:
         return result
-    opinion = review(context, result.spec, client=client, model=config.models.second_opinion)
+    try:
+        opinion = review(context, result.spec, client=client, model=config.models.second_opinion)
+    except BudgetExceeded:
+        return result
     return dataclasses.replace(result, second_opinion=opinion)
 
 
@@ -964,22 +968,7 @@ def run(
             function, State.NOT_CHECKABLE, reason, intent, spec, translation, assumptions, usage=wrapped.usage
         )
         if intent is not None and intent.contradictions and context is not None and spec is not None:
-            try:
-                return _maybe_review(context, intent, failed, client=wrapped, config=config)
-            except BudgetExceeded:
-                return Result(
-                    function,
-                    State.OPEN,
-                    _BUDGET_REASON,
-                    intent,
-                    spec,
-                    translation,
-                    assumptions,
-                    None,
-                    None,
-                    None,
-                    wrapped.usage,
-                )
+            return _maybe_review(context, intent, failed, client=wrapped, config=config)
         return failed
 
 

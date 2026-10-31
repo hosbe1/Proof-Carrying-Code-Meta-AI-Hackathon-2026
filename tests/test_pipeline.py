@@ -1012,7 +1012,7 @@ def test_elapsed_budget_between_prove_and_search_skips_search(monkeypatch: pytes
     assert steps.review_calls == 0
 
 
-def test_review_budget_exceeded_becomes_open_budget(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_review_budget_exceeded_keeps_terminal_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     ref = function_ref(source=SIMPLE_SOURCE, path=PATH, qualname="total", lineno=1)
     steps = _Steps(ref)
     intent = make_intent(ref)
@@ -1028,10 +1028,33 @@ def test_review_budget_exceeded_becomes_open_budget(monkeypatch: pytest.MonkeyPa
 
     result = _run(ref, tmp_path, steps)
 
-    assert result.state is State.OPEN
-    assert result.reason == "budget"
+    assert result.state is State.NOT_CHECKABLE
+    assert result.reason == "type float"
     assert result.intent is not None
     assert result.spec is not None
+    assert result.second_opinion is None
+    assert result.usage == ()
+
+
+def test_review_budget_exceeded_keeps_proven(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    ref = function_ref(source=SIMPLE_SOURCE, path=PATH, qualname="total", lineno=1)
+    steps = _Steps(ref)
+    intent = make_intent(ref)
+    steps.intent_value = dataclasses.replace(intent, contradictions=(make_contradiction(),))
+    _install(monkeypatch, steps)
+
+    def boom_review(context: Context, spec: Spec, **kwargs: Any) -> SecondOpinion:
+        _ = (context, spec, kwargs)
+        raise BudgetExceeded("budget exceeded")
+
+    monkeypatch.setattr(pcc.pipeline, "review", boom_review)
+
+    result = _run(ref, tmp_path, steps)
+
+    assert result.state is State.PROVEN
+    assert result.second_opinion is None
+    assert result.proof is not None and result.proof.proven
+    assert result.usage == ()
 
 
 def test_tool_error_escapes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
