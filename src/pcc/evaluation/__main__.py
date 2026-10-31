@@ -25,7 +25,14 @@ def build_parser() -> argparse.ArgumentParser:
     fix.add_argument("--spec-model", default=None, help="model id for ModelsConfig.spec")
     fix.add_argument("--spec-only", action="store_true", help="run steps 1 to 3 only, no translation or proof")
     vero = sub.add_parser("vericoding", help="sample proofs for Vericoding specs and verify them with Dafny")
-    vero.add_argument("--split", required=True, choices=("test", "train"))
+    group = vero.add_mutually_exclusive_group(required=True)
+    group.add_argument("--split", choices=("test", "train"), help="the dataset split to run")
+    group.add_argument(
+        "--tasks-file",
+        type=Path,
+        default=None,
+        help="a proof-only tasks JSONL file to run in place of a split",
+    )
     vero.add_argument("--model", required=True, help="model id sampled for every attempt")
     vero.add_argument("--attempts", required=True, type=int, help="independent samples per task")
     vero.add_argument("--max-cost-usd", required=True, type=float)
@@ -53,6 +60,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             run_vericoding(
                 split=args.split,
+                tasks_file=args.tasks_file,
                 out_dir=Path(args.out),
                 model=args.model,
                 attempts=args.attempts,
