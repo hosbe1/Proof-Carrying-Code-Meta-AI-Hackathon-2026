@@ -348,7 +348,8 @@ def test_spec_signatures() -> None:
 def test_equivalence_signatures() -> None:
     assert equivalence_spec_check.check_spec is pcc.equivalence.check_spec
     assert callable(pcc.equivalence.check)
-    sig = assert_sig(
+    # The check_spec body is implemented, so only its signature stays locked here.
+    assert_sig(
         pcc.equivalence.check_spec,
         [
             ("spec", POS, NoDefault),
@@ -359,7 +360,6 @@ def test_equivalence_signatures() -> None:
         ],
         CheckRecord,
     )
-    assert_raises(pcc.equivalence.check_spec, sig)
 
 
 def test_transpile_signatures() -> None:
