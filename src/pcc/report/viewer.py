@@ -114,9 +114,10 @@ def create_server(entries: tuple[Entry, ...], port: int) -> ThreadingHTTPServer:
             self.end_headers()
             self.wfile.write(body)
 
-        def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
+        def log_message(self, format: str, *args: Any) -> None:
             # Keep the command output to the single URL line; request logs would
             # only clutter the terminal of a local viewer.
+            pass
 
         def version_string(self) -> str:
             return "PCCViewer"

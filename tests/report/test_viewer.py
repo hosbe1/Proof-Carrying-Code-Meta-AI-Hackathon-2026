@@ -112,7 +112,7 @@ def test_page_is_self_contained(live_server: ThreadingHTTPServer) -> None:
     assert "textContent" in text
     for header in ("project", "path", "qualname", "state", "reason", "cost"):
         assert f"<th>{header}</th>" in text
-    assert "–" in text
+    assert "–" in text  # noqa: RUF001 - the ticket mandates this placeholder for a null field
     for key in (
         "claims",
         "precondition",
@@ -229,9 +229,7 @@ def test_missing_file_exits_2(
     assert opened == []
 
 
-def test_port_in_use_exits_2(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_port_in_use_exits_2(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     opened: list[str] = []
     monkeypatch.setattr(webbrowser, "open", lambda url: opened.append(url))
     holder = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -280,9 +278,7 @@ def test_view_uses_no_model_sandbox_or_pipeline(
 
     monkeypatch.setattr(viewer, "create_server", _spy)
     codes: list[int] = []
-    thread = threading.Thread(
-        target=lambda: codes.append(main(["view", str(FIXTURE), "--port", "0"])), daemon=True
-    )
+    thread = threading.Thread(target=lambda: codes.append(main(["view", str(FIXTURE), "--port", "0"])), daemon=True)
     thread.start()
     try:
         deadline = time.monotonic() + 10.0
