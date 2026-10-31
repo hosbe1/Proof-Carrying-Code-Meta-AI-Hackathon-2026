@@ -37,6 +37,7 @@ from pcc.evaluation.prompts import SYSTEM_MESSAGE, build_prompt
 from pcc.models import Message, ModelClient
 from pcc.models.router import ModelUnavailable
 from pcc.verifier import anti_cheat, verify
+from pcc.verifier.header import header_violations
 
 HARNESS = "vericoding"
 
@@ -84,10 +85,12 @@ def task_spec_of(task: Task) -> str:
 
 
 def _is_cheat(answer: str, frozen_prefix: str) -> bool:
-    """Whether ``answer`` fails the frozen-prefix contract or the anti-cheat scan."""
+    """Whether ``answer`` fails the frozen-prefix contract or the cheat scans."""
     if not frozen_prefix or frozen_prefix not in answer:
         return True
-    return bool(anti_cheat(answer, frozen_prefix))
+    if anti_cheat(answer, frozen_prefix):
+        return True
+    return bool(header_violations(answer, frozen_prefix))
 
 
 def _verify_answer(answer: str, frozen_prefix: str, resource_limit: int) -> tuple[bool, float]:

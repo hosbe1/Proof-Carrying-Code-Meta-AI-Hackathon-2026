@@ -441,6 +441,45 @@ def test_cheat_never_reaches_verifier(tmp_path: Path) -> None:
     assert read_jsonl(out / "results.jsonl")[0]["verified"] is False
 
 
+def test_header_change_never_reaches_verifier(tmp_path: Path) -> None:
+    """An answer that duplicates the method with an added requires is a header cheat.
+
+    The frozen prefix still occurs verbatim, so neither the substring check nor
+    ``anti_cheat`` catches it; only the header check keeps it away from Dafny.
+    """
+    task = add_task()
+    frozen = frozen_of(task)
+    calls: list[str] = []
+
+    def spy(answer: str, prefix: str) -> tuple[bool, float]:
+        calls.append(answer)
+        return True, 0.1
+
+    answer = (
+        good_answer(task)
+        + "\nmethod add(a: int, b: int) returns (r: int)\n"
+        + "  ensures r == Add(a, b)\n"
+        + "  requires false\n"
+        + "{\n  r := 0;\n}\n"
+    )
+    assert frozen in answer
+    out = tmp_path / "runs" / "header-cheat"
+    vericoding.run_harness(
+        split="test",
+        out_dir=out,
+        model=GOOD_MODEL,
+        attempts=1,
+        max_cost_usd=10.0,
+        tasks=(task,),
+        client=ScriptedClient({"method add(": [(answer, 0.2, 1.0)]}),
+        verify_fn=spy,
+        git_sha="f" * 40,
+        started_utc="2026-10-31T00:00:00Z",
+    )
+    assert calls == []
+    assert read_jsonl(out / "results.jsonl")[0]["verified"] is False
+
+
 def test_tool_error_keeps_partial_results(tmp_path: Path) -> None:
     """Errors: ToolError stops the run, the lines so far are kept."""
     out = tmp_path / "runs" / "aborted"
