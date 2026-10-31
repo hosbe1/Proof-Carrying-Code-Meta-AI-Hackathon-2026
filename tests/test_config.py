@@ -108,6 +108,10 @@ def test_pipeline_defaults() -> None:
     assert pipeline.search_agent is True
 
 
+def test_pipeline_scan_defaults_to_false() -> None:
+    assert Config().pipeline.scan is False
+
+
 def test_config_holds_one_group_of_each_kind() -> None:
     config = Config()
     assert isinstance(config.models, ModelsConfig)

@@ -6,11 +6,13 @@ monkeypatched; only ``discover``, the certificate store and the report run for r
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 from collections.abc import Mapping, Sequence
 from importlib.metadata import version
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -18,7 +20,25 @@ from pcc import models, pipeline, project, verifier
 from pcc.certificate import from_result, write
 from pcc.cli import main
 from pcc.config import Config
-from pcc.core import FunctionRef, Result, State, ToolError, serialize
+from pcc.core import (
+    CheckKind,
+    CheckRecord,
+    Context,
+    Counterexample,
+    EquivalenceReport,
+    Evidence,
+    FunctionRef,
+    Intent,
+    ProofOutcome,
+    Result,
+    SecondOpinion,
+    SourceKind,
+    Spec,
+    State,
+    ToolError,
+    Translation,
+    serialize,
+)
 from pcc.verifier.dafny import VerifyOutcome
 from tests import helpers as h
 
@@ -603,3 +623,440 @@ def test_survey_tool_error_exits_2(
 
     assert _survey(monkeypatch, tmp_path, ["survey", str(tmp_path)]) == 2
     assert "sandbox is down" in capsys.readouterr().err
+
+
+# -- scan (issue #65) ----------------------------------------------------------
+
+SCAN_FIXED_SOURCE = (
+    "def is_palindrome_recursive(s: str) -> bool:\n"
+    '    """Check whether s reads the same forward and backward."""\n'
+    "    if len(s) <= 1:\n"
+    "        return True\n"
+    "    if s[0] != s[-1]:\n"
+    "        return False\n"
+    "    return is_palindrome_recursive(s[1:-1])\n"
+)
+
+SCAN_BUGGY_SOURCE = SCAN_FIXED_SOURCE.replace("len(s) <= 1", "len(s) <= 2")
+
+
+class _ScanSteps:
+    """Passing step fakes in the style of #34; ``hyp_detail=None`` proves, else it counterexamples."""
+
+    def __init__(self, hyp_detail: str | None) -> None:
+        self.hyp_detail = hyp_detail
+        self.review_calls = 0
+
+    def fake_collect(self, function: FunctionRef, repo_root: Path) -> Context:
+        _ = repo_root
+        return Context(function, (Evidence(SourceKind.DOCSTRING, "doc", "checks the string"),))
+
+    def fake_search_further(self, context: Context, repo_root: Path, **kwargs: Any) -> Context:
+        _ = (repo_root, kwargs)
+        return context
+
+    def fake_derive(self, context: Context, **kwargs: Any) -> Intent:
+        _ = kwargs
+        return h.intent(context.function)
+
+    def fake_write(self, intent: Intent, **kwargs: Any) -> Spec:
+        _ = (intent, kwargs)
+        return h.spec(intent.function)
+
+    def fake_check(self, spec: Spec, function: FunctionRef, repo_root: Path, **kwargs: Any) -> Spec:
+        _ = (function, repo_root, kwargs)
+        if self.hyp_detail is None:
+            added: tuple[CheckRecord, ...] = (
+                CheckRecord(CheckKind.HYPOTHESIS_ORIGINAL, True, "", 10, 10),
+                CheckRecord(CheckKind.MUTANTS, True, ""),
+            )
+        else:
+            added = (
+                CheckRecord(CheckKind.HYPOTHESIS_ORIGINAL, False, self.hyp_detail, 10, 10),
+                CheckRecord(CheckKind.MUTANTS, True, ""),
+            )
+        return dataclasses.replace(spec, checks=(*spec.checks, *added))
+
+    def fake_transpile_spec(self, spec: Spec) -> str:
+        _ = spec
+        return "predicate spec(s: seq<char>, result: bool)"
+
+    def fake_spec_cases(
+        self, spec: Spec, function: FunctionRef, repo_root: Path, **kwargs: Any
+    ) -> tuple[tuple[str, str], ...]:
+        _ = (spec, function, repo_root, kwargs)
+        return (('""', "true"),)
+
+    def fake_check_spec_translation(
+        self, spec: Spec, dafny_spec: str, function: FunctionRef, repo_root: Path, **kwargs: Any
+    ) -> CheckRecord:
+        _ = (spec, dafny_spec, function, repo_root, kwargs)
+        return CheckRecord(CheckKind.DIFFERENTIAL, True, "")
+
+    def fake_transpile(self, function: FunctionRef, **kwargs: Any) -> str:
+        _ = (function, kwargs)
+        return "function is_palindrome_recursive(s: seq<char>): bool"
+
+    def fake_equivalence(
+        self, function: FunctionRef, translation: Translation, repo_root: Path, **kwargs: Any
+    ) -> EquivalenceReport:
+        _ = (function, translation, repo_root, kwargs)
+        return EquivalenceReport(records=(CheckRecord(CheckKind.DIFFERENTIAL, True, "", 10, 10),), mismatch=None)
+
+    def fake_prove(self, translation: Translation, assumptions: Sequence[Any], **kwargs: Any) -> ProofOutcome:
+        _ = (translation, assumptions, kwargs)
+        return h.proof()
+
+    def fake_search(self, function: FunctionRef, spec: Spec, repo_root: Path, **kwargs: Any) -> Counterexample | None:
+        _ = (function, spec, repo_root, kwargs)
+        return None
+
+    def fake_build(self, function: FunctionRef, spec: Spec, repo_root: Path, arguments: str) -> Counterexample:
+        _ = (function, spec, repo_root, arguments)
+        return h.counterexample()
+
+    def fake_review(self, context: Context, spec: Spec, **kwargs: Any) -> SecondOpinion:
+        _ = (context, spec, kwargs)
+        self.review_calls += 1
+        return h.second_opinion()
+
+
+def _install_scan_steps(monkeypatch: pytest.MonkeyPatch, hyp_detail: str | None) -> _ScanSteps:
+    steps = _ScanSteps(hyp_detail)
+    monkeypatch.setattr(pipeline, "collect", steps.fake_collect)
+    monkeypatch.setattr(pipeline, "search_further", steps.fake_search_further)
+    monkeypatch.setattr(pipeline, "derive", steps.fake_derive)
+    monkeypatch.setattr(pipeline, "write_spec", steps.fake_write)
+    monkeypatch.setattr(pipeline, "check_spec", steps.fake_check)
+    monkeypatch.setattr(pipeline, "transpile_spec", steps.fake_transpile_spec)
+    monkeypatch.setattr(pipeline, "spec_cases", steps.fake_spec_cases)
+    monkeypatch.setattr(pipeline, "check_spec_translation", steps.fake_check_spec_translation)
+    monkeypatch.setattr(pipeline, "transpile_function", steps.fake_transpile)
+    monkeypatch.setattr(pipeline, "check_equivalence", steps.fake_equivalence)
+    monkeypatch.setattr(pipeline, "prove", steps.fake_prove)
+    monkeypatch.setattr(pipeline, "search_counterexample", steps.fake_search)
+    monkeypatch.setattr(pipeline, "build_counterexample", steps.fake_build)
+    monkeypatch.setattr(pipeline, "review", steps.fake_review)
+    return steps
+
+
+def _scan(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, argv: list[str]) -> int:
+    monkeypatch.chdir(tmp_path)
+    return main(argv)
+
+
+def _scan_entries(out_path: Path) -> list[Any]:
+    return [json.loads(line) for line in out_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def test_scan_help_lists_options(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exc:
+        main(["scan", "--help"])
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    for option in ("--out", "--resume", "--contributor"):
+        assert option in out
+
+
+def test_scan_without_repo_is_usage_error() -> None:
+    with pytest.raises(SystemExit) as exc:
+        main(["scan"])
+    assert exc.value.code == 2
+
+
+def test_scan_fixed_palindrome_is_proven(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_sources(tmp_path, {"strings/palindrome.py": SCAN_FIXED_SOURCE})
+    _patch_models(monkeypatch)
+    steps = _install_scan_steps(monkeypatch, hyp_detail=None)
+
+    assert _scan(monkeypatch, tmp_path, ["scan", str(tmp_path)]) == 0
+    assert steps.review_calls == 0
+
+    out_path = tmp_path / "scan.jsonl"
+    entries = _scan_entries(out_path)
+    assert len(entries) == 1
+    assert entries[0]["project"] == tmp_path.name
+    result = serialize.from_data(Result, entries[0]["result"])
+    assert result.state is State.PROVEN
+    out = capsys.readouterr().out
+    assert "strings/palindrome.py::is_palindrome_recursive" in out
+    assert "proven" in out
+
+
+def test_scan_buggy_palindrome_is_counterexample(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_sources(tmp_path, {"strings/palindrome.py": SCAN_BUGGY_SOURCE})
+    _patch_models(monkeypatch)
+    steps = _install_scan_steps(monkeypatch, hyp_detail='"ab"')
+
+    assert _scan(monkeypatch, tmp_path, ["scan", str(tmp_path)]) == 1
+    assert steps.review_calls == 1
+
+    entries = _scan_entries(tmp_path / "scan.jsonl")
+    assert len(entries) == 1
+    result = serialize.from_data(Result, entries[0]["result"])
+    assert result.state is State.COUNTEREXAMPLE
+    assert "wrong value" in capsys.readouterr().out
+
+
+def test_scan_counterexample_shows_raises(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_sources(tmp_path, {"strings/palindrome.py": SCAN_BUGGY_SOURCE})
+    _patch_models(monkeypatch)
+    _install_scan_steps(monkeypatch, hyp_detail="'ab' raises ValueError")
+
+    assert _scan(monkeypatch, tmp_path, ["scan", str(tmp_path)]) == 1
+
+    entries = _scan_entries(tmp_path / "scan.jsonl")
+    assert len(entries) == 1
+    result = serialize.from_data(Result, entries[0]["result"])
+    assert result.state is State.COUNTEREXAMPLE
+    assert "raises ValueError" in capsys.readouterr().out
+
+
+def test_scan_runs_pipeline_with_scan_config(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_sources(tmp_path, {"pkg/mod.py": "def add(a: int, b: int) -> int:\n    return a + b\n"})
+    _patch_models(monkeypatch)
+    seen: list[Config] = []
+    graph_calls: list[int] = []
+    import_calls: list[int] = []
+    real_graph = project.call_graph
+    real_imports = pipeline.module_import_errors
+
+    def counting_graph(root: Path, functions: Sequence[FunctionRef]) -> Mapping[FunctionRef, frozenset[FunctionRef]]:
+        graph_calls.append(1)
+        return real_graph(root, functions)
+
+    def counting_imports(functions: Sequence[FunctionRef], root: Path) -> dict[str, str]:
+        import_calls.append(1)
+        return real_imports(functions, root)
+
+    def fake_run(function: FunctionRef, repo_root: Path, *, client: object, config: Config) -> Result:
+        _ = (repo_root, client)
+        seen.append(config)
+        return Result(function, State.OPEN, "no proof found")
+
+    monkeypatch.setattr(pipeline, "run", fake_run)
+    monkeypatch.setattr(project, "call_graph", counting_graph)
+    monkeypatch.setattr(pipeline, "module_import_errors", counting_imports)
+
+    assert _scan(monkeypatch, tmp_path, ["scan", str(tmp_path)]) == 0
+    assert len(seen) == 1
+    assert seen[0].pipeline.scan is True
+    assert graph_calls == [1]
+    assert import_calls == [1]
+    assert "pkg/mod.py::add" in capsys.readouterr().out
+
+
+def test_scan_tool_error_becomes_open_and_scan_goes_on(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_sources(
+        tmp_path,
+        {
+            "pkg/a.py": "def a(x: int) -> int:\n    return x\n",
+            "pkg/b.py": "def b(x: int) -> int:\n    return x\n",
+            "pkg/c.py": "def c(x: int) -> int:\n    return x\n",
+        },
+    )
+    _patch_models(monkeypatch)
+
+    def fake_run(function: FunctionRef, repo_root: Path, *, client: object, config: Config) -> Result:
+        _ = (repo_root, client, config)
+        if function.qualname == "b":
+            raise ToolError("model API down")
+        return Result(function, State.OPEN, "no proof found")
+
+    monkeypatch.setattr(pipeline, "run", fake_run)
+
+    assert _scan(monkeypatch, tmp_path, ["scan", str(tmp_path)]) == 0
+
+    entries = _scan_entries(tmp_path / "scan.jsonl")
+    assert len(entries) == 3
+    results = [serialize.from_data(Result, entry["result"]) for entry in entries]
+    assert [result.function.qualname for result in results] == ["a", "b", "c"]
+    assert results[1].state is State.OPEN
+    assert results[1].reason == "tool error: model API down"
+    assert results[0].state is State.OPEN
+    assert results[2].state is State.OPEN
+    assert "tool error: model API down" in capsys.readouterr().out
+
+
+def test_scan_resume_skips_recorded_functions(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _write_sources(tmp_path, {"pkg/mod.py": "def add(a: int, b: int) -> int:\n    return a + b\n"})
+    _patch_models(monkeypatch)
+
+    def fake_run(function: FunctionRef, repo_root: Path, *, client: object, config: Config) -> Result:
+        _ = (repo_root, client, config)
+        return Result(function, State.OPEN, "no proof found")
+
+    monkeypatch.setattr(pipeline, "run", fake_run)
+    out = tmp_path / "scan.jsonl"
+    assert _scan(monkeypatch, tmp_path, ["scan", str(tmp_path), "--out", str(out)]) == 0
+    before = out.read_bytes()
+
+    def boom(function: FunctionRef, repo_root: Path, **kwargs: Any) -> Result:
+        _ = (function, repo_root, kwargs)
+        raise AssertionError("resumed functions must not run again")
+
+    monkeypatch.setattr(pipeline, "run", boom)
+    assert _scan(monkeypatch, tmp_path, ["scan", str(tmp_path), "--out", str(out), "--resume"]) == 0
+    assert out.read_bytes() == before
+
+
+def test_scan_resume_without_out_starts_new_scan(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _write_sources(tmp_path, {"pkg/mod.py": "def add(a: int, b: int) -> int:\n    return a + b\n"})
+    _patch_models(monkeypatch)
+    calls: list[str] = []
+
+    def fake_run(function: FunctionRef, repo_root: Path, *, client: object, config: Config) -> Result:
+        _ = (repo_root, client, config)
+        calls.append(function.qualname)
+        return Result(function, State.OPEN, "no proof found")
+
+    monkeypatch.setattr(pipeline, "run", fake_run)
+    out = tmp_path / "scan.jsonl"
+    assert not out.exists()
+
+    assert _scan(monkeypatch, tmp_path, ["scan", str(tmp_path), "--out", str(out), "--resume"]) == 0
+    assert calls == ["add"]
+    assert len(_scan_entries(out)) == 1
+
+
+def test_scan_out_lines_round_trip(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _write_sources(
+        tmp_path,
+        {
+            "pkg/ok.py": "def ok(x: int) -> int:\n    return x\n",
+            "pkg/untyped.py": "def vague(x):\n    return x\n",
+        },
+    )
+    _patch_models(monkeypatch)
+
+    def fake_run(function: FunctionRef, repo_root: Path, *, client: object, config: Config) -> Result:
+        _ = (repo_root, client, config)
+        if function.qualname == "ok":
+            return Result(
+                function,
+                State.PROVEN,
+                "",
+                h.intent(function),
+                h.spec(function),
+                h.translation(function),
+                (),
+                None,
+                h.proof(),
+            )
+        return Result(function, State.OPEN, "no proof found")
+
+    monkeypatch.setattr(pipeline, "run", fake_run)
+    out = tmp_path / "scan.jsonl"
+
+    assert _scan(monkeypatch, tmp_path, ["scan", str(tmp_path), "--out", str(out)]) == 0
+
+    raw = out.read_text(encoding="utf-8")
+    lines = raw.splitlines()
+    assert len(lines) == 2
+    assert raw.count("\n") == len(lines)
+    for line in lines:
+        entry = json.loads(line)
+        assert set(entry) == {"project", "result"}
+        assert entry["project"] == tmp_path.name
+        result = serialize.from_data(Result, entry["result"])
+        assert result.state in (State.PROVEN, State.NOT_CHECKABLE)
+
+
+def test_run_contributor_is_usage_error(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(SystemExit) as exc:
+        main(["run", "--contributor"])
+    assert exc.value.code == 2
+
+
+def test_scan_contributor_rewrites_spark_models(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _write_sources(tmp_path, {"pkg/mod.py": "def add(a: int, b: int) -> int:\n    return a + b\n"})
+    _patch_models(monkeypatch)
+    seen: list[Config] = []
+
+    def fake_run(function: FunctionRef, repo_root: Path, *, client: object, config: Config) -> Result:
+        _ = (repo_root, client)
+        seen.append(config)
+        return Result(function, State.OPEN, "no proof found")
+
+    monkeypatch.setattr(pipeline, "run", fake_run)
+
+    assert _scan(monkeypatch, tmp_path, ["scan", str(tmp_path), "--contributor"]) == 0
+    assert len(seen) == 1
+    rewritten = seen[0].models
+    assert rewritten.intent == "muse-spark-1.3-contributor"
+    assert rewritten.spec == "muse-spark-1.3-contributor"
+    assert rewritten.mutants == "muse-spark-1.3-contributor"
+    assert rewritten.translation == "muse-spark-1.3-contributor"
+    assert rewritten.edge_cases == "muse-spark-1.3-contributor"
+    assert rewritten.counterexample == "muse-spark-1.3-contributor"
+    assert rewritten.second_opinion == "muse-spark-1.3-contributor"
+    assert rewritten.context_search == "muse-spark-1.3-contributor"
+    assert [stage.model for stage in seen[0].proof.prover_stages] == [
+        "glimmer",
+        "muse-spark-1.3-contributor",
+        "muse-wonder-1.0",
+    ]
+
+
+def test_scan_empty_repo_exits_0(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _patch_models(monkeypatch)
+    out = tmp_path / "scan.jsonl"
+
+    assert _scan(monkeypatch, tmp_path, ["scan", str(tmp_path), "--out", str(out)]) == 0
+    assert out.read_text(encoding="utf-8") == ""
+
+
+def test_scan_reports_precheck_reason(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_sources(tmp_path, {"pkg/untyped.py": "def vague(x):\n    return x\n"})
+    _patch_models(monkeypatch)
+
+    def boom(function: FunctionRef, repo_root: Path, **kwargs: Any) -> Result:
+        _ = (function, repo_root, kwargs)
+        raise AssertionError("not-checkable functions must not run")
+
+    monkeypatch.setattr(pipeline, "run", boom)
+
+    assert _scan(monkeypatch, tmp_path, ["scan", str(tmp_path)]) == 0
+    entries = _scan_entries(tmp_path / "scan.jsonl")
+    assert len(entries) == 1
+    result = serialize.from_data(Result, entries[0]["result"])
+    assert result.state is State.NOT_CHECKABLE
+    assert result.reason == "no types"
+    assert "no types" in capsys.readouterr().out
+
+
+def test_scan_runs_callees_before_callers(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _write_sources(
+        tmp_path,
+        {"pkg/calls.py": "def g(x: int) -> int:\n    return x\n\n\ndef f(x: int) -> int:\n    return g(x)\n"},
+    )
+    _patch_models(monkeypatch)
+    calls: list[str] = []
+
+    def fake_run(function: FunctionRef, repo_root: Path, *, client: object, config: Config) -> Result:
+        _ = (repo_root, client, config)
+        calls.append(function.qualname)
+        return Result(function, State.OPEN, "no proof found")
+
+    monkeypatch.setattr(pipeline, "run", fake_run)
+
+    assert _scan(monkeypatch, tmp_path, ["scan", str(tmp_path)]) == 0
+    assert calls == ["g"]
+    entries = _scan_entries(tmp_path / "scan.jsonl")
+    results = [serialize.from_data(Result, entry["result"]) for entry in entries]
+    assert [result.function.qualname for result in results] == ["g", "f"]
+    assert results[1].state is State.NOT_CHECKABLE
+    assert results[1].reason == "calls into the project come with #43"

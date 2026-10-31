@@ -6,6 +6,7 @@ import argparse
 import dataclasses
 import hashlib
 import json
+import re
 import sys
 import traceback
 from collections.abc import Sequence
@@ -19,6 +20,7 @@ from pcc import verifier as verifier_module
 from pcc.config import Config
 from pcc.core import (
     Certificate,
+    CheckKind,
     Dependency,
     FunctionRef,
     ProofOutcome,
@@ -39,9 +41,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     run.add_argument("--proofs-dir", default="proofs", help="directory holding the proof certificates")
     run.add_argument("--report", default="report.md", help="file the markdown report is written to")
     run.add_argument("--json", default="results.json", help="file the JSON results are written to")
+    run.add_argument("--contributor", action="store_true", help="only allowed with scan, not with run")
     survey = sub.add_parser("survey", help="list functions and whether they would reach step 1")
     survey.add_argument("repo", help="repository to survey")
     survey.add_argument("--json", action="store_true", help="write the JSON list to stdout instead of text lines")
+    scan = sub.add_parser("scan", help="run the full pipeline on every checkable function of a repository")
+    scan.add_argument("repo", help="repository to scan")
+    scan.add_argument("--out", default="scan.jsonl", help="file every result is appended to as JSONL")
+    scan.add_argument("--resume", action="store_true", help="skip functions already recorded in --out")
+    scan.add_argument("--contributor", action="store_true", help="run the models in contributor mode for this scan")
     sub.add_parser("version", help="print the version")
     args = parser.parse_args(argv)
     if args.command == "version":
@@ -49,9 +57,13 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         print(version("pcc"))
         return 0
+    if args.command == "run" and args.contributor:
+        parser.error("--contributor is only allowed with scan")
     try:
         if args.command == "survey":
             return _survey_command(repo_root=Path(args.repo), as_json=args.json)
+        if args.command == "scan":
+            return _scan_command(repo=args.repo, out=args.out, resume=args.resume, contributor=args.contributor)
         return _run_command(
             paths=args.paths,
             base=args.base,
@@ -301,6 +313,150 @@ def _survey_command(*, repo_root: Path, as_json: bool) -> int:
             print(f"{ref.path}::{ref.qualname}: {reason if reason is not None else 'checkable'}")
         checkable = sum(1 for _, reason in rows if reason is None)
         print(f"{checkable} of {len(rows)} functions checkable")
+    return 0
+
+
+_SPARK_MODEL = "muse-spark-1.3"
+_CONTRIBUTOR_MODEL = "muse-spark-1.3-contributor"
+
+#: Matches the trailing `" raises <ExcType>"` of a failing HYPOTHESIS_ORIGINAL detail.
+_RAISES_SUFFIX_RE = re.compile(r"\s+raises\s+([A-Za-z_][\w.]*)$")
+
+
+def _contributor_id(model: str) -> str:
+    """``model`` in contributor mode: the contributor id for the Spark id, everything else unchanged."""
+    return _CONTRIBUTOR_MODEL if model == _SPARK_MODEL else model
+
+
+def _with_contributor(config: Config) -> Config:
+    """``config`` with every Spark model id replaced by its contributor id (issue #65, ``--contributor``).
+
+    Every ``ModelsConfig`` id and every prover stage model equal to ``muse-spark-1.3`` becomes
+    ``muse-spark-1.3-contributor``; any other id stays. Only ``pcc-check scan`` uses this.
+    """
+    current = config.models
+    rewritten = dataclasses.replace(
+        current,
+        intent=_contributor_id(current.intent),
+        spec=_contributor_id(current.spec),
+        mutants=_contributor_id(current.mutants),
+        translation=_contributor_id(current.translation),
+        edge_cases=_contributor_id(current.edge_cases),
+        counterexample=_contributor_id(current.counterexample),
+        second_opinion=_contributor_id(current.second_opinion),
+        context_search=_contributor_id(current.context_search),
+    )
+    stages = tuple(
+        dataclasses.replace(stage, model=_contributor_id(stage.model)) for stage in config.proof.prover_stages
+    )
+    return dataclasses.replace(config, models=rewritten, proof=dataclasses.replace(config.proof, prover_stages=stages))
+
+
+def _resume_key(result: Result) -> str:
+    """The ``--resume`` key of ``result``: ``path:qualname`` as recorded in the ``--out`` file."""
+    return f"{result.function.path}:{result.function.qualname}"
+
+
+def _read_resumed(out_path: Path) -> dict[str, Result]:
+    """The results already recorded in ``out_path``, keyed by ``path:qualname``.
+
+    Blank lines are skipped; a missing file starts a new scan with no resumed results. Anything
+    else that does not parse raises, so a corrupt file fails loudly instead of rescanning silently.
+    """
+    resumed: dict[str, Result] = {}
+    if not out_path.is_file():
+        return resumed
+    for line in out_path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        entry = json.loads(line)
+        result = serialize.from_data(Result, entry["result"])
+        resumed[_resume_key(result)] = result
+    return resumed
+
+
+def _counterexample_display(result: Result) -> str:
+    """How a counterexample prints: ``raises <Exc>`` when the failing check ends that way, else ``wrong value``.
+
+    The check is the first failing HYPOTHESIS_ORIGINAL record of the result's spec: a detail ending in
+    `" raises <ExcType>"` names an exception the code raised, any other detail is a wrong value.
+    """
+    if result.spec is not None:
+        for record in result.spec.checks:
+            if record.kind is CheckKind.HYPOTHESIS_ORIGINAL and not record.passed:
+                match = _RAISES_SUFFIX_RE.search(record.detail)
+                if match is not None:
+                    return f"raises {match.group(1)}"
+                return "wrong value"
+    return "wrong value"
+
+
+def _scan_line(ref: FunctionRef, result: Result) -> str:
+    """The stdout line for one scanned function: its ``path::qualname``, state and reason."""
+    head = f"{ref.path}::{ref.qualname}"
+    if result.state is State.COUNTEREXAMPLE:
+        return f"{head}: counterexample: {_counterexample_display(result)}"
+    if result.reason:
+        return f"{head}: {result.state.value}: {result.reason}"
+    return f"{head}: {result.state.value}"
+
+
+def _scan_command(*, repo: str, out: str, resume: bool, contributor: bool) -> int:
+    """Run the full pipeline on every checkable function of ``repo`` (issue #65).
+
+    The functions are ``discover(repo, ["."])`` minus the survey skip list, in ``call_order`` order,
+    level by level. ``call_graph`` and ``module_import_errors`` are computed once; each function then
+    runs ``precheck`` and, when it passes, ``pipeline.run`` with ``PipelineConfig.scan`` set to
+    ``True``. A ``ToolError`` from ``pipeline.run`` becomes ``open`` with reason ``"tool error: <msg>"``
+    and the scan goes on. Every result is appended to ``out`` as compact JSONL as soon as it is
+    known, so a crash keeps the finished functions; ``--resume`` skips the recorded ones.
+
+    Returns 1 when any result is a counterexample, else 0. A tool error never gives 2 here; any
+    other exception still exits 2 through ``main``.
+    """
+    repo_root = Path(repo).resolve()
+    config = Config()
+    if contributor:
+        config = _with_contributor(config)
+    client = models.build_client(config)
+    config = models.available_stages(config, client)
+    scan_config = dataclasses.replace(config, pipeline=dataclasses.replace(config.pipeline, scan=True))
+    functions = tuple(ref for ref in project.discover(repo_root, ["."]) if not _is_skipped(ref.path))
+    graph = project.call_graph(repo_root, functions)
+    import_errors = pipeline.module_import_errors(functions, repo_root)
+    ordered = [ref for level in project.call_order(functions) for ref in level]
+    project_name = repo_root.name
+    out_path = Path(out)
+    resumed = _read_resumed(out_path) if resume else {}
+    results: list[Result] = []
+    with open(out_path, "a", encoding="utf-8") as handle:
+        for ref in ordered:
+            key = f"{ref.path}:{ref.qualname}"
+            if key in resumed:
+                result = resumed[key]
+            else:
+                reason = pipeline.precheck(ref, repo_root, graph=graph, import_errors=import_errors)
+                if reason is not None:
+                    result = Result(ref, State.NOT_CHECKABLE, reason)
+                else:
+                    try:
+                        result = pipeline.run(ref, repo_root, client=client, config=scan_config)
+                    except ToolError as error:
+                        result = Result(ref, State.OPEN, f"tool error: {error}")
+                handle.write(
+                    json.dumps(
+                        {"project": project_name, "result": serialize.to_data(result)},
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        allow_nan=False,
+                    )
+                    + "\n"
+                )
+                handle.flush()
+            results.append(result)
+            print(_scan_line(ref, result))
+    if any(result.state is State.COUNTEREXAMPLE for result in results):
+        return 1
     return 0
 
 
