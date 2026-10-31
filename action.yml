@@ -1,0 +1,125 @@
+name: pcc-check
+description: Check changed Python functions with proof-carrying code and update one pull request comment.
+
+inputs:
+  meta-api-key:
+    description: Meta Model API key, stored as a repository secret. The run step fails with a clear message when empty.
+    required: true
+  paths:
+    description: Files or directories to check. Empty checks the functions changed against base.
+    required: false
+    default: ""
+  base:
+    description: Git ref to diff against. Empty diffs against the pull request base branch.
+    required: false
+    default: ""
+  proofs-dir:
+    description: Directory the proof certificates are written to and uploaded from.
+    required: false
+    default: "proofs"
+
+runs:
+  using: composite
+  steps:
+    - name: Check for fork pull request
+      id: fork
+      shell: bash
+      run: |
+        head="${{ github.event.pull_request.head.repo.full_name }}"
+        if [ -n "$head" ] && [ "$head" != "${{ github.repository }}" ]; then
+          echo "skip=true" >> "$GITHUB_OUTPUT"
+          echo "::notice::Pull request comes from a fork (${head}); pcc-check is skipped because fork pull requests have no secrets."
+        else
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Set up uv
+      if: steps.fork.outputs.skip != 'true'
+      uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+      with:
+        python-version: "3.12"
+
+    - name: Set up Dafny
+      if: steps.fork.outputs.skip != 'true'
+      uses: dafny-lang/setup-dafny-action@be023fc606339d46ed6b077dcb8614d0279ded31 # v1.9.1
+      with:
+        dafny-version: "4.11.0"
+
+    - name: Install pcc-check
+      if: steps.fork.outputs.skip != 'true'
+      shell: bash
+      run: uv tool install "${{ github.action_path }}"
+
+    - name: Run pcc-check
+      id: check
+      if: steps.fork.outputs.skip != 'true'
+      shell: bash
+      env:
+        META_API_KEY: ${{ inputs.meta-api-key }}
+        PCC_META_ALLOWED: "1"
+        GH_TOKEN: ${{ github.token }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        if [ -z "${META_API_KEY}" ]; then
+          echo "::error::Missing meta-api-key. Store your Meta Model API key as a repository secret and pass it as the meta-api-key input."
+          exit 1
+        fi
+        base="${{ inputs.base }}"
+        if [ -z "$base" ]; then
+          base="${GITHUB_BASE_REF:-}"
+        fi
+        if [ -z "$base" ]; then
+          base="origin/main"
+        fi
+        set +e
+        pcc-check run ${{ inputs.paths }} --base "$base" --proofs-dir "${{ inputs.proofs-dir }}" > "${RUNNER_TEMP}/pcc-comment.md" 2> "${RUNNER_TEMP}/pcc-run.log"
+        code=$?
+        set -e
+        echo "exit_code=${code}" >> "$GITHUB_OUTPUT"
+        cat "${RUNNER_TEMP}/pcc-run.log"
+        echo "pcc-check run finished with exit code ${code}."
+        exit 0
+
+    - name: Upload proofs artifact
+      if: steps.fork.outputs.skip != 'true'
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: proofs
+        path: ${{ inputs.proofs-dir }}
+        if-no-files-found: warn
+
+    - name: Comment results
+      if: always() && steps.fork.outputs.skip != 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        number="${{ github.event.pull_request.number }}"
+        if [ -z "$number" ]; then
+          echo "No pull request context; skipping the comment."
+          exit 0
+        fi
+        report=""
+        if [ -f "${RUNNER_TEMP}/pcc-comment.md" ]; then
+          report="$(sed -n '/<!-- pcc-check -->/,$p' "${RUNNER_TEMP}/pcc-comment.md")"
+        fi
+        if [ -z "$report" ]; then
+          code="${{ steps.check.outputs.exit_code }}"
+          report="$(printf '<!-- pcc-check -->\n## Proof-carrying code\n\npcc-check finished with exit code %s without printing a report. See the run log for details.' "${code:-unknown}")"
+        fi
+        artifact_url="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+        body="$(printf '%s\n\nCertificates: download the `proofs` artifact from [this workflow run](%s) and commit it to your branch so the next run re-checks them instead of re-proving.' "$report" "$artifact_url")"
+        comment_id="$(gh api "repos/${{ github.repository }}/issues/${number}/comments" --paginate -q '[.[] | select(.body | startswith("<!-- pcc-check -->")) | .id] | first // empty')"
+        if [ -n "$comment_id" ]; then
+          gh api --method PATCH "repos/${{ github.repository }}/issues/comments/${comment_id}" -f body="$body" > /dev/null
+          echo "Updated comment ${comment_id}."
+        else
+          gh api --method POST "repos/${{ github.repository }}/issues/${number}/comments" -f body="$body" > /dev/null
+          echo "Created a new comment."
+        fi
+
+    - name: Fail on findings
+      shell: bash
+      run: |
+        code="${{ steps.check.outputs.exit_code }}"
+        exit "${code:-0}"
