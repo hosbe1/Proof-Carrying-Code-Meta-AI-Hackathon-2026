@@ -348,7 +348,8 @@ def test_spec_signatures() -> None:
 def test_equivalence_signatures() -> None:
     assert equivalence_spec_check.check_spec is pcc.equivalence.check_spec
     assert callable(pcc.equivalence.check)
-    sig = assert_sig(
+    # The check_spec body is implemented, so only its signature stays locked here.
+    assert_sig(
         pcc.equivalence.check_spec,
         [
             ("spec", POS, NoDefault),
@@ -359,7 +360,6 @@ def test_equivalence_signatures() -> None:
         ],
         CheckRecord,
     )
-    assert_raises(pcc.equivalence.check_spec, sig)
 
 
 def test_transpile_signatures() -> None:
@@ -437,6 +437,7 @@ def test_prove_signatures() -> None:
             ("function_lines", KWO, NoDefault),
             ("extra_modules", KWO, ()),
             ("assumptions_module", KWO, ""),
+            ("imports", KWO, ()),
         ],
         ProofOutcome,
     )
@@ -481,7 +482,8 @@ def test_report_signatures() -> None:
 
 
 def test_pipeline_signatures() -> None:
-    sig = assert_sig(
+    # run and run_many are implemented (issue #43); only their signatures stay locked here.
+    assert_sig(
         pcc.pipeline.run,
         [
             ("function", POS, NoDefault),
@@ -492,18 +494,17 @@ def test_pipeline_signatures() -> None:
         ],
         Result,
     )
-    assert_raises(pcc.pipeline.run, sig)
-    sig = assert_sig(
+    assert_sig(
         pcc.pipeline.run_many,
         [
             ("functions", POS, NoDefault),
             ("repo_root", POS, NoDefault),
             ("client", KWO, NoDefault),
             ("config", KWO, NoDefault),
+            ("callees", KWO, MappingProxyType({})),
         ],
         tuple[Result, ...],
     )
-    assert_raises(pcc.pipeline.run_many, sig)
 
 
 def test_all_stubs_are_exported() -> None:

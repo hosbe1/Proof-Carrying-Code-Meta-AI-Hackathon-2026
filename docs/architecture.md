@@ -91,8 +91,9 @@ FunctionRef
                                mismatch=None, resolve_retries=2)                   -> Translation
   -> equivalence.check          -> EquivalenceReport   (mismatch: retranslate, at most max_retranslations)
   -> equivalence.check_spec(spec, dafny_spec, function, repo_root, *, cases)         -> CheckRecord
-  -> prove.prove(translation, assumptions, *, client, stages,
-                resource_limit, function_lines, extra_modules=(), assumptions_module="") -> ProofOutcome
+   -> prove.prove(translation, assumptions, *, client, stages,
+                 resource_limit, function_lines, extra_modules=(), assumptions_module="",
+                 imports=()) -> ProofOutcome
   -> counterexample.search(function, spec, repo_root, *, failed_clause, client,
                            model, config: CounterexampleConfig)                     -> Counterexample | None
      (only if not proven)
