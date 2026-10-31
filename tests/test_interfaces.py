@@ -437,6 +437,7 @@ def test_prove_signatures() -> None:
             ("function_lines", KWO, NoDefault),
             ("extra_modules", KWO, ()),
             ("assumptions_module", KWO, ""),
+            ("imports", KWO, ()),
         ],
         ProofOutcome,
     )
@@ -481,7 +482,8 @@ def test_report_signatures() -> None:
 
 
 def test_pipeline_signatures() -> None:
-    sig = assert_sig(
+    # run and run_many are implemented (issue #43); only their signatures stay locked here.
+    assert_sig(
         pcc.pipeline.run,
         [
             ("function", POS, NoDefault),
@@ -492,18 +494,17 @@ def test_pipeline_signatures() -> None:
         ],
         Result,
     )
-    assert_raises(pcc.pipeline.run, sig)
-    sig = assert_sig(
+    assert_sig(
         pcc.pipeline.run_many,
         [
             ("functions", POS, NoDefault),
             ("repo_root", POS, NoDefault),
             ("client", KWO, NoDefault),
             ("config", KWO, NoDefault),
+            ("callees", KWO, MappingProxyType({})),
         ],
         tuple[Result, ...],
     )
-    assert_raises(pcc.pipeline.run_many, sig)
 
 
 def test_all_stubs_are_exported() -> None:
