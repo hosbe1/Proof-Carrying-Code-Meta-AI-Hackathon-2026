@@ -269,6 +269,15 @@ def test_resume_rejects_option_mismatch(monkeypatch: pytest.MonkeyPatch, tmp_pat
         )
     with pytest.raises(ToolError, match="max_cost_usd mismatch"):
         run_harness(split="test", out_dir=out, max_cost_usd=5.0, tasks=(add_task(),), client=FakeClient([]))
+    with pytest.raises(ToolError, match="contributor mismatch"):
+        run_harness(
+            split="test",
+            out_dir=out,
+            max_cost_usd=10.0,
+            contributor=True,
+            tasks=(add_task(),),
+            client=FakeClient([]),
+        )
 
 
 def test_cost_cap_stops_run(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

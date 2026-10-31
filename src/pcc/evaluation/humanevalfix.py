@@ -367,12 +367,13 @@ def _load_resume(
     stages: str | None,
     spec_model: str | None,
     max_cost_usd: float,
+    contributor: bool,
 ) -> tuple[set[tuple[str, str]], list[dict[str, str]], float]:
     """The (done task/version pairs, excluded tasks, spent cost) of a previous partial run, if any.
 
     Resuming with different harness options would silently mix results from another
-    configuration into the metrics, so a mismatch in ``stages``, ``spec_model`` or
-    ``max_cost_usd`` raises a ``ToolError`` instead.
+    configuration into the metrics, so a mismatch in ``stages``, ``spec_model``,
+    ``max_cost_usd`` or ``contributor`` raises a ``ToolError`` instead.
     """
     lines_file = out_dir / ("spec_only.jsonl" if spec_only else "scan.jsonl")
     done: set[tuple[str, str]] = set()
@@ -412,6 +413,11 @@ def _load_resume(
             raise ToolError(
                 f"cannot resume from {run_file}: max_cost_usd mismatch "
                 f"({previous.get('max_cost_usd')!r} != {max_cost_usd!r}); use a fresh --out directory"
+            )
+        if previous.get("contributor", False) != contributor:
+            raise ToolError(
+                f"cannot resume from {run_file}: contributor mismatch "
+                f"({previous.get('contributor', False)!r} != {contributor!r}); use a fresh --out directory"
             )
         raw_excluded = previous.get("excluded", [])
         if isinstance(raw_excluded, list):
@@ -470,6 +476,7 @@ def _write_run_json(
     max_cost_usd: float,
     stages: str | None,
     spec_model: str | None,
+    contributor: bool,
     spec_only: bool,
     task_ids: list[str],
     excluded: list[dict[str, str]],
@@ -483,6 +490,7 @@ def _write_run_json(
         "max_cost_usd": max_cost_usd,
         "stages": stages,
         "spec_model": spec_model,
+        "contributor": contributor,
         "spec_only": spec_only,
         "tasks": task_ids,
         "excluded": excluded,
@@ -534,7 +542,7 @@ def run_harness(
     recorder = _Recorder(inner)
     resolved = tasks if tasks is not None else datasets.split(HARNESS, which)
     out_dir.mkdir(parents=True, exist_ok=True)
-    done, excluded, spent = _load_resume(out_dir, split, spec_only, stages, spec_model, max_cost_usd)
+    done, excluded, spent = _load_resume(out_dir, split, spec_only, stages, spec_model, max_cost_usd, contributor)
     excluded_ids = {entry.get("task_id") for entry in excluded}
     task_ids = [task.id for task in resolved]
     _write_run_json(
@@ -543,6 +551,7 @@ def run_harness(
         max_cost_usd=max_cost_usd,
         stages=stages,
         spec_model=spec_model,
+        contributor=contributor,
         spec_only=spec_only,
         task_ids=task_ids,
         excluded=excluded,
@@ -613,6 +622,7 @@ def run_harness(
         max_cost_usd=max_cost_usd,
         stages=stages,
         spec_model=spec_model,
+        contributor=contributor,
         spec_only=spec_only,
         task_ids=task_ids,
         excluded=excluded,
