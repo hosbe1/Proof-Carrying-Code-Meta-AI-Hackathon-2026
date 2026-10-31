@@ -16,7 +16,17 @@ from pcc import pylib as pylib_module
 from pcc import report as report_module
 from pcc import verifier as verifier_module
 from pcc.config import Config
-from pcc.core import Certificate, FunctionRef, ProofOutcome, Result, State, ToolError, serialize
+from pcc.core import (
+    Certificate,
+    Dependency,
+    FunctionRef,
+    ProofOutcome,
+    Result,
+    State,
+    ToolError,
+    serialize,
+)
+from pcc.project.calls import subset_edges
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -49,6 +59,78 @@ def main(argv: Sequence[str] | None = None) -> int:
     except Exception:
         traceback.print_exc()
         return 2
+
+
+def _edges_by_key(
+    scope: Sequence[FunctionRef], stored: Sequence[Certificate]
+) -> dict[tuple[str, str], tuple[tuple[str, str], ...]]:
+    """Direct project callees of every scope function, keyed by ``(path, qualname)``.
+
+    The universe is the scope plus the stored certificate functions, so callers find
+    callees that are cached and not re-run. A snippet that no longer parses contributes
+    no edges.
+    """
+    scope_keys = {(ref.path, ref.qualname) for ref in scope}
+    extra = [cert.function for cert in stored if (cert.function.path, cert.function.qualname) not in scope_keys]
+    universe = list(scope) + extra
+    edges = subset_edges(tuple(universe))
+    by_key: dict[tuple[str, str], tuple[tuple[str, str], ...]] = {}
+    for ref in universe:
+        key = (ref.path, ref.qualname)
+        if key in by_key:
+            continue
+        callees = edges.get(ref, frozenset())
+        by_key[key] = tuple(sorted({(callee.path, callee.qualname) for callee in callees}))
+    return by_key
+
+
+def _hashes_for_key(
+    key: tuple[str, str],
+    edges_by_key: dict[tuple[str, str], tuple[tuple[str, str], ...]],
+    specs_by_key: dict[tuple[str, str], str],
+) -> tuple[Dependency, ...]:
+    """The certificate dependencies of ``key``: the sha256 of each direct callee spec found in ``specs_by_key``.
+
+    Callees without a known spec are skipped, which conservatively marks the caller
+    stale through ``is_stale``.
+    """
+    found: list[Dependency] = []
+    for callee_key in edges_by_key.get(key, ()):
+        spec = specs_by_key.get(callee_key)
+        if spec is not None:
+            found.append(Dependency(callee_key[1], hashlib.sha256(spec.encode("utf-8")).hexdigest()))
+    return tuple(found)
+
+
+def _expand_callers_of_stale(
+    scope: Sequence[FunctionRef],
+    edges_by_key: dict[tuple[str, str], tuple[tuple[str, str], ...]],
+    cached: dict[FunctionRef, Result],
+    to_run: list[FunctionRef],
+    stale: list[Certificate],
+    by_key: dict[tuple[str, str], Certificate],
+) -> None:
+    """Move cached callers of re-run callees to ``to_run`` until no more move.
+
+    A caller whose callee is proven again may rest on a changed spec, so its cached
+    certificate cannot be reused even when its own source is unchanged.
+    """
+    to_run_keys = {(ref.path, ref.qualname) for ref in to_run}
+    changed = True
+    while changed:
+        changed = False
+        for function in scope:
+            key = (function.path, function.qualname)
+            if key in to_run_keys or function not in cached:
+                continue
+            if any(callee in to_run_keys for callee in edges_by_key.get(key, ())):
+                to_run_keys.add(key)
+                to_run.append(function)
+                del cached[function]
+                cert = by_key.get(key)
+                if cert is not None:
+                    stale.append(cert)
+                changed = True
 
 
 def _run_command(
@@ -85,6 +167,8 @@ def _run_command(
     current_pylib = hashlib.sha256(pylib_module.PYLIB_FILE.read_bytes()).hexdigest()
     stored = _load_certificates(proofs_dir)
     by_key = {(cert.function.path, cert.function.qualname): cert for cert in stored}
+    stored_specs = {(cert.function.path, cert.function.qualname): cert.spec_dafny for cert in stored}
+    edges_by_key = _edges_by_key(scope, stored)
 
     cached: dict[FunctionRef, Result] = {}
     to_run: list[FunctionRef] = []
@@ -95,18 +179,21 @@ def _run_command(
         if cert is None:
             to_run.append(function)
             continue
+        current_deps = _hashes_for_key((function.path, function.qualname), edges_by_key, stored_specs)
         if cert.pylib_sha256 != current_pylib:
             outcome = verifier_module.verify(cert.dafny_source, resource_limit=config.dafny.resource_limit)
             if not outcome.verified:
                 stale.append(cert)
                 to_run.append(function)
                 continue
-            if certificate_module.is_stale(cert, function, pylib_sha256=cert.pylib_sha256):
+            if certificate_module.is_stale(
+                cert, function, dependency_hashes=current_deps, pylib_sha256=cert.pylib_sha256
+            ):
                 stale.append(cert)
                 to_run.append(function)
                 continue
             refresh.append(dataclasses.replace(cert, pylib_sha256=current_pylib))
-        elif certificate_module.is_stale(cert, function, pylib_sha256=current_pylib):
+        elif certificate_module.is_stale(cert, function, dependency_hashes=current_deps, pylib_sha256=current_pylib):
             stale.append(cert)
             to_run.append(function)
             continue
@@ -116,6 +203,7 @@ def _run_command(
             reason="certificate",
             proof=ProofOutcome(proven=True, dafny_source=cert.dafny_source, attempts=0, stage="certificate"),
         )
+    _expand_callers_of_stale(scope, edges_by_key, cached, to_run, stale, by_key)
     for cert in stored:
         if (cert.function.path, cert.function.qualname) in {(f.path, f.qualname) for f in scope}:
             continue
@@ -131,9 +219,16 @@ def _run_command(
         else:
             results.append(by_result[(function.path, function.qualname)])
 
+    fresh_specs = dict(stored_specs)
+    for result in ran:
+        if result.translation is not None:
+            fresh_specs[(result.function.path, result.function.qualname)] = result.translation.dafny_spec
     for result in results:
         if result.state is State.PROVEN and result.reason != "certificate":
-            certificate_module.write(certificate_module.from_result(result, config), proofs_dir, config=config)
+            deps = _hashes_for_key((result.function.path, result.function.qualname), edges_by_key, fresh_specs)
+            certificate_module.write(
+                certificate_module.from_result(result, config, dependency_hashes=deps), proofs_dir, config=config
+            )
     for cert in refresh:
         certificate_module.write(cert, proofs_dir, config=config)
 
