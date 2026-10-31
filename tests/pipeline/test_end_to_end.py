@@ -26,7 +26,7 @@ from pcc.config import (
 )
 from pcc.core import FunctionRef, Result, State
 from pcc.models import FakeClient
-from pcc.sandbox import run_python
+from pcc.sandbox import RunOutcome, run_python
 from pcc.verifier import verify
 from tests.helpers import function_ref
 
@@ -73,9 +73,14 @@ def _make_ref(source: str) -> FunctionRef:
 def _make_config() -> Config:
     """A fast config that still runs every real step on the palindrome.
 
-    ``mutant_inputs`` stays small so the spec-translation cases keep to
-    convertible strings; larger input sets hit non-BMP characters the
-    back-compiled converter cannot encode (see Risks).
+    Only ``pipeline.search_agent=False`` is mandated by the ticket; the other
+    overrides keep the offline run fast (fewer Hypothesis and differential
+    inputs, no symbolic budget, a single 1-attempt prover stage) while still
+    executing every real step on this path. ``mutant_inputs`` stays small so
+    the spec-translation cases keep to convertible strings; larger input sets
+    hit non-BMP characters the back-compiled converter cannot encode
+    (a pre-existing converter limitation, out of scope for this test-only
+    ticket; see Risks).
     """
     return Config(
         pipeline=PipelineConfig(search_agent=False),
@@ -130,15 +135,15 @@ def _run_fixed(repo_root: Path) -> tuple[Result, FakeClient]:
     return pcc.pipeline.run(ref, repo_root, client=client, config=_make_config()), client
 
 
-def _generated_test_fails(repo_root: Path, test_source: str) -> bool:
-    """Whether the generated counterexample test fails when run in the sandbox."""
+def _run_generated_test(repo_root: Path, test_source: str) -> RunOutcome:
+    """Run the generated counterexample test in the sandbox."""
     (repo_root / "test_palindrome_breaks.py").write_text(test_source, encoding="utf-8")
     script = (
         "import pytest\n"
         "import sys\n"
         "sys.exit(pytest.main(['-q', '-p', 'no:cacheprovider', 'test_palindrome_breaks.py']))\n"
     )
-    return run_python(script, cwd=repo_root).returncode != 0
+    return run_python(script, cwd=repo_root)
 
 
 def test_buggy_palindrome_gives_failing_counterexample(tmp_path: Path) -> None:
@@ -147,7 +152,11 @@ def test_buggy_palindrome_gives_failing_counterexample(tmp_path: Path) -> None:
     assert result.counterexample is not None
     shown = ast.literal_eval(result.counterexample.arguments)
     assert isinstance(shown, str) and len(shown) == 2 and shown[0] != shown[1]
-    assert _generated_test_fails(tmp_path, result.counterexample.test)
+    outcome = _run_generated_test(tmp_path, result.counterexample.test)
+    assert outcome.returncode != 0
+    assert "1 failed" in outcome.stdout
+    assert "test_is_palindrome_recursive_breaks_spec" in outcome.stdout
+    assert "1 error" not in outcome.stdout
 
 
 def test_fixed_palindrome_proves_and_certificate_verifies(tmp_path: Path) -> None:
