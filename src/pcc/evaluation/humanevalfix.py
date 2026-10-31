@@ -361,9 +361,19 @@ def _append_jsonl(path: Path, line: dict[str, Any] | Mapping[str, Any]) -> None:
 
 
 def _load_resume(
-    out_dir: Path, split: str, spec_only: bool
+    out_dir: Path,
+    split: str,
+    spec_only: bool,
+    stages: str | None,
+    spec_model: str | None,
+    max_cost_usd: float,
 ) -> tuple[set[tuple[str, str]], list[dict[str, str]], float]:
-    """The (done task/version pairs, excluded tasks, spent cost) of a previous partial run, if any."""
+    """The (done task/version pairs, excluded tasks, spent cost) of a previous partial run, if any.
+
+    Resuming with different harness options would silently mix results from another
+    configuration into the metrics, so a mismatch in ``stages``, ``spec_model`` or
+    ``max_cost_usd`` raises a ``ToolError`` instead.
+    """
     lines_file = out_dir / ("spec_only.jsonl" if spec_only else "scan.jsonl")
     done: set[tuple[str, str]] = set()
     spent = 0.0
@@ -388,6 +398,21 @@ def _load_resume(
             raise ToolError(f"cannot resume from {run_file}: not a {HARNESS} {split} run")
         if previous.get("spec_only") != spec_only:
             raise ToolError(f"cannot resume from {run_file}: spec_only mismatch")
+        if previous.get("stages") != stages:
+            raise ToolError(
+                f"cannot resume from {run_file}: stages mismatch "
+                f"({previous.get('stages')!r} != {stages!r}); use a fresh --out directory"
+            )
+        if previous.get("spec_model") != spec_model:
+            raise ToolError(
+                f"cannot resume from {run_file}: spec_model mismatch "
+                f"({previous.get('spec_model')!r} != {spec_model!r}); use a fresh --out directory"
+            )
+        if previous.get("max_cost_usd") != max_cost_usd:
+            raise ToolError(
+                f"cannot resume from {run_file}: max_cost_usd mismatch "
+                f"({previous.get('max_cost_usd')!r} != {max_cost_usd!r}); use a fresh --out directory"
+            )
         raw_excluded = previous.get("excluded", [])
         if isinstance(raw_excluded, list):
             excluded = [entry for entry in raw_excluded if isinstance(entry, dict)]
@@ -509,7 +534,7 @@ def run_harness(
     recorder = _Recorder(inner)
     resolved = tasks if tasks is not None else datasets.split(HARNESS, which)
     out_dir.mkdir(parents=True, exist_ok=True)
-    done, excluded, spent = _load_resume(out_dir, split, spec_only)
+    done, excluded, spent = _load_resume(out_dir, split, spec_only, stages, spec_model, max_cost_usd)
     excluded_ids = {entry.get("task_id") for entry in excluded}
     task_ids = [task.id for task in resolved]
     _write_run_json(

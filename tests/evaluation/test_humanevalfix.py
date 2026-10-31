@@ -245,6 +245,32 @@ def test_resume_skips_done_tasks(monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     assert len(scan) == 4
 
 
+def test_resume_rejects_option_mismatch(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    out = tmp_path / "runs" / "mismatch"
+    patch_pipeline(monkeypatch, metrics_behavior)
+    run_harness(split="test", out_dir=out, max_cost_usd=10.0, tasks=(add_task(),), client=FakeClient([]))
+    with pytest.raises(ToolError, match="stages mismatch"):
+        run_harness(
+            split="test",
+            out_dir=out,
+            max_cost_usd=10.0,
+            stages="spark",
+            tasks=(add_task(),),
+            client=FakeClient([]),
+        )
+    with pytest.raises(ToolError, match="spec_model mismatch"):
+        run_harness(
+            split="test",
+            out_dir=out,
+            max_cost_usd=10.0,
+            spec_model="glimmer",
+            tasks=(add_task(),),
+            client=FakeClient([]),
+        )
+    with pytest.raises(ToolError, match="max_cost_usd mismatch"):
+        run_harness(split="test", out_dir=out, max_cost_usd=5.0, tasks=(add_task(),), client=FakeClient([]))
+
+
 def test_cost_cap_stops_run(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     out = tmp_path / "runs" / "capped"
     fake = patch_pipeline(monkeypatch, metrics_behavior)
