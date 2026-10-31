@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import hashlib
+import json
 import sys
 import traceback
 from collections.abc import Sequence
@@ -38,6 +39,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     run.add_argument("--proofs-dir", default="proofs", help="directory holding the proof certificates")
     run.add_argument("--report", default="report.md", help="file the markdown report is written to")
     run.add_argument("--json", default="results.json", help="file the JSON results are written to")
+    survey = sub.add_parser("survey", help="list functions and whether they would reach step 1")
+    survey.add_argument("repo", help="repository to survey")
+    survey.add_argument("--json", action="store_true", help="write the JSON list to stdout instead of text lines")
     sub.add_parser("version", help="print the version")
     args = parser.parse_args(argv)
     if args.command == "version":
@@ -46,6 +50,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(version("pcc"))
         return 0
     try:
+        if args.command == "survey":
+            return _survey_command(repo_root=Path(args.repo), as_json=args.json)
         return _run_command(
             paths=args.paths,
             base=args.base,
@@ -251,6 +257,50 @@ def _run_command(
         return 1
     if finding_stale:
         return 1
+    return 0
+
+
+def _is_skipped(path: str) -> bool:
+    """Whether ``path`` belongs to the survey skip list (issue #64).
+
+    Matching is case-sensitive on the normalized POSIX relative path: any path with a directory
+    component exactly ``tests`` or ``docs`` is skipped, as is a file whose basename is
+    ``conftest.py`` or ``setup.py``, starts with ``test_`` and ends with ``.py``, or ends with
+    ``_test.py``. There are no substring false positives: ``contest.py`` and ``my_tests/`` stay.
+    """
+    parts = path.split("/")
+    if any(part in ("tests", "docs") for part in parts[:-1]):
+        return True
+    basename = parts[-1]
+    return (
+        basename in ("conftest.py", "setup.py")
+        or (basename.startswith("test_") and basename.endswith(".py"))
+        or basename.endswith("_test.py")
+    )
+
+
+def _survey_command(*, repo_root: Path, as_json: bool) -> int:
+    """List every surveyed function and whether it would reach step 1 (issue #64).
+
+    Discovers the functions with ``discover(repo_root, ["."])``, drops the skip list, builds the
+    call graph and the import errors once, and reports the ``precheck`` reason per function. Makes
+    no model call. With ``as_json`` only the JSON list of ``{"function", "reason"}`` objects goes to
+    stdout (``reason`` is null for checkable functions); otherwise one ``<path>::<qualname>`` line per
+    function plus a final ``"N of M functions checkable"`` line. Never exits 1: a failing import is
+    a result, not an error.
+    """
+    root = repo_root.resolve()
+    functions = tuple(ref for ref in project.discover(root, ["."]) if not _is_skipped(ref.path))
+    graph = project.call_graph(root, functions)
+    import_errors = pipeline.module_import_errors(functions, root)
+    rows = [(ref, pipeline.precheck(ref, root, graph=graph, import_errors=import_errors)) for ref in functions]
+    if as_json:
+        print(json.dumps([{"function": f"{ref.path}::{ref.qualname}", "reason": reason} for ref, reason in rows]))
+    else:
+        for ref, reason in rows:
+            print(f"{ref.path}::{ref.qualname}: {reason if reason is not None else 'checkable'}")
+        checkable = sum(1 for _, reason in rows if reason is None)
+        print(f"{checkable} of {len(rows)} functions checkable")
     return 0
 
 

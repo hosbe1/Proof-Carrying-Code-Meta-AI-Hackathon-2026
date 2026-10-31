@@ -434,3 +434,172 @@ def test_run_passes_cached_callee_results_to_run_many(monkeypatch: pytest.Monkey
     assert reused.state is State.PROVEN
     assert reused.reason == "certificate"
     assert reused.proof is not None
+
+
+# -- survey (issue #64) ----------------------------------------------------------
+
+MIXED_SOURCES = {
+    "pkg/pure.py": "def add(a: int, b: int) -> int:\n    return a + b\n",
+    "pkg/methods.py": "class Cart:\n    def total(self, xs: list[int]) -> int:\n        return sum(xs)\n",
+    "pkg/untyped.py": "def double(x):\n    return x + x\n",
+}
+
+DEMO_SOURCE = (
+    "import missing_pkg\n\n\ndef one(x: int) -> int:\n    return x\n\n\ndef two(x: int) -> int:\n    return x + 1\n"
+)
+
+
+def _write_sources(root: Path, sources: Mapping[str, str]) -> None:
+    for relative, text in sources.items():
+        target = root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+
+
+def _survey(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, argv: list[str]) -> int:
+    monkeypatch.chdir(tmp_path)
+    return main(argv)
+
+
+def test_help_lists_survey(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exc:
+        main(["--help"])
+    assert exc.value.code == 0
+    assert "survey" in capsys.readouterr().out
+
+
+def test_survey_mixed_repo(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    _write_sources(tmp_path, MIXED_SOURCES)
+
+    assert _survey(monkeypatch, tmp_path, ["survey", str(tmp_path)]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[-1] == "1 of 3 functions checkable"
+    body = lines[:-1]
+    assert len(body) == 3
+    assert "pkg/pure.py::add: checkable" in body
+    assert "pkg/methods.py::Cart.total: methods are tier 3" in body
+    assert "pkg/untyped.py::double: no types" in body
+
+
+def test_survey_reports_import_errors(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_sources(
+        tmp_path,
+        {
+            "strings/demo.py": DEMO_SOURCE,
+            "ok.py": "def fine(x: int) -> int:\n    return x\n",
+        },
+    )
+
+    assert _survey(monkeypatch, tmp_path, ["survey", str(tmp_path)]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[-1] == "1 of 3 functions checkable"
+    assert "ok.py::fine: checkable" in lines
+    assert "strings/demo.py::one: imports strings.demo" in lines
+    assert "strings/demo.py::two: imports strings.demo" in lines
+
+
+def test_survey_project_calls_and_self_calls(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_sources(
+        tmp_path,
+        {
+            "calls.py": (
+                "def g(x: int) -> int:\n"
+                "    return x\n"
+                "\n"
+                "\n"
+                "def f(x: int) -> int:\n"
+                "    return g(x)\n"
+                "\n"
+                "\n"
+                "def rec(n: int) -> int:\n"
+                "    return rec(n - 1) if n > 0 else 0\n"
+            ),
+        },
+    )
+
+    assert _survey(monkeypatch, tmp_path, ["survey", str(tmp_path)]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[-1] == "2 of 3 functions checkable"
+    assert "calls.py::f: calls into the project come with #43" in lines
+    assert "calls.py::g: checkable" in lines
+    assert "calls.py::rec: checkable" in lines
+
+
+def test_survey_makes_no_model_call(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _write_sources(tmp_path, MIXED_SOURCES)
+
+    def boom(config: Config, router: object) -> Config:
+        _ = (config, router)
+        raise AssertionError("survey must not build a model client")
+
+    monkeypatch.setattr(models, "build_client", boom)
+
+    assert _survey(monkeypatch, tmp_path, ["survey", str(tmp_path)]) == 0
+
+
+def test_survey_empty_repo(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert _survey(monkeypatch, tmp_path, ["survey", str(tmp_path)]) == 0
+    assert capsys.readouterr().out.splitlines() == ["0 of 0 functions checkable"]
+
+
+def test_survey_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    _write_sources(tmp_path, MIXED_SOURCES)
+
+    assert _survey(monkeypatch, tmp_path, ["survey", str(tmp_path), "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == [
+        {"function": "pkg/methods.py::Cart.total", "reason": "methods are tier 3"},
+        {"function": "pkg/pure.py::add", "reason": None},
+        {"function": "pkg/untyped.py::double", "reason": "no types"},
+    ]
+
+
+def test_survey_json_empty_repo(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert _survey(monkeypatch, tmp_path, ["survey", str(tmp_path), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out) == []
+
+
+def test_survey_skip_list(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    _write_sources(
+        tmp_path,
+        {
+            "pkg/keep.py": "def keep(x: int) -> int:\n    return x\n",
+            "tests/test_keep.py": "def skipped_a(x: int) -> int:\n    return x\n",
+            "pkg/tests/deep.py": "def skipped_b(x: int) -> int:\n    return x\n",
+            "docs/guide.py": "def skipped_c(x: int) -> int:\n    return x\n",
+            "pkg/docs/notes.py": "def skipped_d(x: int) -> int:\n    return x\n",
+            "conftest.py": "def skipped_e(x: int) -> int:\n    return x\n",
+            "setup.py": "def skipped_f(x: int) -> int:\n    return x\n",
+            "pkg/test_helper.py": "def skipped_g(x: int) -> int:\n    return x\n",
+            "pkg/helper_test.py": "def skipped_h(x: int) -> int:\n    return x\n",
+            "contest.py": "def kept_contest(x: int) -> int:\n    return x\n",
+            "Tests/capital.py": "def kept_capital(x: int) -> int:\n    return x\n",
+        },
+    )
+
+    assert _survey(monkeypatch, tmp_path, ["survey", str(tmp_path)]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[-1] == "3 of 3 functions checkable"
+    assert "pkg/keep.py::keep: checkable" in lines
+    assert "contest.py::kept_contest: checkable" in lines
+    assert "Tests/capital.py::kept_capital: checkable" in lines
+    assert all("skipped_" not in line for line in lines)
+
+
+def test_survey_tool_error_exits_2(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def boom(root: Path, paths: Sequence[str]) -> tuple[FunctionRef, ...]:
+        _ = (root, paths)
+        raise ToolError("sandbox is down")
+
+    monkeypatch.setattr(project, "discover", boom)
+
+    assert _survey(monkeypatch, tmp_path, ["survey", str(tmp_path)]) == 2
+    assert "sandbox is down" in capsys.readouterr().err

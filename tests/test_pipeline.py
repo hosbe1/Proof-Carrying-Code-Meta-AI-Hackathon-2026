@@ -11,13 +11,14 @@ from __future__ import annotations
 import dataclasses
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 import pcc.pipeline
+from pcc import project
 from pcc.config import BudgetConfig, Config, ModelsConfig, PipelineConfig, SpecConfig
 from pcc.core import (
     CheckKind,
@@ -42,6 +43,7 @@ from pcc.core import (
     UnsupportedConstruct,
 )
 from pcc.models import BudgetExceeded, FakeClient
+from pcc.sandbox import RunOutcome, target_loader
 from tests.helpers import contradiction as make_contradiction
 from tests.helpers import counterexample as make_counterexample
 from tests.helpers import function_ref
@@ -1270,3 +1272,280 @@ def test_counterexample_model_used_for_nothing_else(monkeypatch: pytest.MonkeyPa
     assert result.state is State.COUNTEREXAMPLE
     assert "search" in steps.models
     assert steps.models["search"] == [Config().models.counterexample]
+
+
+# -- Step 0: precheck and module_import_errors (issue #64) -----------------------
+
+CALLS_REASON = "calls into the project come with #43"
+
+CALL_REPO = (
+    "def g(x: int) -> int:\n"
+    "    return x\n"
+    "\n"
+    "\n"
+    "def f(x: int) -> int:\n"
+    "    return g(x)\n"
+    "\n"
+    "\n"
+    "def rec(n: int) -> int:\n"
+    "    return rec(n - 1) if n > 0 else 0\n"
+)
+
+
+def _write_call_repo(root: Path) -> None:
+    (root / "pkg").mkdir(parents=True, exist_ok=True)
+    (root / "pkg" / "calls.py").write_text(CALL_REPO, encoding="utf-8")
+
+
+def _discover_call_repo(root: Path) -> dict[str, FunctionRef]:
+    return {ref.qualname: ref for ref in project.discover(root, ["."])}
+
+
+def _call_graph(root: Path) -> tuple[dict[str, FunctionRef], Mapping[FunctionRef, frozenset[FunctionRef]]]:
+    refs = _discover_call_repo(root)
+    return refs, project.call_graph(root, tuple(refs.values()))
+
+
+def test_precheck_checkable_returns_none(tmp_path: Path) -> None:
+    ref = function_ref(source=SIMPLE_SOURCE, path=PATH, qualname="total", lineno=1)
+
+    assert pcc.pipeline.precheck(ref, tmp_path, graph={ref: frozenset()}, import_errors={}) is None
+
+
+def test_precheck_import_error_wins_over_other_reasons(tmp_path: Path) -> None:
+    source = "def gen(n: int) -> int:\n    yield n\n"
+    ref = function_ref(source=source, path="pkg/mod.py", qualname="gen", lineno=1)
+
+    reason = pcc.pipeline.precheck(ref, tmp_path, graph={ref: frozenset()}, import_errors={"pkg.mod": "boom"})
+
+    assert reason == "imports pkg.mod"
+
+
+def test_precheck_generator_before_async(tmp_path: Path) -> None:
+    source = "async def gen(n: int) -> int:\n    yield n\n"
+    ref = function_ref(source=source, path=PATH, qualname="gen", lineno=1)
+
+    reason = pcc.pipeline.precheck(ref, tmp_path, graph={ref: frozenset()}, import_errors={})
+
+    assert reason == "generator functions are not supported"
+
+
+def test_precheck_async(tmp_path: Path) -> None:
+    source = "async def fetch(url: str) -> str:\n    return url\n"
+    ref = function_ref(source=source, path=PATH, qualname="fetch", lineno=1)
+
+    reason = pcc.pipeline.precheck(ref, tmp_path, graph={ref: frozenset()}, import_errors={})
+
+    assert reason == "async functions are not supported"
+
+
+@pytest.mark.parametrize(
+    "source", ["def f(x: int) -> int:\n    return eval(x)\n", "def f(x: int) -> int:\n    exec(x)\n"]
+)
+def test_precheck_eval_exec(tmp_path: Path, source: str) -> None:
+    ref = function_ref(source=source, path=PATH, qualname="f", lineno=1)
+
+    reason = pcc.pipeline.precheck(ref, tmp_path, graph={ref: frozenset()}, import_errors={})
+
+    assert reason == "eval/exec is not supported"
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import threading\ndef f(x: int) -> int:\n    return x\n",
+        "from multiprocessing import Pool\ndef f(x: int) -> int:\n    return x\n",
+    ],
+)
+def test_precheck_threading(tmp_path: Path, source: str) -> None:
+    ref = function_ref(source=source, path=PATH, qualname="f", lineno=1)
+
+    reason = pcc.pipeline.precheck(ref, tmp_path, graph={ref: frozenset()}, import_errors={})
+
+    assert reason == "threading/multiprocessing is not supported"
+
+
+def test_precheck_method(tmp_path: Path) -> None:
+    module = "class Cart:\n    def total(self, xs: list[int]) -> int:\n        return sum(xs)\n"
+    (tmp_path / "cart.py").write_text(module, encoding="utf-8")
+    ref = function_ref(
+        source="    def total(self, xs: list[int]) -> int:\n        return sum(xs)\n",
+        path="cart.py",
+        qualname="Cart.total",
+        lineno=2,
+    )
+
+    reason = pcc.pipeline.precheck(ref, tmp_path, graph={ref: frozenset()}, import_errors={})
+
+    assert reason == "methods are tier 3"
+
+
+def test_precheck_no_types(tmp_path: Path) -> None:
+    ref = function_ref(source="def f(x):\n    return x\n", path=PATH, qualname="f", lineno=1)
+
+    reason = pcc.pipeline.precheck(ref, tmp_path, graph={ref: frozenset()}, import_errors={})
+
+    assert reason == "no types"
+
+
+def test_precheck_generator_before_missing_types(tmp_path: Path) -> None:
+    ref = function_ref(source="def gen(n):\n    yield n\n", path=PATH, qualname="gen", lineno=1)
+
+    reason = pcc.pipeline.precheck(ref, tmp_path, graph={ref: frozenset()}, import_errors={})
+
+    assert reason == "generator functions are not supported"
+
+
+def test_precheck_project_call_and_self_call(tmp_path: Path) -> None:
+    _write_call_repo(tmp_path)
+    refs, graph = _call_graph(tmp_path)
+
+    assert pcc.pipeline.precheck(refs["f"], tmp_path, graph=graph, import_errors={}) == CALLS_REASON
+    assert pcc.pipeline.precheck(refs["g"], tmp_path, graph=graph, import_errors={}) is None
+    assert pcc.pipeline.precheck(refs["rec"], tmp_path, graph=graph, import_errors={}) is None
+
+
+def test_precheck_self_call_with_rediscovered_spelling(tmp_path: Path) -> None:
+    ref = function_ref(source=SIMPLE_SOURCE, path=PATH, qualname="total", lineno=1)
+    rediscovered = function_ref(source=SIMPLE_SOURCE.rstrip("\n"), path=PATH, qualname="total", lineno=1)
+    assert rediscovered != ref, "discover strips the trailing newline, so the spellings differ"
+    graph = {ref: frozenset({rediscovered})}
+
+    assert pcc.pipeline.precheck(ref, tmp_path, graph=graph, import_errors={}) is None
+
+
+def test_precheck_unparseable_source_returns_none(tmp_path: Path) -> None:
+    ref = function_ref(source="def broken(:\n", path=PATH, qualname="broken", lineno=1)
+
+    assert pcc.pipeline.precheck(ref, tmp_path, graph={ref: frozenset()}, import_errors={}) is None
+
+
+def test_module_import_errors_empty() -> None:
+    assert pcc.pipeline.module_import_errors((), Path(".")) == {}
+
+
+def test_module_import_errors_reports_failing_module(tmp_path: Path) -> None:
+    pkg = tmp_path / "strings"
+    pkg.mkdir()
+    (pkg / "demo.py").write_text(
+        "import missing_pkg\n"
+        "\n"
+        "\n"
+        "def one(x: int) -> int:\n"
+        "    return x\n"
+        "\n"
+        "\n"
+        "def two(x: int) -> int:\n"
+        "    return x + 1\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "ok.py").write_text("def fine(x: int) -> int:\n    return x\n", encoding="utf-8")
+    refs = project.discover(tmp_path, ["."])
+    assert len(refs) == 3
+
+    errors = pcc.pipeline.module_import_errors(refs, tmp_path)
+
+    assert set(errors) == {"strings.demo"}
+    assert "missing_pkg" in errors["strings.demo"]
+
+
+def test_module_import_errors_runs_once_per_module(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    first = function_ref(source=SIMPLE_SOURCE, path="pkg/mod.py", qualname="a", lineno=1)
+    second = function_ref(source=SIMPLE_SOURCE, path="pkg/mod.py", qualname="b", lineno=4)
+    other = function_ref(source=SIMPLE_SOURCE, path="other.py", qualname="c", lineno=1)
+    seen: list[tuple[str, dict[str, object]]] = []
+
+    def fake_run(script: str, **kwargs: object) -> RunOutcome:
+        seen.append((script, dict(kwargs)))
+        return RunOutcome(True, 0, "", "", False, 0.0)
+
+    monkeypatch.setattr(pcc.pipeline, "run_python", fake_run)
+
+    assert pcc.pipeline.module_import_errors([first, second, other], tmp_path) == {}
+    assert len(seen) == 2
+    assert all(kwargs == {"cwd": tmp_path} for _, kwargs in seen)
+
+
+def test_module_import_errors_uses_first_ref_of_module(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    later = function_ref(source=SIMPLE_SOURCE, path="pkg/mod.py", qualname="b", lineno=1)
+    earlier = function_ref(source=SIMPLE_SOURCE, path="pkg/mod.py", qualname="a", lineno=4)
+    seen: list[str] = []
+
+    def fake_run(script: str, **kwargs: object) -> RunOutcome:
+        _ = kwargs
+        seen.append(script)
+        return RunOutcome(True, 0, "", "", False, 0.0)
+
+    monkeypatch.setattr(pcc.pipeline, "run_python", fake_run)
+
+    assert pcc.pipeline.module_import_errors([later, earlier], tmp_path) == {}
+    assert seen == [target_loader(earlier)]
+
+
+@pytest.mark.parametrize(
+    ("outcome", "expected"),
+    [
+        (RunOutcome(False, 1, "", "", False, 0.1), "exit 1"),
+        (RunOutcome(False, -9, "", "", True, 60.0), "timeout"),
+        (RunOutcome(False, 1, "", "first\n\n   \nlast\n", False, 0.1), "last"),
+    ],
+)
+def test_module_import_errors_failure_detail(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, outcome: RunOutcome, expected: str
+) -> None:
+    ref = function_ref(source=SIMPLE_SOURCE, path="pkg/mod.py", qualname="a", lineno=1)
+
+    def fake_run(script: str, **kwargs: object) -> RunOutcome:
+        _ = (script, kwargs)
+        return outcome
+
+    monkeypatch.setattr(pcc.pipeline, "run_python", fake_run)
+
+    assert pcc.pipeline.module_import_errors([ref], tmp_path) == {"pkg.mod": expected}
+
+
+def test_run_precheck_reason_needs_no_model_call(tmp_path: Path) -> None:
+    source = "def gen(n: int) -> int:\n    yield n\n"
+    ref = function_ref(source=source, path=PATH, qualname="gen", lineno=1)
+
+    result = pcc.pipeline.run(ref, tmp_path, client=FakeClient([]), config=Config())
+
+    assert result.state is State.NOT_CHECKABLE
+    assert result.reason == "generator functions are not supported"
+
+
+def test_run_project_call_without_callees_is_not_checkable(tmp_path: Path) -> None:
+    _write_call_repo(tmp_path)
+    refs = _discover_call_repo(tmp_path)
+
+    result = pcc.pipeline.run(refs["f"], tmp_path, client=FakeClient([]), config=Config())
+
+    assert result.state is State.NOT_CHECKABLE
+    assert result.reason == CALLS_REASON
+
+
+def test_run_project_call_with_proven_callee_proceeds(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _write_call_repo(tmp_path)
+    refs = _discover_call_repo(tmp_path)
+    steps = _Steps(refs["f"])
+    _install(monkeypatch, steps)
+    proven = Result(refs["g"], State.PROVEN, "", proof=make_proof())
+
+    result = pcc.pipeline.run(refs["f"], tmp_path, client=FakeClient([]), config=Config(), callees={refs["g"]: proven})
+
+    assert result.state is State.PROVEN
+    assert steps.calls[0] == "collect"
+
+
+def test_run_project_call_with_counterexample_callee_is_open(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _write_call_repo(tmp_path)
+    refs = _discover_call_repo(tmp_path)
+    steps = _Steps(refs["f"])
+    _install(monkeypatch, steps)
+    bad = Result(refs["g"], State.COUNTEREXAMPLE, "", counterexample=make_counterexample())
+
+    result = pcc.pipeline.run(refs["f"], tmp_path, client=FakeClient([]), config=Config(), callees={refs["g"]: bad})
+
+    assert result.state is State.OPEN
+    assert result.reason == "callee g has a counterexample"
+    assert steps.calls == []
