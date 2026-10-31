@@ -1,0 +1,1 @@
+{"lemmas": "", "method": "method is_palindrome_recursive(s: string) returns (result: bool)\n  requires pre(s)\n  ensures spec(s, result)\n  decreases |s|\n{\n  if py_len(s) <= 1 {\n    return true;\n  }\n  if py_index(s, 0) != py_index(s, -1) {\n    return false;\n  }\n  var pcc_t1 := is_palindrome_recursive(py_slice(s, 1, -1));\n  return pcc_t1;\n}"}
