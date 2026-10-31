@@ -43,7 +43,7 @@ from pcc.core import (
     source_hash,
 )
 from pcc.evaluation.datasets import Task
-from pcc.evaluation.humanevalfix import run_harness
+from pcc.evaluation.humanevalfix import classify_spec, run_harness
 from pcc.models import FakeClient, Message, ModelClient, Router
 from pcc.models.client import Completion
 
@@ -347,6 +347,18 @@ def test_spec_only_outcomes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> 
     assert run["spec_only"] is True
     assert run["metrics"]["outcomes"] == {"pass": 1, "false_alarm": 0, "caught": 1, "missed": 0, "not_checkable": 0}
     assert summary["metrics"] == run["metrics"]
+
+
+def test_classify_spec_timeout_is_not_checkable() -> None:
+    function = function_ref_for("def add(a, b):\n    return a + b\n", "add")
+    checked = Spec(
+        function,
+        "def spec(a, b, result):\n    return True",
+        None,
+        (CheckRecord(CheckKind.HYPOTHESIS_ORIGINAL, False, "timeout"),),
+    )
+    assert classify_spec(checked, "fixed") == ("not_checkable", "timeout")
+    assert classify_spec(checked, "buggy") == ("not_checkable", "timeout")
 
 
 def test_spec_model_override(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

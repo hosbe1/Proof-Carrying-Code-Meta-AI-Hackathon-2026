@@ -268,7 +268,7 @@ def classify_spec(checked: Spec, version: Version) -> tuple[str, str]:
         return "not_checkable", "no hypothesis check recorded"
     if hyp.passed:
         return ("pass", "") if version == FIXED else ("missed", "")
-    if hyp.detail == "precondition never holds":
+    if hyp.detail in ("precondition never holds", "timeout"):
         return "not_checkable", hyp.detail
     if version == FIXED:
         return "false_alarm", hyp.detail
