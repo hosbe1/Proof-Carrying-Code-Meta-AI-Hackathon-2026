@@ -316,6 +316,19 @@ def _format_rate(rate: float, low: float, high: float, name: str) -> str:
     return f"{name} {rate:.3f} (95% CI {low:.3f}-{high:.3f})"
 
 
+def _skipped_of(run: dict[str, Any]) -> tuple[list[str], int | None]:
+    """The (skipped IDs, total tasks) the harness recorded in ``run.json``.
+
+    Runs from before the skip report (issue #154) have neither key; they publish
+    an empty skip report instead of failing.
+    """
+    raw_ids = run.get("skipped_ids")
+    skipped = sorted(i for i in raw_ids if isinstance(i, str)) if isinstance(raw_ids, list) else []
+    raw_total = run.get("total_tasks")
+    total = raw_total if isinstance(raw_total, int) and raw_total >= 0 else None
+    return skipped, total
+
+
 def _summary_markdown(
     *,
     name: str,
@@ -328,6 +341,7 @@ def _summary_markdown(
     rate_text: str,
     metrics: dict[str, Any],
     stopped: bool,
+    extra_lines: Sequence[str] = (),
 ) -> str:
     """The human-readable ``summary.md``; every results table states the contributor mode."""
     if mode == "contributor":
@@ -392,6 +406,7 @@ def _summary_markdown(
             f"- Mean cost per function: {metrics['mean_cost_usd_per_function']:.2f} USD",
             f"- Mean time per function: {metrics['mean_seconds_per_function']:.1f} s",
         ]
+    lines += list(extra_lines)
     return "\n".join(lines) + "\n"
 
 
@@ -447,6 +462,17 @@ def publish(run_dir: str | Path, results_dir: str | Path = "docs/results") -> Pa
         "solved_task_ids": solved,
         "metrics": metrics,
     }
+    extra_lines: list[str] = []
+    if kind == "vericoding":
+        skipped_ids, run_total = _skipped_of(run)
+        total = run_total if run_total is not None else n + len(skipped_ids)
+        summary["skipped_ids"] = skipped_ids
+        summary["total_tasks"] = total
+        if skipped_ids:
+            extra_lines = [
+                f"- Eligible tasks: {n} of {total} (skipped {len(skipped_ids)})",
+                f"- Skipped tasks (unbuildable prompt): {', '.join(skipped_ids)}",
+            ]
     dest.mkdir(parents=True)
     (dest / "meta.json").write_text(json.dumps(run, sort_keys=True, indent=2) + "\n", encoding="utf-8")
     (dest / "summary.json").write_text(json.dumps(summary, sort_keys=True, indent=2) + "\n", encoding="utf-8")
@@ -462,6 +488,7 @@ def publish(run_dir: str | Path, results_dir: str | Path = "docs/results") -> Pa
             rate_text=rate_text,
             metrics=metrics,
             stopped=stopped,
+            extra_lines=extra_lines,
         ),
         encoding="utf-8",
     )
