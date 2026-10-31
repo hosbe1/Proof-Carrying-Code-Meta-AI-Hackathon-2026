@@ -151,6 +151,13 @@ def test_ci_runs_actionlint_on_the_selftest() -> None:
     body = _read(CI)
     assert "actionlint" in body, "CI must run actionlint"
     assert "action-selftest" in body, "CI must run actionlint on the self-test workflow"
+    assert ".github/workflows/action-selftest.yml" in body, (
+        "CI must lint the exact self-test workflow path, not a similarly named file"
+    )
+    assert SELFTEST.is_file(), "the linted self-test workflow must exist"
+    assert "1.7.7" in body, "CI must pin the actionlint version for reproducible runs"
+    assert "set -e" in body, "the actionlint step must propagate a finding as a step failure"
+    assert "continue-on-error" not in body, "the actionlint step must fail the job on findings"
 
 
 def test_docs_cover_the_example_workflow() -> None:
