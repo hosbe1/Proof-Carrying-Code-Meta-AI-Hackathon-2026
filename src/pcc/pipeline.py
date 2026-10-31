@@ -913,7 +913,7 @@ def run(
             Result(
                 function,
                 State.OPEN,
-                outcome.last_error or _NO_PROOF_REASON,
+                _NO_PROOF_REASON,
                 intent,
                 spec,
                 translation,

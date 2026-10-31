@@ -877,7 +877,7 @@ def test_failed_proof_without_related_clause_searches_with_none(
     result = _run(ref, tmp_path, steps)
 
     assert result.state is State.OPEN
-    assert result.reason == "assertion might not hold"
+    assert result.reason == "no proof found", "step 6 fixes the reason even with a prover last error"
     assert steps.search_failed_clauses == [None]
     assert steps.review_calls == 1
 

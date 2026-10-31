@@ -600,7 +600,7 @@ def test_failed_proof_without_counterexample_stays_open(monkeypatch: pytest.Monk
     result = _run(f_ref(), tmp_path, {})
 
     assert result.state is State.OPEN
-    assert result.reason == "assertion might not hold"
+    assert result.reason == "no proof found", "step 6 fixes the reason even with a prover last error"
 
 
 def _open_callee_result(ref: FunctionRef, reason: str, dafny_function: str = G_DAFNY_FUNCTION) -> Result:
