@@ -11,8 +11,9 @@ from typing import Any
 
 import pytest
 import training.export_sft as export_sft
-from training.prompts import build_prompt
+from training.prompts import SYSTEM_MESSAGE, build_prompt
 
+from pcc.evaluation import prompts as canonical_prompts
 from pcc.evaluation.datasets import Task
 
 
@@ -94,3 +95,9 @@ def test_build_prompt_rejects_unknown_payload_shape() -> None:
 def test_export_uses_the_shared_prompt_builder() -> None:
     """The SFT export must reuse the shared builder so guards stay byte-identical."""
     assert export_sft.build_prompt is build_prompt
+
+
+def test_canonical_prompts_live_in_pcc_evaluation() -> None:
+    """``training/prompts.py`` re-exports the canonical ``pcc.evaluation.prompts`` objects."""
+    assert build_prompt is canonical_prompts.build_prompt
+    assert SYSTEM_MESSAGE == canonical_prompts.SYSTEM_MESSAGE
