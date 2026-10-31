@@ -541,6 +541,22 @@ def _is_method(function: FunctionRef, repo_root: Path) -> bool:
     return any(isinstance(parent, ast.ClassDef) for parent in parents[:-1])
 
 
+def _has_own_yield(node: ast.AST) -> bool:
+    """Whether ``node`` itself yields, ignoring nested scopes.
+
+    A ``yield`` inside a nested ``def``, ``async def``, ``class`` or ``lambda`` belongs to that inner
+    scope, not to the outer function, so it must not mark the outer function as a generator.
+    """
+    for child in ast.iter_child_nodes(node):
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+            continue
+        if isinstance(child, (ast.Yield, ast.YieldFrom)):
+            return True
+        if _has_own_yield(child):
+            return True
+    return False
+
+
 def _early_not_checkable(function: FunctionRef, repo_root: Path) -> str | None:
     """The step-0 reason, or ``None`` when the function is checked normally (ticket #34, step 0).
 
@@ -555,9 +571,8 @@ def _early_not_checkable(function: FunctionRef, repo_root: Path) -> str | None:
     definitions = [node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
     if any(isinstance(node, ast.AsyncFunctionDef) for node in definitions):
         return _ASYNC_REASON
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.Yield, ast.YieldFrom)):
-            return _GENERATOR_REASON
+    if any(_has_own_yield(definition) for definition in definitions):
+        return _GENERATOR_REASON
     for node in ast.walk(tree):
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in ("eval", "exec"):
             return _EVAL_REASON
@@ -856,6 +871,7 @@ def run(
             function, spec, dafny_spec, repo_root, client=wrapped, config=config, callee_modules=callee_modules
         )
         translation = dataclasses.replace(translation, checks=(spec_record, *translation.checks))
+        check_budget()
         outcome = prove(
             translation,
             assumptions,
@@ -884,6 +900,7 @@ def run(
                 )
             )
         failed_clause = outcome.errors[0].related if outcome.errors else None
+        check_budget()
         hit = search_counterexample(
             function,
             spec,
@@ -950,7 +967,19 @@ def run(
             try:
                 return _maybe_review(context, intent, failed, client=wrapped, config=config)
             except BudgetExceeded:
-                return failed
+                return Result(
+                    function,
+                    State.OPEN,
+                    _BUDGET_REASON,
+                    intent,
+                    spec,
+                    translation,
+                    assumptions,
+                    None,
+                    None,
+                    None,
+                    wrapped.usage,
+                )
         return failed
 
 

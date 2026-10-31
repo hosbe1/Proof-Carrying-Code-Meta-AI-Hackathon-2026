@@ -371,6 +371,18 @@ def test_generator_function_is_not_checkable(monkeypatch: pytest.MonkeyPatch, tm
     assert steps.calls == []
 
 
+def test_nested_generator_is_checked_normally(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    source = "def f(x: int) -> int:\n    def g():\n        yield x\n    return 1\n"
+    ref = function_ref(source=source, path=PATH, qualname="f", lineno=1)
+    steps = _Steps(ref)
+    _install(monkeypatch, steps)
+
+    result = _run(ref, tmp_path, steps)
+
+    assert result.state is State.PROVEN
+    assert steps.calls[0] == "collect"
+
+
 @pytest.mark.parametrize(
     "source", ["def f(x: int) -> int:\n    return eval(x)\n", "def f(x: int) -> int:\n    exec(x)\n"]
 )
@@ -973,6 +985,53 @@ def test_elapsed_budget_stops_before_any_step(monkeypatch: pytest.MonkeyPatch, t
     assert result.reason == "budget"
     assert steps.calls == []
     assert result.intent is None
+
+
+def test_elapsed_budget_between_prove_and_search_skips_search(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    ref = function_ref(source=SIMPLE_SOURCE, path=PATH, qualname="total", lineno=1)
+    steps = _Steps(ref)
+    steps.prove_outcome = ProofOutcome(False, "source", 1, "spark", "no proof found", ())
+    expired = {"flag": False}
+
+    def fake_monotonic() -> float:
+        return 1000.0 if expired["flag"] else 0.0
+
+    def expiring_prove(translation: Translation, assumptions: Sequence[Any], **kwargs: Any) -> ProofOutcome:
+        expired["flag"] = True
+        return steps.fake_prove(translation, assumptions, **kwargs)
+
+    _install(monkeypatch, steps)
+    monkeypatch.setattr(pcc.pipeline, "prove", expiring_prove)
+    monkeypatch.setattr(time, "monotonic", fake_monotonic)
+
+    result = _run(ref, tmp_path, steps)
+
+    assert result.state is State.OPEN
+    assert result.reason == "budget"
+    assert "search" not in steps.calls
+    assert steps.review_calls == 0
+
+
+def test_review_budget_exceeded_becomes_open_budget(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    ref = function_ref(source=SIMPLE_SOURCE, path=PATH, qualname="total", lineno=1)
+    steps = _Steps(ref)
+    intent = make_intent(ref)
+    steps.intent_value = dataclasses.replace(intent, contradictions=(make_contradiction(),))
+    steps.transpile_plan = [UnsupportedConstruct("type float")]
+    _install(monkeypatch, steps)
+
+    def boom_review(context: Context, spec: Spec, **kwargs: Any) -> SecondOpinion:
+        _ = (context, spec, kwargs)
+        raise BudgetExceeded("budget exceeded")
+
+    monkeypatch.setattr(pcc.pipeline, "review", boom_review)
+
+    result = _run(ref, tmp_path, steps)
+
+    assert result.state is State.OPEN
+    assert result.reason == "budget"
+    assert result.intent is not None
+    assert result.spec is not None
 
 
 def test_tool_error_escapes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
