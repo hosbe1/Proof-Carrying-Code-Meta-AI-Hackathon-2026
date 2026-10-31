@@ -1549,3 +1549,212 @@ def test_run_project_call_with_counterexample_callee_is_open(monkeypatch: pytest
     assert result.state is State.OPEN
     assert result.reason == "callee g has a counterexample"
     assert steps.calls == []
+
+
+# -- Scan filter: doctest conflict (issue #66) ------------------------------------
+
+SHORT_SOURCE = (
+    'def f(s: str) -> bool:\n    """Flag short strings.\n\n    >>> f("ab")\n    False\n    """\n    return len(s) > 2\n'
+)
+
+
+def _write_source(tmp_path: Path, name: str, source: str) -> None:
+    path = tmp_path / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(source, encoding="utf-8")
+
+
+def _discover_function(tmp_path: Path, qualname: str) -> FunctionRef:
+    for ref in project.discover(tmp_path, ["."]):
+        if ref.qualname == qualname:
+            return ref
+    raise AssertionError(f"function {qualname} was not discovered")
+
+
+def _short_spec(ref: FunctionRef, body: str = "return result == True", pre: str | None = None) -> Spec:
+    predicate = f"def spec(s, result):\n    {body}\n"
+    precondition = f"def pre(s):\n    {pre}\n" if pre is not None else None
+    return Spec(ref, predicate, precondition)
+
+
+def test_doctest_conflict_returns_source_when_spec_contradicts_docstring(tmp_path: Path) -> None:
+    _write_source(tmp_path, "docmod.py", SHORT_SOURCE)
+    ref = _discover_function(tmp_path, "f")
+
+    assert pcc.pipeline.doctest_conflict(_short_spec(ref), ref, tmp_path) == 'f("ab")'
+
+
+def test_doctest_conflict_none_when_spec_agrees_with_docstring(tmp_path: Path) -> None:
+    _write_source(tmp_path, "docmod.py", SHORT_SOURCE)
+    ref = _discover_function(tmp_path, "f")
+
+    assert pcc.pipeline.doctest_conflict(_short_spec(ref, "return result == False"), ref, tmp_path) is None
+
+
+def test_doctest_conflict_skips_non_literal_output(tmp_path: Path) -> None:
+    source = SHORT_SOURCE.replace("    False\n", "    <object at 0x7f8b1c2d3e4f>\n")
+    _write_source(tmp_path, "docmod.py", source)
+    ref = _discover_function(tmp_path, "f")
+
+    assert pcc.pipeline.doctest_conflict(_short_spec(ref), ref, tmp_path) is None
+
+
+def test_doctest_conflict_skips_traceback(tmp_path: Path) -> None:
+    source = (
+        "def f(s: str) -> bool:\n"
+        '    """Flag short strings.\n'
+        "\n"
+        '    >>> f("ab")\n'
+        "    Traceback (most recent call last):\n"
+        "    ValueError: bad\n"
+        '    """\n'
+        "    return len(s) > 2\n"
+    )
+    _write_source(tmp_path, "docmod.py", source)
+    ref = _discover_function(tmp_path, "f")
+
+    assert pcc.pipeline.doctest_conflict(_short_spec(ref), ref, tmp_path) is None
+
+
+def test_doctest_conflict_skips_pre_rejected_input(tmp_path: Path) -> None:
+    _write_source(tmp_path, "docmod.py", SHORT_SOURCE)
+    ref = _discover_function(tmp_path, "f")
+
+    assert pcc.pipeline.doctest_conflict(_short_spec(ref, pre="return len(s) > 2"), ref, tmp_path) is None
+
+
+def test_doctest_conflict_none_without_doctests(tmp_path: Path) -> None:
+    plain = SHORT_SOURCE.replace('    >>> f("ab")\n    False\n', "    No examples here.\n")
+    _write_source(tmp_path, "docmod.py", plain)
+    ref = _discover_function(tmp_path, "f")
+
+    assert pcc.pipeline.doctest_conflict(_short_spec(ref), ref, tmp_path) is None
+
+    bare = "def f(s: str) -> bool:\n    return len(s) > 2\n"
+    _write_source(tmp_path, "docmod.py", bare)
+    ref = _discover_function(tmp_path, "f")
+
+    assert pcc.pipeline.doctest_conflict(_short_spec(ref), ref, tmp_path) is None
+
+
+def test_doctest_conflict_skips_calls_to_other_functions(tmp_path: Path) -> None:
+    source = SHORT_SOURCE.replace('>>> f("ab")', ">>> g(1)").replace("    False\n", "    2\n")
+    _write_source(tmp_path, "docmod.py", source)
+    ref = _discover_function(tmp_path, "f")
+
+    assert pcc.pipeline.doctest_conflict(_short_spec(ref), ref, tmp_path) is None
+
+
+def test_doctest_conflict_spec_error_counts_as_reject(tmp_path: Path) -> None:
+    _write_source(tmp_path, "docmod.py", SHORT_SOURCE)
+    ref = _discover_function(tmp_path, "f")
+
+    assert pcc.pipeline.doctest_conflict(_short_spec(ref, 'raise ValueError("boom")'), ref, tmp_path) is None
+
+
+def test_doctest_conflict_returns_first_conflicting_example(tmp_path: Path) -> None:
+    source = (
+        "def f(s: str) -> bool:\n"
+        '    """Flag short strings.\n'
+        "\n"
+        '    >>> f("a")\n'
+        "    True\n"
+        "\n"
+        '    >>> f("ab")\n'
+        "    False\n"
+        '    """\n'
+        "    return len(s) > 2\n"
+    )
+    _write_source(tmp_path, "docmod.py", source)
+    ref = _discover_function(tmp_path, "f")
+
+    assert pcc.pipeline.doctest_conflict(_short_spec(ref), ref, tmp_path) == 'f("ab")'
+
+
+def test_doctest_conflict_uses_last_qualname_part(tmp_path: Path) -> None:
+    _write_source(tmp_path, "docmod.py", "x = 1\n")
+    ref = function_ref(source=SHORT_SOURCE, path="docmod.py", qualname="outer.f", lineno=1)
+
+    assert pcc.pipeline.doctest_conflict(_short_spec(ref), ref, tmp_path) == 'f("ab")'
+
+
+def test_doctest_conflict_tool_error_passes_through(tmp_path: Path) -> None:
+    _write_source(tmp_path, "docmod.py", SHORT_SOURCE)
+    ref = _discover_function(tmp_path, "f")
+
+    with pytest.raises(ToolError):
+        pcc.pipeline.doctest_conflict(_short_spec(ref), ref, tmp_path / "missing")
+
+
+def _install_doctest_write(monkeypatch: pytest.MonkeyPatch, ref: FunctionRef, spec: Spec) -> None:
+    def real_write(intent: Intent, **kwargs: Any) -> Spec:
+        _ = (intent, kwargs)
+        return spec
+
+    monkeypatch.setattr(pcc.pipeline, "write_spec", real_write)
+
+
+def _scan_run(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, body: str, *, scan: bool, check_plan: list[list[CheckRecord]]
+) -> tuple[Result, _Steps]:
+    _write_source(tmp_path, "docmod.py", SHORT_SOURCE)
+    ref = _discover_function(tmp_path, "f")
+    steps = _Steps(ref)
+    steps.check_plan = check_plan
+    _install(monkeypatch, steps)
+    _install_doctest_write(monkeypatch, ref, _short_spec(ref, body))
+    config = Config(pipeline=PipelineConfig(scan=scan))
+    return pcc.pipeline.run(ref, tmp_path, client=FakeClient([]), config=config), steps
+
+
+def test_scan_step3_counterexample_becomes_open_on_doctest_conflict(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    result, steps = _scan_run(monkeypatch, tmp_path, "return result == True", scan=True, check_plan=[_hyp_fail("'ab'")])
+
+    assert result.state is State.OPEN
+    assert result.reason == "spec contradicts docstring"
+    assert result.counterexample is None
+    assert result.spec is not None
+    assert steps.review_calls == 1, "the second opinion still runs as an advisory step"
+    assert "prove" not in steps.calls
+
+
+def test_no_scan_step3_counterexample_stays_despite_doctest_conflict(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    result, steps = _scan_run(
+        monkeypatch, tmp_path, "return result == True", scan=False, check_plan=[_hyp_fail("'ab'")]
+    )
+
+    assert result.state is State.COUNTEREXAMPLE
+    assert result.counterexample is not None
+    assert steps.review_calls == 1
+
+
+def test_scan_step3_counterexample_stays_when_spec_agrees_with_docstring(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    result, _ = _scan_run(monkeypatch, tmp_path, "return result == False", scan=True, check_plan=[_hyp_fail("'ab'")])
+
+    assert result.state is State.COUNTEREXAMPLE
+    assert result.counterexample is not None
+
+
+def test_scan_step6_hit_becomes_open_on_doctest_conflict(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _write_source(tmp_path, "docmod.py", SHORT_SOURCE)
+    ref = _discover_function(tmp_path, "f")
+    steps = _Steps(ref)
+    steps.prove_outcome = ProofOutcome(False, "source", 1, "spark", "no proof found", ())
+    steps.search_hit = make_counterexample()
+    _install(monkeypatch, steps)
+    _install_doctest_write(monkeypatch, ref, _short_spec(ref))
+    config = Config(pipeline=PipelineConfig(scan=True))
+
+    result = pcc.pipeline.run(ref, tmp_path, client=FakeClient([]), config=config)
+
+    assert result.state is State.OPEN
+    assert result.reason == "spec contradicts docstring"
+    assert result.counterexample is None
+    assert result.translation is not None, "the run keeps the parts reached so far"
+    assert steps.review_calls == 1
