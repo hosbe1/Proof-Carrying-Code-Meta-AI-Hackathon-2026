@@ -166,6 +166,16 @@ def _install_steps(monkeypatch: pytest.MonkeyPatch, recorded: _Recorded) -> None
         _ = spec
         return CALLER_DAFNY_SPEC
 
+    def fake_spec_cases(spec: Spec, function: FunctionRef, repo_root: Path, **kwargs: Any) -> Any:
+        _ = (spec, function, repo_root, kwargs)
+        return ()
+
+    def fake_check_spec_translation(
+        spec: Spec, dafny_spec: str, function: FunctionRef, repo_root: Path, **kwargs: Any
+    ) -> CheckRecord:
+        _ = (spec, dafny_spec, function, repo_root, kwargs)
+        return CheckRecord(CheckKind.DIFFERENTIAL, True, "")
+
     def fake_transpile(function: FunctionRef, *, callees: Mapping[str, str] = MappingProxyType({})) -> str:
         _ = function
         recorded.transpile_callees.append(dict(callees))
@@ -244,6 +254,8 @@ def _install_steps(monkeypatch: pytest.MonkeyPatch, recorded: _Recorded) -> None
     monkeypatch.setattr(pcc.pipeline, "write_spec", fake_write)
     monkeypatch.setattr(pcc.pipeline, "check_spec", fake_check)
     monkeypatch.setattr(pcc.pipeline, "transpile_spec", fake_transpile_spec)
+    monkeypatch.setattr(pcc.pipeline, "spec_cases", fake_spec_cases)
+    monkeypatch.setattr(pcc.pipeline, "check_spec_translation", fake_check_spec_translation)
     monkeypatch.setattr(pcc.pipeline, "transpile_function", fake_transpile)
     monkeypatch.setattr(pcc.pipeline, "translate", fake_translate)
     monkeypatch.setattr(pcc.pipeline, "check_equivalence", fake_equivalence)
