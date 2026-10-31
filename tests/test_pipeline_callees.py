@@ -295,6 +295,38 @@ def test_open_callee_becomes_unproven_callee_assumption(monkeypatch: pytest.Monk
     assert "method {:axiom} g(x: int) returns (result: int)\n    requires pre(x)\n    ensures spec(x, result)" in module
 
 
+SET_DISPLAY_FUNCTION = (
+    "method g(x: int) returns (result: int)\n  requires pre(x)\n  ensures result in {0, 1}\n{\n  result := x;\n}\n"
+)
+
+
+def test_open_callee_with_braces_in_contract_keeps_full_header(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    recorded = _Recorded()
+    _install_steps(monkeypatch, recorded)
+    callee = g_ref()
+    translation = make_translation(callee, dafny_function=SET_DISPLAY_FUNCTION, dafny_spec=G_DAFNY_SPEC)
+    outcome = Result(
+        callee,
+        State.OPEN,
+        "no proof found",
+        make_intent(callee),
+        make_spec(callee),
+        translation,
+        (),
+        None,
+        None,
+    )
+
+    result = _run(f_ref(), tmp_path, {callee: outcome})
+
+    assert result.state is State.PROVEN
+    (assumption,) = result.assumptions
+    assert assumption.dafny.count("{:axiom}") == 1
+    assert "ensures result in {0, 1}" in assumption.dafny
+    (module,) = recorded.prove_assumptions_module
+    assert "ensures result in {0, 1}" in module
+
+
 def test_mutual_recursion_ends_open_without_prove(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     def fail(*args: Any, **kwargs: Any) -> Any:
         raise AssertionError("steps must not run for mutual recursion")

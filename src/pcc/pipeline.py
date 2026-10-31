@@ -104,16 +104,65 @@ def _callee_gate(
     return None
 
 
+def _match_brace(text: str, opening: int) -> int | None:
+    """Index of the ``}`` matching the ``{`` at ``opening``, or ``None`` when unbalanced."""
+    depth = 0
+    for index in range(opening, len(text)):
+        if text[index] == "{":
+            depth += 1
+        elif text[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
+
+
+def _body_start(text: str) -> int | None:
+    """Index of the ``{`` that opens the method body, or ``None`` when there is none.
+
+    A ``{`` inside parentheses or brackets, or a group that more header text follows, holds a contract
+    expression (a set display such as ``{0, 1}`` or an attribute argument) rather than the body: only a
+    group whose match runs to the end of the text opens the body.
+    """
+    depth_paren = 0
+    depth_brack = 0
+    index = 0
+    size = len(text)
+    while index < size:
+        char = text[index]
+        if char == "(":
+            depth_paren += 1
+        elif char == ")":
+            depth_paren = max(0, depth_paren - 1)
+        elif char == "[":
+            depth_brack += 1
+        elif char == "]":
+            depth_brack = max(0, depth_brack - 1)
+        elif char == "{" and depth_paren == 0 and depth_brack == 0:
+            closing = _match_brace(text, index)
+            if closing is None:
+                return None
+            if text[closing + 1 :].strip() == "":
+                return index
+            index = closing
+        index += 1
+    return None
+
+
 def _assumption_method(outcome: Result) -> str | None:
     """The callee's translated method header as a body-less ``{:axiom}`` method.
 
-    Returns ``None`` when the callee has no translated method to assume, so the caller still lists the assumption
-    without Dafny text. The ``{:axiom}`` mark is what ``pcc.verifier.anti_cheat`` allows inside the generated
-    assumptions module.
+    Returns ``None`` when the callee has no translated method to assume or no body brace is found, so the
+    caller still lists the assumption without Dafny text. The ``{:axiom}`` mark is what ``pcc.verifier.anti_cheat``
+    allows inside the generated assumptions module.
     """
     if outcome.translation is None:
         return None
-    header = outcome.translation.dafny_function.partition("{")[0].strip()
+    text = outcome.translation.dafny_function
+    body = _body_start(text)
+    if body is None:
+        return None
+    header = text[:body].strip()
     match = _METHOD_RE.search(header)
     if match is None:
         return None
