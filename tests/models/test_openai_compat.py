@@ -432,6 +432,125 @@ def test_non_json_success_body_raises_without_retry() -> None:
     assert len(state.requests) == 1
 
 
+def _ok_null(finish_reason: str | None, usage: dict[str, int] | None = None) -> Scripted:
+    message: dict[str, Any] = {"role": "assistant", "content": None}
+    choice: dict[str, Any] = {"message": message}
+    if finish_reason is not None:
+        choice["finish_reason"] = finish_reason
+    body: dict[str, Any] = {"choices": [choice]}
+    if usage is not None:
+        body["usage"] = usage
+    return (200, {}, body)
+
+
+def _client_with_effort(
+    server: ThreadingHTTPServer,
+    sleeps: list[float],
+    reasoning_effort: str | None,
+) -> OpenAICompatClient:
+    base_url = f"http://127.0.0.1:{server.server_address[1]}"
+    return OpenAICompatClient(
+        base_url, "test-key", prices=PRICES, sleep=sleeps.append, reasoning_effort=reasoning_effort
+    )
+
+
+def test_reasoning_effort_sent_in_request_body() -> None:
+    state = _StubState([_ok("hi")])
+    server = _serve(state)
+    try:
+        _client_with_effort(server, [], "low").complete("m", (Message("user", "hi"),), step="intent")
+    finally:
+        server.shutdown()
+    assert state.requests[0]["body"]["reasoning_effort"] == "low"
+
+
+def test_reasoning_effort_omitted_when_unset() -> None:
+    state = _StubState([_ok("hi")])
+    server = _serve(state)
+    try:
+        _client(server, []).complete("m", (Message("user", "hi"),), step="intent")
+    finally:
+        server.shutdown()
+    assert "reasoning_effort" not in state.requests[0]["body"]
+
+
+@pytest.mark.parametrize("effort", ["minimal", "low", "medium", "high", "xhigh"])
+def test_valid_reasoning_effort_accepted(effort: str) -> None:
+    state = _StubState([_ok("hi")])
+    server = _serve(state)
+    try:
+        _client_with_effort(server, [], effort).complete("m", (Message("user", "hi"),), step="intent")
+    finally:
+        server.shutdown()
+    assert state.requests[0]["body"]["reasoning_effort"] == effort
+
+
+@pytest.mark.parametrize("effort", ["", "none", "None", "LOW", "banana"])
+def test_invalid_reasoning_effort_rejected(effort: str) -> None:
+    with pytest.raises(ValueError, match="reasoning_effort"):
+        OpenAICompatClient("http://127.0.0.1:1", "test-key", prices=PRICES, reasoning_effort=effort)
+
+
+def test_null_content_with_length_returns_empty_with_usage() -> None:
+    state = _StubState([_ok_null("length", {"prompt_tokens": 10, "completion_tokens": 4096})])
+    server = _serve(state)
+    try:
+        completion = _client(server, []).complete("m", (Message("user", "hi"),), step="intent")
+    finally:
+        server.shutdown()
+    assert completion.text == ""
+    assert completion.usage.input_tokens == 10
+    assert completion.usage.output_tokens == 4096
+    assert len(state.requests) == 1
+
+
+def test_null_content_with_length_and_schema_returns_empty_without_retry() -> None:
+    state = _StubState([_ok_null("length", {"prompt_tokens": 10, "completion_tokens": 4096})])
+    server = _serve(state)
+    try:
+        completion = _client(server, []).complete("m", (Message("user", "hi"),), step="intent", schema=SCHEMA)
+    finally:
+        server.shutdown()
+    assert completion.text == ""
+    assert completion.usage.output_tokens == 4096
+    assert len(state.requests) == 1
+
+
+def test_null_content_with_length_missing_usage_counts_zero() -> None:
+    state = _StubState([_ok_null("length")])
+    server = _serve(state)
+    try:
+        completion = _client(server, []).complete("m", (Message("user", "hi"),), step="intent")
+    finally:
+        server.shutdown()
+    assert completion.text == ""
+    assert completion.usage.input_tokens == 0
+    assert completion.usage.output_tokens == 0
+
+
+@pytest.mark.parametrize("finish_reason", ["stop", None])
+def test_null_content_without_length_still_raises(finish_reason: str | None) -> None:
+    state = _StubState([_ok_null(finish_reason, {"prompt_tokens": 1, "completion_tokens": 1}), _ok("hi")])
+    server = _serve(state)
+    try:
+        with pytest.raises(ToolError, match="malformed model response"):
+            _client(server, []).complete("m", (Message("user", "hi"),), step="intent")
+    finally:
+        server.shutdown()
+    assert len(state.requests) == 1
+
+
+def test_nontext_content_without_length_still_raises() -> None:
+    state = _StubState([(200, {}, {"choices": [{"message": {"role": "assistant", "content": ["x"]}}]}), _ok("hi")])
+    server = _serve(state)
+    try:
+        with pytest.raises(ToolError, match="malformed model response"):
+            _client(server, []).complete("m", (Message("user", "hi"),), step="intent")
+    finally:
+        server.shutdown()
+    assert len(state.requests) == 1
+
+
 @pytest.mark.live
 def test_live_structured_completion() -> None:
     if os.environ.get("PCC_META_ALLOWED") != "1":
