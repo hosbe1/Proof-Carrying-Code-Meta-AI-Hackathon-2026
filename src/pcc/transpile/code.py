@@ -1225,6 +1225,36 @@ def _body_lines(
     return body_lines
 
 
+def _subscript_base_is(target: ast.expr, name: str) -> bool:
+    """Whether ``target`` stores through a subscript chain rooted at ``name``.
+
+    Plain rebinding (``xs = ...``) is not a subscript store and returns ``False``.
+    """
+    if not isinstance(target, ast.Subscript):
+        return False
+    base: ast.expr = target
+    while isinstance(base, ast.Subscript):
+        base = base.value
+    return isinstance(base, ast.Name) and base.id == name
+
+
+def _find_iterated_store(body: list[ast.stmt], name: str) -> ast.stmt | None:
+    """The first statement in ``body`` storing through ``name[...]``, or ``None``.
+
+    The ``for x in xs`` loop iterates a snapshot copy, so an element store to the
+    iterated list would be invisible to later iterations in Dafny while Python
+    would see it on the live list. Whole-variable rebinding is not a store.
+    """
+    for stmt in body:
+        for node in ast.walk(stmt):
+            if isinstance(node, ast.Assign):
+                if any(_subscript_base_is(target, name) for target in node.targets):
+                    return stmt
+            elif isinstance(node, (ast.AnnAssign, ast.AugAssign)) and _subscript_base_is(node.target, name):
+                return stmt
+    return None
+
+
 def _for_stmt(
     stmt: ast.For, ctx: _Ctx, declared: set[str], return_tag: str, st: _HoistState, *, depth: int
 ) -> list[str]:
@@ -1254,6 +1284,8 @@ def _for_stmt(
     elem = _seq_elem(seq_tag)
     if var in ctx.types and ctx.types[var] != elem:
         raise _fail(stmt, "assignment type")
+    if isinstance(stmt.iter, ast.Name) and (offending := _find_iterated_store(stmt.body, stmt.iter.id)) is not None:
+        raise _fail(offending, "shared list")
     ctx.types[var] = elem
     snapshot = st.fresh()
     index = st.fresh()

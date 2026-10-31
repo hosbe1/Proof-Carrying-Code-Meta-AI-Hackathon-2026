@@ -243,6 +243,34 @@ def test_for_non_name_target_rejected() -> None:
     )
 
 
+def test_for_over_list_mutated_in_body_is_shared() -> None:
+    check_unsupported(
+        "def f(xs: list[int]) -> int:\n    for v in xs:\n        xs[0] = 1\n    return 0\n",
+        "shared list",
+        lineno=3,
+    )
+
+
+def test_for_over_list_augassign_in_body_is_shared() -> None:
+    check_unsupported(
+        "def f(xs: list[int]) -> int:\n    for v in xs:\n        xs[0] += 1\n    return 0\n",
+        "shared list",
+        lineno=3,
+    )
+
+
+def test_for_over_slice_mutation_stays_allowed() -> None:
+    source = (
+        "def f(n: int) -> list[int]:\n"
+        "    xs = [0 for i in range(n)]\n"
+        "    for v in xs[0:]:\n"
+        "        xs[0] = 1\n"
+        "    return xs\n"
+    )
+    out = transpile(source)
+    assert "xs := py_set_index(xs, 0, 1);" in out
+
+
 def test_while_without_calls_stays_plain() -> None:
     source = "def f(n: int) -> int:\n    while n > 0:\n        n = n - 1\n    return n\n"
     out = transpile(source)
