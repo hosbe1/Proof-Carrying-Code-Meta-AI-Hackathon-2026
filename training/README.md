@@ -1,15 +1,17 @@
 # Training
 
 This folder holds the training side of the project (docs/plan.md, Training): the shared
-prompt, the graded proof reward, and the SFT data export. It lives outside `src/pcc`: it
-imports `pcc` (the verifier as the reward, the datasets as the train/test source of truth)
-but the package never imports it.
+prompt, the graded proof reward, the SFT data export and the GRPO loop. It lives outside
+`src/pcc`: it imports `pcc` (the verifier as the reward, the datasets as the train/test
+source of truth) but the package never imports it.
 
 | File | Does |
 | --- | --- |
 | `prompts.py` | `SYSTEM_MESSAGE` and `build_prompt`, shared verbatim by every data line and every sampling tool |
 | `reward.py` | The graded proof reward: 1 verified, 0 not verified, −1 cheat or changed spec |
 | `export_sft.py` | `python -m training.export_sft`: verified solutions become Fireworks SFT data |
+| `grpo.py` | The GRPO loop itself, against a small `Backend` protocol with no SDK and no network, so it runs offline in tests |
+| `configs/glimmer_fireworks.toml` | The GRPO run configuration |
 
 ## SFT data export
 
@@ -64,3 +66,59 @@ task ID.
 3. When the job finishes, download the adapter in PEFT format. Record the job ID and the
    spend in the training issue, as every training run does; serving and evaluation follow
    the training issues.
+
+## The GRPO loop
+
+`run(config, backend, *, reward_fn=None)` in `grpo.py` drives the whole run.
+`reward_fn(answer, task_spec)` grades one attempt; when it is `None`, `run` binds
+`training.reward.reward` to the resource limit of `pcc.config`
+(`Config().dafny.resource_limit`).
+
+Every training task is the `vericoding` train split (`pcc.evaluation.split`) turned into
+a prompt with the shared `build_prompt` from `training/prompts.py` — the same function
+the SFT export uses to rebuild user turns, so training prompts compare byte-identical
+with the exported lines. The sampled prompt string is `SYSTEM_MESSAGE`, a blank line,
+then `build_prompt(task)`. The graded reward still scores the answer against the
+immutable task prefix (the `vc-preamble`, `vc-helpers` and `vc-spec` payload parts
+through the opening method brace), which must occur unchanged in the answer. The
+evaluation harness reuses the same `build_prompt` when it lands, so training sees the
+prompt that the evaluation uses.
+
+## The pre-pass
+
+The run first draws `prepass_tasks` (64) training tasks with the fixed `seed`, samples each one
+`samples_per_task` (8) times with `Backend.sample`, and keeps the tasks the starting model solves
+1 to 7 times — the tasks whose attempt rewards can still differ. Its sampling cost counts against
+`max_spend_usd`. The kept tasks are reused in every step.
+
+## A step
+
+Each step draws `tasks_per_step` (16) tasks from the kept set, samples `samples_per_task`
+attempts per task, and scores them with `reward_fn`. The advantage of each attempt is
+`(reward − group mean) / (group std + 1e-6)` with the population standard deviation, so the
+advantages of a kept group sum to 0. Groups whose rewards are all equal teach nothing and are
+dropped; the rest go to `Backend.train` as `(prompt, completion, advantage)` tuples. When every
+group is dropped, the run stops with `stop_reason` `"all groups dropped"` and calls no `train`.
+
+## The stop rule and the spend
+
+Each step's cost is estimated from the token counts the backend reports — all prompt tokens at
+the prefill rate, sampled tokens at the sample rate, `TrainStats.tokens` at the train rate — with
+the rates in the config (1.96, 4.88 and 5.86 per 1M tokens; one million of each costs $12.70).
+A step starts only if the spend so far plus the previous step's cost stays within `max_spend_usd`
+(50). Before the first step, the estimate is the pre-pass cost per sample times
+`tasks_per_step * samples_per_task` (128 with the shipped values). A step that would exceed the
+cap is not started. When the rule stops the run, `save()` is called once and `stop_reason` is
+`"spend cap"`, except when the pre-pass alone exceeded the cap: then no step ran, `save()` is
+skipped and only the reason is reported.
+
+A `ToolError` from the backend passes through; when at least one step finished, `save()` runs
+first so the trained progress is checkpointed.
+
+## The GRPO config
+
+`configs/glimmer_fireworks.toml` pins the run: the base model, the four rates, the $50 cap, the
+pre-pass and step sizes, the seed, the LoRA rank and learning rate, and `base_adapter` — the
+SFT 2 adapter the run starts from, still empty until the SFT export lands. The Fireworks backend
+(a later change) reads `model` and `base_adapter` to point sampling and training at the right
+adapter; the loop itself never sees them.
