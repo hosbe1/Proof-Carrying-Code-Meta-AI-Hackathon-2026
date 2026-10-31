@@ -99,6 +99,7 @@ class DafnyConfig:  # step 5: the Dafny release CI verifies with
 class PipelineConfig:  # pipeline: how steps 1-7 run, including the step 1 search agent
     workers: int = 4  # pipeline: parallel workers over functions
     search_agent: bool = True  # step 1: let the agent search further when the intent is unclear
+    scan: bool = False  # scan: True only in `pcc-check scan`; the doctest filter (#66) reads it
 
 
 @dataclass(frozen=True, slots=True)
