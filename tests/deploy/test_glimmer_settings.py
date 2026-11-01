@@ -360,6 +360,50 @@ def test_deploy_docs_prime_the_hf_weight_cache() -> None:
     )
 
 
+def test_modal_image_disables_flashinfer_sampler() -> None:
+    source = MODAL_APP_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    call = _image_add_local_call(tree)
+    receiver = call.func.value if isinstance(call.func, ast.Attribute) else None
+    assert isinstance(receiver, ast.Call)
+    assert isinstance(receiver.func, ast.Attribute) and receiver.func.attr == "env"
+    # The slim image has no nvcc, so vLLM must not JIT-compile the
+    # FlashInfer top-k/top-p sampler during warm-up.
+    assert len(receiver.args) == 1 and isinstance(receiver.args[0], ast.Dict)
+    pairs = {
+        key.value: value
+        for key, value in zip(receiver.args[0].keys, receiver.args[0].values, strict=True)
+        if isinstance(key, ast.Constant)
+    }
+    assert "HF_HOME" in pairs
+    sampler = pairs.get("VLLM_USE_FLASHINFER_SAMPLER")
+    assert isinstance(sampler, ast.Constant) and sampler.value == "0", (
+        'image env must set VLLM_USE_FLASHINFER_SAMPLER to "0" next to HF_HOME'
+    )
+
+
+def test_modal_serve_allows_concurrent_inputs_on_one_container() -> None:
+    source = MODAL_APP_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    serve_defs = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "serve"]
+    assert len(serve_defs) == 1, "deploy/modal_glimmer.py must define serve()"
+    decorators = serve_defs[0].decorator_list
+    kinds = [
+        node.func.attr for node in decorators if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    ]
+    # Decorators apply bottom-up, so serve() must read top-down as
+    # @app.function, @modal.concurrent, @modal.web_server.
+    assert kinds == ["function", "concurrent", "web_server"]
+    concurrent = next(
+        node
+        for node in decorators
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "concurrent"
+    )
+    max_inputs = [keyword for keyword in concurrent.keywords if keyword.arg == "max_inputs"]
+    assert len(max_inputs) == 1
+    assert isinstance(max_inputs[0].value, ast.Constant) and max_inputs[0].value.value == 64
+
+
 def _serve_function(tree: ast.Module) -> ast.FunctionDef:
     serve_defs = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "serve"]
     assert len(serve_defs) == 1, "deploy/modal_glimmer.py must define serve()"

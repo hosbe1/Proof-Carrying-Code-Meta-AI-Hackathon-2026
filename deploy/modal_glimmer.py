@@ -37,7 +37,9 @@ image = (
     .pip_install("vllm", "huggingface_hub")
     # Cache the weights on the volume so a cold start reuses the download.
     # Build steps after add_local_* are rejected, so this must come first.
-    .env({"HF_HOME": f"{VOLUME_MOUNT_PATH}/hf"})
+    # The slim image has no nvcc, so vLLM must not JIT-compile the FlashInfer
+    # sampler during warm-up.
+    .env({"HF_HOME": f"{VOLUME_MOUNT_PATH}/hf", "VLLM_USE_FLASHINFER_SAMPLER": "0"})
     # Bundle the deploy package so the container resolves its helpers.
     .add_local_python_source("deploy")
 )
@@ -55,6 +57,9 @@ image = (
     # does not stop Modal from killing the runner (and the vLLM engine) first.
     startup_timeout=45 * 60,
 )
+# One container serves many clients at once: without this, Modal passes one
+# request at a time and max_containers=1 serialises all clients.
+@modal.concurrent(max_inputs=64)
 @modal.web_server(port=VLLM_PORT, startup_timeout=45 * 60)
 def serve() -> None:
     """Start vLLM's OpenAI-compatible server for the baked-in settings."""

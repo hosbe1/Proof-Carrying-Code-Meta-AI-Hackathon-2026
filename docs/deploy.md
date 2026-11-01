@@ -93,8 +93,10 @@ export PCC_GLIMMER_ADAPTERS="glimmer-sft=/adapters/sft1,other=some-org/other-lor
     `/hf`; on an
     empty volume the first cold start still downloads them. The serving function allows 45 minutes
     to start (`startup_timeout`), since loading the weights takes tens of
-    minutes; `serve()` starts the vLLM server in the background and returns,
-    as `@modal.web_server` requires.
+     minutes; `serve()` starts the vLLM server in the background and returns,
+     as `@modal.web_server` requires. The image also sets
+     `VLLM_USE_FLASHINFER_SAMPLER=0`, so vLLM skips the FlashInfer sampler
+     JIT build that needs `nvcc`, which the slim image does not ship.
 
 ## One test request
 
@@ -120,7 +122,9 @@ retry in parallel: queued requests during a cold start scale out to more
 containers. Only then start the sampling or evaluation job, so cold-start
 latency is not billed as run time.
 
-`max_containers=1` caps containers, not client concurrency. Measure the
+`max_containers=1` caps containers, not client concurrency. `serve()` carries
+`@modal.concurrent(max_inputs=64)`, so the single container serves up to 64
+concurrent client requests at once. Measure the
 concurrency-64 throughput with 64 concurrent client requests against the
 single container (vLLM batches them server-side); do not raise the container
 cap to reach that concurrency. Record the deploy log (no `ModuleNotFoundError`),
