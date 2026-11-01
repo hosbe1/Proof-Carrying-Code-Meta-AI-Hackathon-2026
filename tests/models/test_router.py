@@ -327,3 +327,30 @@ def test_glimmer_request_omits_reasoning_effort() -> None:
         glimmer_server.shutdown()
     assert "reasoning_effort" not in glimmer_state.requests[0]
     assert meta_state.requests[0]["reasoning_effort"] == "low"
+
+
+def test_glimmer_reasoning_strength_sent_as_chat_template_kwargs() -> None:
+    state = _StubState()
+    server = _capture_server(state)
+    try:
+        env = {
+            "PCC_GLIMMER_BASE_URL": f"http://127.0.0.1:{server.server_address[1]}",
+            "PCC_GLIMMER_API_KEY": "key",
+            "PCC_GLIMMER_REASONING_STRENGTH": "low",
+        }
+        build_client(Config(), env).complete("glimmer", MESSAGES, step="prove")
+    finally:
+        server.shutdown()
+    assert state.requests[0]["chat_template_kwargs"] == {"reasoning_strength": "low"}
+    assert "reasoning_effort" not in state.requests[0]
+
+
+def test_glimmer_reasoning_strength_unset_omits_kwargs() -> None:
+    state = _StubState()
+    server = _capture_server(state)
+    try:
+        env = {"PCC_GLIMMER_BASE_URL": f"http://127.0.0.1:{server.server_address[1]}", "PCC_GLIMMER_API_KEY": "key"}
+        build_client(Config(), env).complete("glimmer", MESSAGES, step="prove")
+    finally:
+        server.shutdown()
+    assert "chat_template_kwargs" not in state.requests[0]
