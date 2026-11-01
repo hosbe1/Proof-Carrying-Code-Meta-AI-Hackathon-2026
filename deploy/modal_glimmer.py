@@ -12,6 +12,7 @@ tests: Modal is an optional dependency that is not installed in CI.
 
 import os
 import subprocess
+import time
 
 import modal  # type: ignore[import-not-found]  # optional, not a dev dependency
 
@@ -74,5 +75,11 @@ def serve() -> None:
     # the deploy logs. Modal health-checks the web port; this print only aids
     # diagnosis and does not change the required background-start contract.
     print(f"Starting vLLM server for {_SETTINGS.base_model} on port {VLLM_PORT}", flush=True)
-    subprocess.Popen(cmd)
+    proc = subprocess.Popen(cmd)
+    # Fail fast when vLLM exits immediately (missing binary, bad flags) by
+    # surfacing its exit code instead of a later port health-check failure.
+    # A slow weight load keeps running, so only wait a few seconds here.
+    time.sleep(5)
+    if proc.poll() is not None:
+        raise RuntimeError(f"vLLM server exited immediately with code {proc.returncode}")
     return

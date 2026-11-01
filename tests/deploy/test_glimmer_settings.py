@@ -349,3 +349,38 @@ def test_serve_starts_vllm_in_background() -> None:
         not isinstance(node.value, (ast.List, ast.Tuple)) for node in ast.walk(serve) if isinstance(node, ast.Return)
     ), "serve() must not return the command list"
     assert "import subprocess" in source
+
+
+def test_serve_surfaces_immediate_vllm_exit() -> None:
+    source = MODAL_APP_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    serve = _serve_function(tree)
+    # serve() must keep the Popen handle so it can check for an early exit.
+    popen_targets = [
+        node.targets[0].id
+        for node in ast.walk(serve)
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Attribute)
+        and node.value.func.attr == "Popen"
+    ]
+    assert len(popen_targets) == 1, "serve() must assign the Popen handle to one name"
+    handle = popen_targets[0]
+    polls = [
+        node
+        for node in ast.walk(serve)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "poll"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == handle
+    ]
+    assert polls, "serve() must poll the vLLM process for an immediate exit"
+    assert any(
+        isinstance(node.exc, ast.Call) and isinstance(node.exc.func, ast.Name) and node.exc.func.id == "RuntimeError"
+        for node in ast.walk(serve)
+        if isinstance(node, ast.Raise)
+    ), "serve() must raise RuntimeError with the exit code on immediate exit"
+    assert "time.sleep" in source
