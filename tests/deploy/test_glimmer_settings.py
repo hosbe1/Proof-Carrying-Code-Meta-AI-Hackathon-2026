@@ -2,6 +2,9 @@
 
 These tests are hermetic: no GPU, no network, and neither Modal nor vLLM is
 installed or imported. Only ``deploy/glimmer_settings.py`` is imported.
+The AST checks on ``deploy/modal_glimmer.py`` below are regression guards
+for the image chain and the ``serve()`` decorator only; live container
+behavior must be confirmed by the run issue, not by these tests.
 """
 
 from __future__ import annotations
@@ -200,6 +203,97 @@ def test_vllm_args_carry_the_fixed_serving_parameters() -> None:
     assert args[args.index("--max-model-len") + 1] == "32768"
 
 
+def _image_add_local_call(tree: ast.Module) -> ast.Call:
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "add_local_python_source"
+    ]
+    assert len(calls) == 1, "deploy/modal_glimmer.py must call add_local_python_source exactly once"
+    call = calls[0]
+    assert len(call.args) == 1 and isinstance(call.args[0], ast.Constant) and call.args[0].value == "deploy"
+    return call
+
+
+def _image_chain_calls(tree: ast.Module) -> list[ast.Call]:
+    """Unwrap the image build chain ending at add_local_python_source.
+
+    Returns the chained calls from the outermost (add_local_python_source)
+    inward, e.g. [add_local, env(settings), env(HF_HOME), pip_install, ...].
+    """
+    call = _image_add_local_call(tree)
+    chain = [call]
+    current = call.func.value if isinstance(call.func, ast.Attribute) else None
+    while isinstance(current, ast.Call) and isinstance(current.func, ast.Attribute):
+        chain.append(current)
+        current = current.func.value
+    return chain
+
+
+def _image_env_calls(tree: ast.Module) -> list[ast.Call]:
+    return [
+        call for call in _image_chain_calls(tree) if isinstance(call.func, ast.Attribute) and call.func.attr == "env"
+    ]
+
+
+def test_modal_app_bundles_deploy_sources_for_container() -> None:
+    source = MODAL_APP_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    call = _image_add_local_call(tree)
+    # The call must sit on the image build chain after pip_install and the
+    # env steps, so the container resolves the
+    # `from deploy.glimmer_settings import ...` helpers with cached weights
+    # and baked-in settings.
+    chain = _image_chain_calls(tree)
+    assert chain[0] is call
+    env_calls = _image_env_calls(tree)
+    # HF_HOME env plus the PCC_GLIMMER_* settings env, both before add_local.
+    assert len(env_calls) >= 2
+    pip_calls = [node for node in chain if isinstance(node.func, ast.Attribute) and node.func.attr == "pip_install"]
+    assert len(pip_calls) == 1
+    pip_call = pip_calls[0]
+    pip_args = {arg.value for arg in pip_call.args if isinstance(arg, ast.Constant) and isinstance(arg.value, str)}
+    assert {"vllm", "huggingface_hub"} <= pip_args
+    assert "from deploy.glimmer_settings import" in source
+    image_assigns = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "image" for target in node.targets)
+    ]
+    assert len(image_assigns) == 1
+    assert call in ast.walk(image_assigns[0].value)
+
+
+def _serve_function_decorator(tree: ast.Module) -> ast.Call:
+    serve_defs = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "serve"]
+    assert len(serve_defs) == 1, "deploy/modal_glimmer.py must define serve()"
+    decorators = serve_defs[0].decorator_list
+    app_calls = [
+        node
+        for node in decorators
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "function"
+    ]
+    assert len(app_calls) == 1, "serve() must carry exactly one @app.function decorator"
+    return app_calls[0]
+
+
+def test_modal_app_caps_containers_at_one_gpu() -> None:
+    source = MODAL_APP_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    decorator = _serve_function_decorator(tree)
+    cap = [keyword for keyword in decorator.keywords if keyword.arg == "max_containers"]
+    assert len(cap) == 1
+    assert isinstance(cap[0].value, ast.Constant) and cap[0].value.value == 1
+    # The cap must apply to the serving function with its image, so a stray
+    # keyword elsewhere cannot satisfy this test.
+    image_kw = [keyword for keyword in decorator.keywords if keyword.arg == "image"]
+    assert len(image_kw) == 1
+    assert isinstance(image_kw[0].value, ast.Name) and image_kw[0].value.id == "image"
+
+
 def test_modal_app_defines_module_level_app_without_being_imported() -> None:
     source = MODAL_APP_PATH.read_text(encoding="utf-8")
     tree = ast.parse(source)
@@ -211,3 +305,272 @@ def test_modal_app_defines_module_level_app_without_being_imported() -> None:
         and node.value.func.attr == "App"
         for node in tree.body
     ), "deploy/modal_glimmer.py must define module-level `app = modal.App(...)`"
+
+
+def _static_int(node: ast.expr) -> int:
+    """Evaluate a small static integer expression (literals, `*` products)."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, int):
+        return node.value
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult):
+        return _static_int(node.left) * _static_int(node.right)
+    raise AssertionError(f"expected a static integer expression, got {ast.dump(node)}")
+
+
+def test_modal_image_caches_hf_weights_on_volume() -> None:
+    source = MODAL_APP_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    env_calls = _image_env_calls(tree)
+    dict_envs = [call for call in env_calls if call.args and isinstance(call.args[0], ast.Dict)]
+    assert dict_envs, "image chain must hold an env dict with HF_HOME"
+    # The env step must point HF_HOME at the mounted volume, so a cold start
+    # reuses the downloaded weights instead of fetching them again.
+    found = False
+    for env_call in dict_envs:
+        env_arg = env_call.args[0]
+        assert isinstance(env_arg, ast.Dict)
+        keys = env_arg.keys
+        values = env_arg.values
+        try:
+            hf_index = next(
+                index for index, key in enumerate(keys) if isinstance(key, ast.Constant) and key.value == "HF_HOME"
+            )
+        except StopIteration:
+            continue
+        hf_value = values[hf_index]
+        assert ("VOLUME_MOUNT_PATH" in ast.dump(hf_value) and "/hf" in ast.dump(hf_value)) or (
+            isinstance(hf_value, ast.Constant) and hf_value.value == "/models/pcc-glimmer/hf"
+        )
+        found = True
+    assert found, "no image env step sets HF_HOME"
+
+
+def test_modal_function_allows_slow_weight_load() -> None:
+    source = MODAL_APP_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    decorator = _serve_function_decorator(tree)
+    timeout = [keyword for keyword in decorator.keywords if keyword.arg == "startup_timeout"]
+    assert len(timeout) == 1
+    # Loading the weights can take tens of minutes; Modal must not kill the
+    # runner (and with it the vLLM engine) after its default 300 seconds.
+    assert _static_int(timeout[0].value) == 45 * 60
+
+
+def _serve_web_server_decorator(tree: ast.Module) -> ast.Call:
+    serve_defs = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "serve"]
+    assert len(serve_defs) == 1, "deploy/modal_glimmer.py must define serve()"
+    web_calls = [
+        node
+        for node in serve_defs[0].decorator_list
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "web_server"
+    ]
+    assert len(web_calls) == 1, "serve() must carry exactly one @modal.web_server decorator"
+    return web_calls[0]
+
+
+def test_modal_web_server_waits_for_slow_weight_load() -> None:
+    source = MODAL_APP_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    decorator = _serve_web_server_decorator(tree)
+    timeout = [keyword for keyword in decorator.keywords if keyword.arg == "startup_timeout"]
+    assert len(timeout) == 1
+    # The port health-check must wait as long as the runner: if loading the
+    # weights takes more than the web_server timeout, the port check fails
+    # even though the runner (and the vLLM engine) would have survived.
+    assert _static_int(timeout[0].value) == 45 * 60
+
+
+def test_deploy_docs_prime_the_hf_weight_cache() -> None:
+    docs = (REPO_ROOT / "docs" / "deploy.md").read_text(encoding="utf-8")
+    put_lines = [line.strip() for line in docs.splitlines() if "modal volume put" in line]
+    assert put_lines, "docs/deploy.md must show how to prime the weight cache on the volume"
+    # The image sets HF_HOME to /models/pcc-glimmer/hf, so only an upload
+    # under /hf lands in the cache a cold start reuses.
+    assert any(line.rstrip().endswith("/hf") for line in put_lines), (
+        "docs/deploy.md must upload the base weights under /hf, the HF_HOME cache dir"
+    )
+    assert not any(line.rstrip().endswith("/weights") for line in put_lines), (
+        "docs/deploy.md must not direct the base weights to /weights, outside the HF_HOME cache"
+    )
+
+
+def test_modal_image_disables_flashinfer_sampler() -> None:
+    source = MODAL_APP_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    env_calls = _image_env_calls(tree)
+    dict_envs = [call for call in env_calls if call.args and isinstance(call.args[0], ast.Dict)]
+    assert dict_envs, "image chain must hold an env dict with the sampler flag"
+    # The slim image has no nvcc, so vLLM must not JIT-compile the
+    # FlashInfer top-k/top-p sampler during warm-up.
+    found = False
+    for env_call in dict_envs:
+        env_arg = env_call.args[0]
+        assert isinstance(env_arg, ast.Dict)
+        pairs = {
+            key.value: value
+            for key, value in zip(env_arg.keys, env_arg.values, strict=True)
+            if isinstance(key, ast.Constant)
+        }
+        if "HF_HOME" not in pairs:
+            continue
+        sampler = pairs.get("VLLM_USE_FLASHINFER_SAMPLER")
+        assert isinstance(sampler, ast.Constant) and sampler.value == "0", (
+            'image env must set VLLM_USE_FLASHINFER_SAMPLER to "0" next to HF_HOME'
+        )
+        found = True
+    assert found, "no image env step sets HF_HOME with the sampler flag"
+
+
+def test_modal_serve_allows_concurrent_inputs_on_one_container() -> None:
+    source = MODAL_APP_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    serve_defs = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "serve"]
+    assert len(serve_defs) == 1, "deploy/modal_glimmer.py must define serve()"
+    decorators = serve_defs[0].decorator_list
+    kinds = [
+        node.func.attr for node in decorators if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    ]
+    # Decorators apply bottom-up, so serve() must read top-down as
+    # @app.function, @modal.concurrent, @modal.web_server.
+    assert kinds == ["function", "concurrent", "web_server"]
+    concurrent = next(
+        node
+        for node in decorators
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "concurrent"
+    )
+    max_inputs = [keyword for keyword in concurrent.keywords if keyword.arg == "max_inputs"]
+    assert len(max_inputs) == 1
+    assert isinstance(max_inputs[0].value, ast.Constant) and max_inputs[0].value.value == 64
+
+
+def test_modal_image_carries_deploy_settings_without_key() -> None:
+    source = MODAL_APP_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    call = _image_add_local_call(tree)
+    # Fix 6: _SETTINGS is reloaded inside the container where PCC_GLIMMER_*
+    # is unset, so the deploy-time settings must be baked into the image.
+    # The second env step must sit between the HF_HOME env step and
+    # add_local_python_source, because build steps after add_local_* are
+    # rejected.
+    outer = call.func.value if isinstance(call.func, ast.Attribute) else None
+    assert isinstance(outer, ast.Call)
+    assert isinstance(outer.func, ast.Attribute) and outer.func.attr == "env"
+    assert len(outer.args) == 1
+    settings_env = outer.args[0]
+    dump = ast.dump(settings_env)
+    assert "PCC_GLIMMER_" in dump, "image must carry the PCC_GLIMMER_* settings into the container"
+    assert "PCC_GLIMMER_API_KEY" in dump, "image must name the key only to exclude it"
+    # The key itself must never be baked into the image; it arrives via the
+    # Modal secret at runtime.
+    assert isinstance(settings_env, (ast.DictComp, ast.Dict, ast.Call))
+    if isinstance(settings_env, ast.Dict):
+        keys = [key.value for key in settings_env.keys if isinstance(key, ast.Constant)]
+        assert "PCC_GLIMMER_API_KEY" not in keys
+    else:
+        assert "PCC_GLIMMER_API_KEY" in source
+        # The only allowed mention is the exclusion filter, never an inclusion.
+        assert 'k != "PCC_GLIMMER_API_KEY"' in source or "k != 'PCC_GLIMMER_API_KEY'" in source
+    assert "os.environ" in dump or "os.environ" in source
+    inner = outer.func.value
+    assert isinstance(inner, ast.Call)
+    assert isinstance(inner.func, ast.Attribute) and inner.func.attr == "env"
+    inner_dump = ast.dump(inner.args[0]) if inner.args else ""
+    assert "HF_HOME" in inner_dump
+
+
+def test_deploy_docs_records_concurrency_64_throughput() -> None:
+    docs = (REPO_ROOT / "docs" / "deploy.md").read_text(encoding="utf-8")
+    # Run #76 measured both precisions at concurrency 64 on one H100; the
+    # guide must record the numbers the cost estimates depend on.
+    assert "1,072" in docs or "1072" in docs
+    assert "1,485" in docs or "1485" in docs
+    assert "concurrency 64" in docs or "concurrency-64" in docs
+
+
+def _deploy_docs_section(docs: str, heading: str) -> str:
+    start = docs.index(heading)
+    rest = docs[start + len(heading) :]
+    end = rest.find("\n## ")
+    return rest if end == -1 else rest[:end]
+
+
+def test_deploy_docs_throughput_numbers_are_tied_to_the_model_id() -> None:
+    docs = (REPO_ROOT / "docs" / "deploy.md").read_text(encoding="utf-8")
+    section = _deploy_docs_section(docs, "## Measured throughput")
+    # The BF16/FP8 numbers were taken with the provisional id pending #3;
+    # they must not feed cost estimates if #3 confirms a different id.
+    assert "provisional" in section
+    assert "valid only for that id" in section
+
+
+def test_deploy_docs_stop_section_requires_stop_evidence_in_run_issue() -> None:
+    docs = (REPO_ROOT / "docs" / "deploy.md").read_text(encoding="utf-8")
+    section = _deploy_docs_section(docs, "## Stop")
+    # "The deployment is stopped" is a Done criterion of every run ticket,
+    # so the guide must say which stop evidence goes into the run issue
+    # instead of relying on the silent 15-minute scale-down alone.
+    assert "modal app stop" in section
+    assert "run issue" in section
+
+
+def _serve_function(tree: ast.Module) -> ast.FunctionDef:
+    serve_defs = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "serve"]
+    assert len(serve_defs) == 1, "deploy/modal_glimmer.py must define serve()"
+    return serve_defs[0]
+
+
+def test_serve_starts_vllm_in_background() -> None:
+    source = MODAL_APP_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    serve = _serve_function(tree)
+    # With @modal.web_server the function must start the server in the
+    # background and return; returning the command list never starts vLLM.
+    assert serve.returns is None or (isinstance(serve.returns, ast.Constant) and serve.returns.value is None)
+    popens = [
+        node
+        for node in ast.walk(serve)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "Popen"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "subprocess"
+    ]
+    assert len(popens) >= 1, "serve() must start the vLLM server with subprocess.Popen"
+    assert all(
+        not isinstance(node.value, (ast.List, ast.Tuple)) for node in ast.walk(serve) if isinstance(node, ast.Return)
+    ), "serve() must not return the command list"
+    assert "import subprocess" in source
+
+
+def test_serve_surfaces_immediate_vllm_exit() -> None:
+    source = MODAL_APP_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    serve = _serve_function(tree)
+    # serve() must keep the Popen handle so it can check for an early exit.
+    popen_targets = [
+        node.targets[0].id
+        for node in ast.walk(serve)
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Attribute)
+        and node.value.func.attr == "Popen"
+    ]
+    assert len(popen_targets) == 1, "serve() must assign the Popen handle to one name"
+    handle = popen_targets[0]
+    polls = [
+        node
+        for node in ast.walk(serve)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "poll"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == handle
+    ]
+    assert polls, "serve() must poll the vLLM process for an immediate exit"
+    assert any(
+        isinstance(node.exc, ast.Call) and isinstance(node.exc.func, ast.Name) and node.exc.func.id == "RuntimeError"
+        for node in ast.walk(serve)
+        if isinstance(node, ast.Raise)
+    ), "serve() must raise RuntimeError with the exit code on immediate exit"
+    assert "time.sleep" in source
