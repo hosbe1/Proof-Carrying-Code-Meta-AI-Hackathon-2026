@@ -293,9 +293,11 @@ def _user_channel(content: str) -> str:
 
     vLLM serving Glimmer without a reasoning parser returns ``to=self`` reasoning and the
     ``to=user`` answer as one text. Only the text after the last ``to=user`` header is the
-    answer; reasoning that never reached it yields ``""``. Other content is unchanged.
+    answer; reasoning that never reached it yields ``""``. Content that does not open with
+    a ``to=self`` or ``to=user`` header is unchanged.
     """
-    if not content.lstrip().startswith("to="):
+    stripped = content.lstrip()
+    if not (stripped.startswith("to=self") or stripped.startswith("to=user")):
         return content
     _, header, answer = content.rpartition("to=user")
     return answer if header else ""

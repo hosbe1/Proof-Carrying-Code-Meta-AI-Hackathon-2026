@@ -585,6 +585,7 @@ def test_live_structured_completion() -> None:
         (" to=selfthink about to=user mentions to=usermethod M() {}", "method M() {}"),
         (" to=selfreasoning cut off by the token limit", ""),
         ("plain answer that mentions to=user inside", "plain answer that mentions to=user inside"),
+        ("to=5 is not a channel header", "to=5 is not a channel header"),
     ],
 )
 def test_leaked_channel_headers_are_stripped(content: str, answer: str) -> None:
