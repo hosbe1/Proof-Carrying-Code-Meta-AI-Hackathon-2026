@@ -70,7 +70,7 @@ from saved artifacts, not an account billing total.
 
 | run | date (UTC) | commit | base model | job IDs | config | training lines | input SHA-256 | spend (USD) | adapter location |
 |---|---|---|---|---|---|---|---|---|---|
-| sft1 | 2026-11-01 | 9af9b2759d52647843d6c7632d5b78d5aa5dedc3 | accounts/fireworks/models/muse-glimmer-30b | session ts-274df4913ef44e39a9127857726365ff, run run-4b87798e63b84123ab56a5630637db13, checkpoint sft1-final-6b3d4ef4 | LoRA r16, 2 epochs, batch 8, 76 steps, Adam lr 1e-4 (beta1 0.9, beta2 0.95, eps 1e-8, wd 0), cross_entropy, seed 0 | 301 | c3d508bfbff7f1726b838e32e2753caa0279b3873a6688c0ec47a71f81dea9f1 | to be confirmed on the billing page (expected 0 while LoRA SFT is free until Nov 30) | accounts/mick/models/pcc-glimmer-sft1 (Fireworks; round 1 and the SFT 1 evaluation use an on-demand deployment until the PEFT adapter lands on pcc-glimmer:adapters/sft1) |
+| sft1 | 2026-11-01 | 9af9b2759d52647843d6c7632d5b78d5aa5dedc3 | accounts/fireworks/models/muse-glimmer-30b | session ts-274df4913ef44e39a9127857726365ff, run run-4b87798e63b84123ab56a5630637db13, checkpoint sft1-final-6b3d4ef4 | LoRA r16, 2 epochs, batch 8, 76 steps, Adam lr 1e-4 (beta1 0.9, beta2 0.95, eps 1e-8, wd 0), cross_entropy, seed 0 | 301 | c3d508bfbff7f1726b838e32e2753caa0279b3873a6688c0ec47a71f81dea9f1 | unknown, billing check pending (expected 0 while LoRA SFT is free until Nov 30; not a billing total) | accounts/mick/models/pcc-glimmer-sft1 (Fireworks; round 1 and the SFT 1 evaluation use an on-demand deployment until the PEFT adapter lands on pcc-glimmer:adapters/sft1) |
 
 ## SFT 1 notes (2026-11-01)
 
@@ -78,7 +78,8 @@ from saved artifacts, not an account billing total.
   `:getUploadEndpoint` return `Method Not Allowed`; external URLs must be
   `gs://`, `s3://` or Azure Blob), so SFT 1 ran through the Fireworks
   serverless Training API with a local loop: the rows are sent with each
-  `forward_backward`, no dataset object.
+  `forward_backward`, no dataset object. The plan records this serverless
+  path as part of the free LoRA SFT window until Nov 30.
 - Data: `runs/round0/rescored.jsonl` from #70, 301 rows, SHA-256
   `c3d508bfbff7f1726b838e32e2753caa0279b3873a6688c0ec47a71f81dea9f1`;
   318,604 tokens per epoch, at most 3,122 tokens per row, loss on the
@@ -91,8 +92,18 @@ from saved artifacts, not an account billing total.
   0.02-0.035 (epoch 2). Trained tokens: 637,208; wall time 423 s.
 - Promoted model: `accounts/mick/models/pcc-glimmer-sft1`
   (kind `HF_PEFT_ADDON`, r=16), state READY.
-- Spend: to be confirmed on the Fireworks billing page (serverless training
-  is billed per token; the plan expects LoRA SFT to be free until Nov 30).
+- Commit: `9af9b2759d52647843d6c7632d5b78d5aa5dedc3` is the `origin/main`
+  HEAD at run-record time (HumanEval collection record). The SFT run itself
+  started no repository commit; the table records the code base the training
+  data came from.
+- Provenance: session, run, checkpoint, loss, token, and state figures above
+  are as reported by the run controller in the issue record of 2026-11-01.
+  Raw sampling output stays local per the header above, so no local training
+  log is committed; checking those IDs needs access to the training console.
+- Spend: unknown, billing check pending. The plan records LoRA SFT on this
+  model as free until Nov 30 through the UI or the Serverless Training API,
+  so the expected total is 0; this is not a billing total until confirmed
+  on the billing page.
 - Open: the PEFT download. Fireworks refuses it with an API key ("model
   downloads require signing in with `firectl signin` or the Fireworks
   console"). Once downloaded, the adapter goes to
