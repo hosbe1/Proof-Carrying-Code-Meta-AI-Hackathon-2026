@@ -230,19 +230,18 @@ def _mutant_script(
     function: FunctionRef,
     spec: Spec,
     mutant_source: str,
-    max_examples: int,
-    take: int,
+    selected_args: list[str],
     extras: list[str],
 ) -> str:
     """A sandbox script printing one ``PCC_CHECK_MUTANT`` line with the variant evaluated on the input set.
 
     The variant is ``exec``'d in a copy of the module globals under the function's name, so recursive calls hit
-    the mutant; a variant that fails to bind prints ``load_error`` and is dropped. The input set is regenerated
-    with the same deterministic Hypothesis run as the original, so both see the same inputs, plus ``extras``
-    (the shrunk failing input, parsed with ``ast.literal_eval``).
+    the mutant; a variant that fails to bind prints ``load_error`` and is dropped. Replaying the original
+    selected inputs avoids a second Hypothesis run choosing a different set. ``extras`` holds the shrunk
+    failing input. Both lists contain argument representations parsed with ``ast.literal_eval``.
     """
     simple_name = [part for part in function.qualname.split(".") if part != "<locals>"][-1]
-    chunks = [strategies_source(function), target_loader(function)]
+    chunks = [target_loader(function)]
     chunks.append(
         "_namespace = dict(vars(_module))\n"
         "_load_error = None\n"
@@ -260,11 +259,13 @@ def _mutant_script(
     if spec.precondition is not None:
         chunks.append(spec.precondition)
     chunks.append(_binding_snippet("_mutant", spec.precondition is not None))
-    chunks.append(_collect_snippet(max_examples))
-    chunks.append(f"_selected = [_e for _e in _collected if _e[1]][:{take}]\n")
     chunks.append(
         "import ast\n"
         "import json\n"
+        "_selected = []\n"
+        f"for _src in {selected_args!r}:\n"
+        "    _parsed = () if not _src.strip() else ast.literal_eval('(' + _src + ',)')\n"
+        "    _selected.append([_src] + _evaluate(_parsed))\n"
         "_extras = []\n"
         f"for _src in {extras!r}:\n"
         "    _parsed = () if not _src.strip() else ast.literal_eval('(' + _src + ',)')\n"
@@ -421,14 +422,13 @@ def _mutant_result(
     spec: Spec,
     repo_root: Path,
     mutant_source: str,
-    max_examples: int,
-    take: int,
+    selected_args: list[str],
     extras: list[str],
 ) -> _MutantResult:
     """Evaluate one mutant in the sandbox; a timeout counts as killed, a crash raises ``ToolError``."""
     try:
         payload = _run_script(
-            _mutant_script(function, spec, mutant_source, max_examples, take, extras),
+            _mutant_script(function, spec, mutant_source, selected_args, extras),
             repo_root,
             _MARKER_MUTANT,
         )
@@ -496,9 +496,8 @@ def check(
         else ()
     )
     sources = (*rule_mutants(function.source, config.max_rule_mutants), *model_sources)
-    results = [
-        _mutant_result(function, spec, repo_root, source, cap, config.mutant_inputs, extras) for source in sources
-    ]
+    selected_input_args = [entry.arguments for entry in selected]
+    results = [_mutant_result(function, spec, repo_root, source, selected_input_args, extras) for source in sources]
 
     kept: list[int] = []
     killed: set[int] = set()
@@ -597,7 +596,7 @@ def spec_cases(
         return ()
     pairs = [(entry.arguments, _result_repr(entry)) for entry in selected]
     for mutant_source in rule_mutants(function.source, config.max_rule_mutants):
-        result = _mutant_result(function, spec, repo_root, mutant_source, cap, config.mutant_inputs, [])
+        result = _mutant_result(function, spec, repo_root, mutant_source, [entry.arguments for entry in selected], [])
         if result.timed_out:
             continue
         if result.load_error or len(result.set_results) != len(selected):
