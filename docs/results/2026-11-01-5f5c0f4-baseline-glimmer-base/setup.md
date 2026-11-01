@@ -5,8 +5,11 @@ Ticketed baseline of base Glimmer on the Vericoding test split (issue #77).
 - Command: `python -m pcc.evaluation vericoding --split test --endpoint glimmer
   --model glimmer --attempts 4 --max-cost-usd 1 --out runs/baseline-glimmer-base`
 - Sampling: concurrency 32, `PCC_GLIMMER_REASONING_STRENGTH=low`.
-  Low was chosen because the template default (`high`) returns reasoning only
-  and is cut at the 4096-token limit (0 of 569 verified, not published).
+  Low was chosen per the coordination decision recorded in the issue #77
+  comments of 2026-11-01: the template default (`high`) returns reasoning only
+  and is cut at the 4096-token limit (0 of 569 verified, not published), and
+  `low` is also the setting of the SFT 1 eval, so the comparison is
+  like-for-like.
 - Result: 43 of 569 eligible tasks verified (pass@k 0.076, 95% CI 0.057-0.100).
   2 of 571 tasks skipped (unbuildable prompts DA0152, DA0818).
   Token cost $0.00; GPU time is billed on the deployment (see below).
