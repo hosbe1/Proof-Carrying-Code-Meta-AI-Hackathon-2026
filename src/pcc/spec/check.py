@@ -496,8 +496,8 @@ def check(
         else ()
     )
     sources = (*rule_mutants(function.source, config.max_rule_mutants), *model_sources)
-    selected_args = [entry.arguments for entry in selected]
-    results = [_mutant_result(function, spec, repo_root, source, selected_args, extras) for source in sources]
+    selected_input_args = [entry.arguments for entry in selected]
+    results = [_mutant_result(function, spec, repo_root, source, selected_input_args, extras) for source in sources]
 
     kept: list[int] = []
     killed: set[int] = set()
