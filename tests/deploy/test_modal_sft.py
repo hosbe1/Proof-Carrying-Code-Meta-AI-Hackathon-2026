@@ -141,6 +141,42 @@ def test_long_rows_are_dropped() -> None:
     assert "drop" in _source().lower()
 
 
+def _train_node() -> ast.FunctionDef:
+    tree = ast.parse(_source())
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == "train":
+            return node
+    raise AssertionError("deploy/modal_sft.py must define `def train(...)`")
+
+
+def test_seed_is_pinned() -> None:
+    assert _constants()["SEED"] == 0
+
+
+def test_train_sets_seed_for_reproducibility() -> None:
+    train = _train_node()
+    calls = [node for node in ast.walk(train) if isinstance(node, ast.Call)]
+    assert any(isinstance(call.func, ast.Name) and call.func.id == "set_seed" for call in calls), (
+        "train must call set_seed for deterministic shuffling"
+    )
+    assert any(any(keyword.arg == "seed" for keyword in call.keywords) for call in calls), (
+        "train must pass seed into TrainingArguments"
+    )
+
+
+def test_train_uses_a_dataset_object() -> None:
+    segment = ast.get_source_segment(_source(), _train_node()) or ""
+    assert "Dataset" in segment, "train must wrap encoded rows in a Dataset object"
+    assert "train_dataset" in segment
+
+
+def test_train_saves_tokenizer_with_adapter() -> None:
+    segment = ast.get_source_segment(_source(), _train_node()) or ""
+    assert segment.count("save_pretrained") >= 2, (
+        "train must save the model and the tokenizer into the adapter directory"
+    )
+
+
 def test_script_holds_no_credentials() -> None:
     tree = ast.parse(_source())
     suspicious = {"api_key", "apikey", "token", "password", "passwd", "secret"}

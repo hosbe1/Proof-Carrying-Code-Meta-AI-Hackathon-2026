@@ -29,6 +29,7 @@ BASE_MODEL_ID = "meta-models/Muse-Glimmer-30B"
 DEFAULT_INPUT = "runs/round0/rescored.jsonl"
 INPUT_SHA256 = "c3d508bfbff7f1726b838e32e2753caa0279b3873a6688c0ec47a71f81dea9f1"
 EXPECTED_ROWS = 301
+SEED = 0
 LORA_RANK = 16
 LORA_ALPHA = 32
 LORA_TARGET_MODULES = ("q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj")
@@ -53,7 +54,11 @@ image = modal.Image.debian_slim(python_version="3.12").pip_install("torch", "tra
 
 @app.function(image=image, gpu=GPU, volumes={VOLUME_MOUNT_PATH: volume}, timeout=TIMEOUT_SECONDS)
 def train(input_path: str = DEFAULT_INPUT) -> str:
-    """Run the SFT 1 LoRA retrain and save the adapter to the shared volume."""
+    """Run the SFT 1 LoRA retrain and save the adapter to the shared volume.
+
+    Uses seed 0, wraps the rows in a Dataset, and saves the model and the
+    tokenizer into the adapter directory.
+    """
     import hashlib
     import json
 
@@ -72,7 +77,9 @@ def train(input_path: str = DEFAULT_INPUT) -> str:
 
     import torch
     from peft import LoraConfig, get_peft_model
-    from transformers import AutoModelForCausalLM, AutoTokenizer, Trainer, TrainingArguments
+    from transformers import AutoModelForCausalLM, AutoTokenizer, Trainer, TrainingArguments, set_seed
+
+    set_seed(SEED)
 
     model = AutoModelForCausalLM.from_pretrained(
         BASE_MODEL_ID, torch_dtype=torch.bfloat16, use_cache=not GRADIENT_CHECKPOINTING
@@ -108,6 +115,20 @@ def train(input_path: str = DEFAULT_INPUT) -> str:
     if len(encoded) != len(rows):
         raise ValueError(f"Dropped {len(rows) - len(encoded)} of {len(rows)} rows above {MAX_SEQ_LENGTH}.")
 
+    class _RowDataset(torch.utils.data.Dataset):
+        """Thin wrapper so the trainer receives a Dataset, not a plain list."""
+
+        def __init__(self, items: list[dict[str, list[int]]]) -> None:
+            self._items = items
+
+        def __len__(self) -> int:
+            return len(self._items)
+
+        def __getitem__(self, index: int) -> dict[str, list[int]]:
+            return self._items[index]
+
+    train_dataset = _RowDataset(encoded)
+
     def collate(features: list[dict[str, list[int]]]) -> dict[str, torch.Tensor]:
         width = max(len(feature["input_ids"]) for feature in features)
         pad = encoder.pad_token_id or 0
@@ -129,11 +150,13 @@ def train(input_path: str = DEFAULT_INPUT) -> str:
         gradient_checkpointing=GRADIENT_CHECKPOINTING,
         logging_steps=1,
         save_strategy="no",
+        seed=SEED,
     )
-    trainer = Trainer(model=model, args=args, train_dataset=encoded, data_collator=collate)
+    trainer = Trainer(model=model, args=args, train_dataset=train_dataset, data_collator=collate)
     trainer.train()
 
     adapter_path = f"{VOLUME_MOUNT_PATH}/{ADAPTER_DIR}"
     model.save_pretrained(adapter_path)
+    encoder.save_pretrained(adapter_path)
     volume.commit()
     return f"saved {ADAPTER_FILES[0]} and {ADAPTER_FILES[1]} to {VOLUME_NAME}:{ADAPTER_DIR}"

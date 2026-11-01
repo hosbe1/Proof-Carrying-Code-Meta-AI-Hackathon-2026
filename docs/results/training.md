@@ -71,7 +71,7 @@ from saved artifacts, not an account billing total.
 | run | date (UTC) | commit | base model | job IDs | config | training lines | input SHA-256 | spend (USD) | adapter location |
 |---|---|---|---|---|---|---|---|---|---|
 | sft1 | 2026-11-01 | 9af9b2759d52647843d6c7632d5b78d5aa5dedc3 | accounts/fireworks/models/muse-glimmer-30b | session ts-274df4913ef44e39a9127857726365ff, run run-4b87798e63b84123ab56a5630637db13, checkpoint sft1-final-6b3d4ef4 | LoRA r16, 2 epochs, batch 8, 76 steps, Adam lr 1e-4 (beta1 0.9, beta2 0.95, eps 1e-8, wd 0), cross_entropy, seed 0 | 301 | c3d508bfbff7f1726b838e32e2753caa0279b3873a6688c0ec47a71f81dea9f1 | unknown, billing check pending (expected 0 while LoRA SFT is free until Nov 30; not a billing total) | accounts/mick/models/pcc-glimmer-sft1 (Fireworks; on record but not used — SFT 1 is served from the Modal adapter below) |
-| sft1-modal | 2026-11-01 | 9af9b2759d52647843d6c7632d5b78d5aa5dedc3 | accounts/fireworks/models/muse-glimmer-30b | none (Modal run: 34 s weight load, 394 s training) | LoRA r16 alpha 32, targets q/k/v/o + gate/up/down of the text tower, 2 epochs, batch 8, 76 steps, AdamW lr 1e-4 (betas 0.9/0.95, wd 0), bf16, gradient checkpointing, loss on the assistant turn only, rows above 16384 dropped (none); 95.8M trainable params on 1 x H200 | 301 | c3d508bfbff7f1726b838e32e2753caa0279b3873a6688c0ec47a71f81dea9f1 | about 1 (Modal H200 credits; not a billing total) | pcc-glimmer:adapters/sft1 (`adapter_config.json`, `adapter_model.safetensors`); served as `glimmer-sft` |
+| sft1-modal | 2026-11-01 | 9af9b2759d52647843d6c7632d5b78d5aa5dedc3 | accounts/fireworks/models/muse-glimmer-30b | none (Modal run: 34 s weight load, 394 s training) | LoRA r16 alpha 32, targets q/k/v/o + gate/up/down of the text tower, 2 epochs, batch 8, 76 steps, AdamW lr 1e-4 (betas 0.9/0.95, wd 0), bf16, gradient checkpointing, loss on the assistant turn only, rows above 16384 dropped (none); 95.8M trainable params on 1 x H200 | 301 | c3d508bfbff7f1726b838e32e2753caa0279b3873a6688c0ec47a71f81dea9f1 | about 1 (Modal H200 credits, outside the $0 cap; not a billing total) | pcc-glimmer:adapters/sft1 (`adapter_config.json`, `adapter_model.safetensors`); served as `glimmer-sft` |
 
 ## SFT 1 notes (2026-11-01)
 
@@ -104,7 +104,8 @@ from saved artifacts, not an account billing total.
 - Spend: unknown, billing check pending. The plan records LoRA SFT on this
   model as free until Nov 30 through the UI or the Serverless Training API,
   so the expected total is 0; this is not a billing total until confirmed
-  on the billing page.
+  on the billing page. Follow-up: confirm on the billing page and update
+  this row (see issue #78); the repository alone cannot prove spend.
 - Open: the PEFT download. Fireworks refuses it with an API key ("model
   downloads require signing in with `firectl signin` or the Fireworks
   console"). Once downloaded, the adapter goes to
@@ -128,7 +129,8 @@ from saved artifacts, not an account billing total.
 - Recipe: LoRA r=16, alpha 32, attention q/k/v/o plus MLP gate/up/down
   of the text tower; 2 epochs, batch 8 (76 steps), AdamW lr 1e-4, betas
   0.9/0.95, no weight decay; loss on the assistant turn only; rows above
-  16,384 dropped (none). Training script: `deploy/modal_sft.py`.
+  16,384 dropped (none); seed 0 (script pin for deterministic reruns).
+  Training script: `deploy/modal_sft.py`.
 - Hardware: 1 x H200, bf16, gradient checkpointing; 95.8M trainable
   params.
 - Tokens: 637,208 (identical to the Fireworks run).
@@ -136,7 +138,10 @@ from saved artifacts, not an account billing total.
 - Time: 34 s weight load, 394 s training.
 - Adapter: `pcc-glimmer:/adapters/sft1` (`adapter_config.json`,
   `adapter_model.safetensors`).
-- Cost: Modal credits, about $1 of H200 time; not a billing total.
+- Cost: Modal credits, about $1 of H200 time; not a billing total. This is
+  outside the ticket's original $0 Fireworks-free cap and is recorded here
+  as controller-reported for sign-off; confirming the billing total remains
+  open.
 - Commit: `9af9b2759d52647843d6c7632d5b78d5aa5dedc3` is the `origin/main`
   HEAD at run-record time. The retrain itself started no repository
   commit; the table records the code base the training data came from.
