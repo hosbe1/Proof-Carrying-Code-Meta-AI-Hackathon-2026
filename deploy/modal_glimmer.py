@@ -11,6 +11,7 @@ tests: Modal is an optional dependency that is not installed in CI.
 """
 
 import os
+import subprocess
 
 import modal  # type: ignore[import-not-found]  # optional, not a dev dependency
 
@@ -33,6 +34,9 @@ volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 image = (
     modal.Image.debian_slim(python_version="3.12")
     .pip_install("vllm", "huggingface_hub")
+    # Cache the weights on the volume so a cold start reuses the download.
+    # Build steps after add_local_* are rejected, so this must come first.
+    .env({"HF_HOME": f"{VOLUME_MOUNT_PATH}/hf"})
     # Bundle the deploy package so the container resolves its helpers.
     .add_local_python_source("deploy")
 )
@@ -46,12 +50,15 @@ image = (
     scaledown_window=SCALEDOWN_WINDOW_SECONDS,
     # One GPU at most: queued requests during a cold start must not fan out to the GPU limit.
     max_containers=1,
+    # Loading the weights takes tens of minutes; the web_server timeout alone
+    # does not stop Modal from killing the runner (and the vLLM engine) first.
+    startup_timeout=45 * 60,
 )
 @modal.web_server(port=VLLM_PORT, startup_timeout=20 * 60)
-def serve() -> list[str]:
+def serve() -> None:
     """Start vLLM's OpenAI-compatible server for the baked-in settings."""
     check_volume_paths(_SETTINGS.adapters)
-    return [
+    cmd = [
         "vllm",
         "serve",
         _SETTINGS.base_model,
@@ -63,3 +70,5 @@ def serve() -> list[str]:
         "--api-key",
         os.environ["PCC_GLIMMER_API_KEY"],
     ]
+    subprocess.Popen(cmd)
+    return

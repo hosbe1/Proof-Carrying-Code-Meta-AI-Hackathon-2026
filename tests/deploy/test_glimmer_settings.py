@@ -221,12 +221,16 @@ def test_modal_app_bundles_deploy_sources_for_container() -> None:
     source = MODAL_APP_PATH.read_text(encoding="utf-8")
     tree = ast.parse(source)
     call = _image_add_local_call(tree)
-    # The call must sit on the image build chain after pip_install, so the
-    # container resolves the `from deploy.glimmer_settings import ...` helpers.
+    # The call must sit on the image build chain after pip_install and the
+    # HF_HOME env step, so the container resolves the
+    # `from deploy.glimmer_settings import ...` helpers with cached weights.
     receiver = call.func.value if isinstance(call.func, ast.Attribute) else None
     assert isinstance(receiver, ast.Call)
-    assert isinstance(receiver.func, ast.Attribute) and receiver.func.attr == "pip_install"
-    pip_args = {arg.value for arg in receiver.args if isinstance(arg, ast.Constant) and isinstance(arg.value, str)}
+    assert isinstance(receiver.func, ast.Attribute) and receiver.func.attr == "env"
+    pip_call = receiver.func.value
+    assert isinstance(pip_call, ast.Call)
+    assert isinstance(pip_call.func, ast.Attribute) and pip_call.func.attr == "pip_install"
+    pip_args = {arg.value for arg in pip_call.args if isinstance(arg, ast.Constant) and isinstance(arg.value, str)}
     assert {"vllm", "huggingface_hub"} <= pip_args
     assert "from deploy.glimmer_settings import" in source
     image_assigns = [
@@ -277,3 +281,71 @@ def test_modal_app_defines_module_level_app_without_being_imported() -> None:
         and node.value.func.attr == "App"
         for node in tree.body
     ), "deploy/modal_glimmer.py must define module-level `app = modal.App(...)`"
+
+
+def _static_int(node: ast.expr) -> int:
+    """Evaluate a small static integer expression (literals, `*` products)."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, int):
+        return node.value
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult):
+        return _static_int(node.left) * _static_int(node.right)
+    raise AssertionError(f"expected a static integer expression, got {ast.dump(node)}")
+
+
+def test_modal_image_caches_hf_weights_on_volume() -> None:
+    source = MODAL_APP_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    call = _image_add_local_call(tree)
+    receiver = call.func.value if isinstance(call.func, ast.Attribute) else None
+    assert isinstance(receiver, ast.Call)
+    assert isinstance(receiver.func, ast.Attribute) and receiver.func.attr == "env"
+    # The env step must point HF_HOME at the mounted volume, so a cold start
+    # reuses the downloaded weights instead of fetching them again.
+    assert len(receiver.args) == 1 and isinstance(receiver.args[0], ast.Dict)
+    keys = receiver.args[0].keys
+    values = receiver.args[0].values
+    hf_index = next(index for index, key in enumerate(keys) if isinstance(key, ast.Constant) and key.value == "HF_HOME")
+    hf_value = values[hf_index]
+    assert ("VOLUME_MOUNT_PATH" in ast.dump(hf_value) and "/hf" in ast.dump(hf_value)) or (
+        isinstance(hf_value, ast.Constant) and hf_value.value == "/models/pcc-glimmer/hf"
+    )
+
+
+def test_modal_function_allows_slow_weight_load() -> None:
+    source = MODAL_APP_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    decorator = _serve_function_decorator(tree)
+    timeout = [keyword for keyword in decorator.keywords if keyword.arg == "startup_timeout"]
+    assert len(timeout) == 1
+    # Loading the weights can take tens of minutes; Modal must not kill the
+    # runner (and with it the vLLM engine) after its default 300 seconds.
+    assert _static_int(timeout[0].value) == 45 * 60
+
+
+def _serve_function(tree: ast.Module) -> ast.FunctionDef:
+    serve_defs = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "serve"]
+    assert len(serve_defs) == 1, "deploy/modal_glimmer.py must define serve()"
+    return serve_defs[0]
+
+
+def test_serve_starts_vllm_in_background() -> None:
+    source = MODAL_APP_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    serve = _serve_function(tree)
+    # With @modal.web_server the function must start the server in the
+    # background and return; returning the command list never starts vLLM.
+    assert serve.returns is None or (isinstance(serve.returns, ast.Constant) and serve.returns.value is None)
+    popens = [
+        node
+        for node in ast.walk(serve)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "Popen"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "subprocess"
+    ]
+    assert len(popens) >= 1, "serve() must start the vLLM server with subprocess.Popen"
+    assert all(
+        not isinstance(node.value, (ast.List, ast.Tuple)) for node in ast.walk(serve) if isinstance(node, ast.Return)
+    ), "serve() must not return the command list"
+    assert "import subprocess" in source

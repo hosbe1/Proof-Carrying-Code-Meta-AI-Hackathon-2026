@@ -77,8 +77,15 @@ export PCC_GLIMMER_ADAPTERS="glimmer-sft=/adapters/sft1,other=some-org/other-lor
    modal deploy deploy/modal_glimmer.py
    ```
 
-   Deploy reads the environment when it runs; changing a setting means
-   re-deploying.
+    Deploy reads the environment when it runs; changing a setting means
+    re-deploying.
+
+    The image points `HF_HOME` at the mounted volume
+    (`/models/pcc-glimmer/hf`), so a cold start reuses the uploaded weights
+    instead of downloading them again. The serving function allows 45 minutes
+    to start (`startup_timeout`), since loading the weights takes tens of
+    minutes; `serve()` starts the vLLM server in the background and returns,
+    as `@modal.web_server` requires.
 
 ## One test request
 
