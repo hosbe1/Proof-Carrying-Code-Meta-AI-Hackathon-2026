@@ -123,7 +123,8 @@ def build_client(
     omitted when unset; any other value raises ``ValueError``); glimmer uses ``PCC_GLIMMER_BASE_URL``,
     ``PCC_GLIMMER_API_KEY`` and
     ``config.models.endpoint_prices["glimmer"]`` keyed by the model name sent, which is ``PCC_GLIMMER_MODEL``
-    when set and the routed model id otherwise. Glimmer requests never carry ``reasoning_effort``.
+    when set and the routed model id otherwise. Glimmer requests never carry ``reasoning_effort``; a set
+    ``PCC_GLIMMER_REASONING_STRENGTH`` is sent as ``chat_template_kwargs`` ``{"reasoning_strength": ...}``.
     A model id routed to two different endpoints raises
     ``ValueError``.
     """
@@ -168,12 +169,18 @@ def build_client(
             snapshot.get("PCC_GLIMMER_BASE_URL", ""),
             snapshot.get("PCC_GLIMMER_API_KEY", ""),
             prices=glimmer_prices,
+            chat_template_kwargs=_glimmer_template_kwargs(snapshot.get("PCC_GLIMMER_REASONING_STRENGTH")),
         )
     if override is not None:
         sent_model = {model: override for model, name in endpoint_of.items() if name == GLIMMER_ENDPOINT}
     else:
         sent_model = {}
     return Router(endpoint_clients, endpoint_of, sent_model, snapshot)
+
+
+def _glimmer_template_kwargs(strength: str | None) -> dict[str, str] | None:
+    """Glimmer's chat template defaults to high reasoning; ``PCC_GLIMMER_REASONING_STRENGTH`` overrides it."""
+    return {"reasoning_strength": strength} if strength else None
 
 
 def available_stages(config: Config, router: Router) -> Config:

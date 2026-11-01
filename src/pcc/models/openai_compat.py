@@ -109,6 +109,10 @@ class OpenAICompatClient:
     an empty ``Completion`` with the reported usage immediately, without the
     invalid-JSON retry, even when ``schema`` was requested. All other null or
     non-text contents remain malformed-response ``ToolError``s.
+
+    ``chat_template_kwargs`` (vLLM) are sent as is when given, e.g. Glimmer's
+    ``reasoning_strength``. Leaked ATEM channel headers are stripped from the
+    answer (see ``_user_channel``).
     """
 
     def __init__(
@@ -121,6 +125,7 @@ class OpenAICompatClient:
         max_retries: int = 4,
         sleep: Callable[[float], None] = time.sleep,
         reasoning_effort: str | None = None,
+        chat_template_kwargs: Mapping[str, str] | None = None,
     ) -> None:
         if reasoning_effort is not None and reasoning_effort not in REASONING_EFFORTS:
             valid = ", ".join(sorted(REASONING_EFFORTS))
@@ -132,6 +137,7 @@ class OpenAICompatClient:
         self._max_retries = max_retries
         self._sleep = sleep
         self._reasoning_effort = reasoning_effort
+        self._chat_template_kwargs = dict(chat_template_kwargs) if chat_template_kwargs else None
 
     def complete(
         self,
@@ -230,6 +236,8 @@ class OpenAICompatClient:
             body["max_tokens"] = max_tokens
         if self._reasoning_effort is not None:
             body["reasoning_effort"] = self._reasoning_effort
+        if self._chat_template_kwargs is not None:
+            body["chat_template_kwargs"] = self._chat_template_kwargs
         if use_response_format and schema is not None:
             body["response_format"] = {
                 "type": "json_schema",
@@ -275,9 +283,22 @@ class OpenAICompatClient:
             if not isinstance(content, str):
                 raise TypeError("content is not text")
             prompt, completion_tokens = _usage_tokens(payload)
-            return content, prompt, completion_tokens, False
+            return _user_channel(content), prompt, completion_tokens, False
         except (ValueError, KeyError, IndexError, TypeError, AttributeError) as exc:
             raise ToolError(f"malformed model response for {model!r} (step {step!r}): {exc}") from exc
+
+
+def _user_channel(content: str) -> str:
+    """The user-channel text of an answer whose ATEM channel headers leaked into the content.
+
+    vLLM serving Glimmer without a reasoning parser returns ``to=self`` reasoning and the
+    ``to=user`` answer as one text. Only the text after the last ``to=user`` header is the
+    answer; reasoning that never reached it yields ``""``. Other content is unchanged.
+    """
+    if not content.lstrip().startswith("to="):
+        return content
+    _, header, answer = content.rpartition("to=user")
+    return answer if header else ""
 
 
 def _usage_tokens(payload: Any) -> tuple[int, int]:
