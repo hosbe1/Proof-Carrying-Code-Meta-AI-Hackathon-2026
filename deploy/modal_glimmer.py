@@ -55,7 +55,7 @@ image = (
     # does not stop Modal from killing the runner (and the vLLM engine) first.
     startup_timeout=45 * 60,
 )
-@modal.web_server(port=VLLM_PORT, startup_timeout=20 * 60)
+@modal.web_server(port=VLLM_PORT, startup_timeout=45 * 60)
 def serve() -> None:
     """Start vLLM's OpenAI-compatible server for the baked-in settings."""
     check_volume_paths(_SETTINGS.adapters)

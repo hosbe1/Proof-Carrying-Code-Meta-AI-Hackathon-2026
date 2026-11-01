@@ -59,11 +59,16 @@ export PCC_GLIMMER_ADAPTERS="glimmer-sft=/adapters/sft1,other=some-org/other-lor
    modal secret create pcc-glimmer-api PCC_GLIMMER_API_KEY="$PCC_GLIMMER_API_KEY"
    ```
 
-2. Upload the base weights to the volume (once; subsequent deploys reuse them):
+2. Prime the weight cache on the volume (once; subsequent deploys reuse it):
 
    ```bash
-   modal volume put pcc-glimmer /local/path/to/weights /weights
+   modal volume put pcc-glimmer /local/path/to/weights /hf
    ```
+
+   The image sets `HF_HOME` to `/models/pcc-glimmer/hf`, so only files under
+   `/hf` land in the cache a cold start reuses. If you have no local copy,
+   skip this step: the first cold start downloads the weights itself (about
+   60 GB) and later starts reuse them.
 
    Upload trained adapters the same way, e.g. under `/adapters/sft1`, when
    their source is a volume path rather than a Hugging Face id.

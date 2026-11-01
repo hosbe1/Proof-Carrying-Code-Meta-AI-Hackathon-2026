@@ -322,6 +322,44 @@ def test_modal_function_allows_slow_weight_load() -> None:
     assert _static_int(timeout[0].value) == 45 * 60
 
 
+def _serve_web_server_decorator(tree: ast.Module) -> ast.Call:
+    serve_defs = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "serve"]
+    assert len(serve_defs) == 1, "deploy/modal_glimmer.py must define serve()"
+    web_calls = [
+        node
+        for node in serve_defs[0].decorator_list
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "web_server"
+    ]
+    assert len(web_calls) == 1, "serve() must carry exactly one @modal.web_server decorator"
+    return web_calls[0]
+
+
+def test_modal_web_server_waits_for_slow_weight_load() -> None:
+    source = MODAL_APP_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    decorator = _serve_web_server_decorator(tree)
+    timeout = [keyword for keyword in decorator.keywords if keyword.arg == "startup_timeout"]
+    assert len(timeout) == 1
+    # The port health-check must wait as long as the runner: if loading the
+    # weights takes more than the web_server timeout, the port check fails
+    # even though the runner (and the vLLM engine) would have survived.
+    assert _static_int(timeout[0].value) == 45 * 60
+
+
+def test_deploy_docs_prime_the_hf_weight_cache() -> None:
+    docs = (REPO_ROOT / "docs" / "deploy.md").read_text(encoding="utf-8")
+    put_lines = [line.strip() for line in docs.splitlines() if "modal volume put" in line]
+    assert put_lines, "docs/deploy.md must show how to prime the weight cache on the volume"
+    # The image sets HF_HOME to /models/pcc-glimmer/hf, so only an upload
+    # under /hf lands in the cache a cold start reuses.
+    assert any(line.rstrip().endswith("/hf") for line in put_lines), (
+        "docs/deploy.md must upload the base weights under /hf, the HF_HOME cache dir"
+    )
+    assert not any(line.rstrip().endswith("/weights") for line in put_lines), (
+        "docs/deploy.md must not direct the base weights to /weights, outside the HF_HOME cache"
+    )
+
+
 def _serve_function(tree: ast.Module) -> ast.FunctionDef:
     serve_defs = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "serve"]
     assert len(serve_defs) == 1, "deploy/modal_glimmer.py must define serve()"
