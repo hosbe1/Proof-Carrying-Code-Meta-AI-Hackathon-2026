@@ -69,7 +69,10 @@ export PCC_GLIMMER_ADAPTERS="glimmer-sft=/adapters/sft1,other=some-org/other-lor
    the volume-relative `/hf` (container path `/models/pcc-glimmer/hf`) land
    in the cache a cold start reuses. If you have no local copy,
    skip this step: the first cold start downloads the weights itself (about
-   60 GB) and later starts reuse them.
+   60 GB) and later starts reuse them. If the volume was primed under the
+   previous volume-relative `/weights`, that copy sits outside `HF_HOME`
+   and is ignored: a cold start downloads the weights again. Re-prime
+   those files under `/hf` instead and drop the stale `/weights` copy.
 
    Upload trained adapters the same way, e.g. under `/adapters/sft1`, when
    their source is a volume path rather than a Hugging Face id.
