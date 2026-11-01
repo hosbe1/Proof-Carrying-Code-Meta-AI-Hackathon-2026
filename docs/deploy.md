@@ -109,7 +109,10 @@ concurrency-64 throughput with 64 concurrent client requests against the
 single container (vLLM batches them server-side); do not raise the container
 cap to reach that concurrency. Record the deploy log (no `ModuleNotFoundError`),
 the base URL without the key, the warm-up `200`, the BF16 and FP8 tokens per
-second, and the Modal spend in the run issue.
+second, and the Modal spend in the run issue. None of that live evidence has
+been recorded for #76 yet: the run is paused with no deploy without explicit
+go, so the crash-loop fix and the single-container cold start are still
+unproven until the next live deploy.
 
 ## Stop
 

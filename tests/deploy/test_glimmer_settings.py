@@ -2,6 +2,9 @@
 
 These tests are hermetic: no GPU, no network, and neither Modal nor vLLM is
 installed or imported. Only ``deploy/glimmer_settings.py`` is imported.
+The AST checks on ``deploy/modal_glimmer.py`` below are regression guards
+for the image chain and the ``serve()`` decorator only; live container
+behavior must be confirmed by the run issue, not by these tests.
 """
 
 from __future__ import annotations
