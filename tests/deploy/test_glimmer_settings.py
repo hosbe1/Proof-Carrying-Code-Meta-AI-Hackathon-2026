@@ -200,6 +200,19 @@ def test_vllm_args_carry_the_fixed_serving_parameters() -> None:
     assert args[args.index("--max-model-len") + 1] == "32768"
 
 
+def test_modal_app_bundles_deploy_sources_for_container() -> None:
+    source = MODAL_APP_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    assert "add_local_python_source" in source, "deploy/modal_glimmer.py must bundle the deploy package"
+    assert '"deploy"' in source or "'deploy'" in source
+    assert any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "add_local_python_source"
+        for node in ast.walk(tree)
+    )
+
+
 def test_modal_app_defines_module_level_app_without_being_imported() -> None:
     source = MODAL_APP_PATH.read_text(encoding="utf-8")
     tree = ast.parse(source)

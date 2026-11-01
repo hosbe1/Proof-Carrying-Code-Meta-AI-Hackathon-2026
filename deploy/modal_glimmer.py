@@ -30,7 +30,12 @@ _SETTINGS = load_settings()
 
 app = modal.App("pcc-glimmer")
 volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
-image = modal.Image.debian_slim(python_version="3.12").pip_install("vllm", "huggingface_hub")
+image = (
+    modal.Image.debian_slim(python_version="3.12")
+    .pip_install("vllm", "huggingface_hub")
+    # Bundle the deploy package so the container resolves its helpers.
+    .add_local_python_source("deploy")
+)
 
 
 @app.function(
