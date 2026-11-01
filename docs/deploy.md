@@ -144,10 +144,11 @@ second, and the Modal spend in the run issue.
 
 ## Measured throughput (run #76)
 
-Base model `meta-models/Muse-Glimmer-30B`, vLLM 0.32.0, one H100, served name
-`glimmer`. Cold start with cached weights: 255–346 s. Throughput measured at
-concurrency 64 with prompts of about 2,029 tokens and 512 output tokens each
-(`ignore_eos`), one fresh server per precision:
+Base model `meta-models/Muse-Glimmer-30B` (provisional id, pending #3),
+vLLM 0.32.0, one H100, served name `glimmer`. Cold start with cached weights:
+255–346 s. Throughput measured at concurrency 64 with prompts of about 2,029
+tokens and 512 output tokens each (`ignore_eos`), one fresh server per
+precision. Re-measure after #3 confirms the model id if the id changes:
 
 | Precision | Wall time | Output tokens/s |
 |---|---|---|
@@ -157,8 +158,10 @@ concurrency 64 with prompts of about 2,029 tokens and 512 output tokens each
 At about $3.95 per H100 hour that is roughly $1.00 (BF16) or $0.74 (FP8) per
 million output tokens. Modal spend for the whole run day, including the failed
 starts while debugging, was $10.30 (covered by credits, $0 billed). The
-measurement itself stayed within the 1 H100 hour cap; the debugging overhead
-is recorded honestly here.
+measurement itself stayed within the 1 H100 hour cap: two fresh servers at
+most 346 s cold start each plus 30.6 s and 22.1 s of measurement wall time is
+under 13 minutes (about 0.2 H100 hours); the remainder is debugging overhead
+from the failed starts, recorded honestly here.
 
 ## Stop
 
