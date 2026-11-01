@@ -70,7 +70,8 @@ from saved artifacts, not an account billing total.
 
 | run | date (UTC) | commit | base model | job IDs | config | training lines | input SHA-256 | spend (USD) | adapter location |
 |---|---|---|---|---|---|---|---|---|---|
-| sft1 | 2026-11-01 | 9af9b2759d52647843d6c7632d5b78d5aa5dedc3 | accounts/fireworks/models/muse-glimmer-30b | session ts-274df4913ef44e39a9127857726365ff, run run-4b87798e63b84123ab56a5630637db13, checkpoint sft1-final-6b3d4ef4 | LoRA r16, 2 epochs, batch 8, 76 steps, Adam lr 1e-4 (beta1 0.9, beta2 0.95, eps 1e-8, wd 0), cross_entropy, seed 0 | 301 | c3d508bfbff7f1726b838e32e2753caa0279b3873a6688c0ec47a71f81dea9f1 | unknown, billing check pending (expected 0 while LoRA SFT is free until Nov 30; not a billing total) | accounts/mick/models/pcc-glimmer-sft1 (Fireworks; round 1 and the SFT 1 evaluation use an on-demand deployment until the PEFT adapter lands on pcc-glimmer:adapters/sft1) |
+| sft1 | 2026-11-01 | 9af9b2759d52647843d6c7632d5b78d5aa5dedc3 | accounts/fireworks/models/muse-glimmer-30b | session ts-274df4913ef44e39a9127857726365ff, run run-4b87798e63b84123ab56a5630637db13, checkpoint sft1-final-6b3d4ef4 | LoRA r16, 2 epochs, batch 8, 76 steps, Adam lr 1e-4 (beta1 0.9, beta2 0.95, eps 1e-8, wd 0), cross_entropy, seed 0 | 301 | c3d508bfbff7f1726b838e32e2753caa0279b3873a6688c0ec47a71f81dea9f1 | unknown, billing check pending (expected 0 while LoRA SFT is free until Nov 30; not a billing total) | accounts/mick/models/pcc-glimmer-sft1 (Fireworks; on record but not used — SFT 1 is served from the Modal adapter below) |
+| sft1-modal | 2026-11-01 | 9af9b2759d52647843d6c7632d5b78d5aa5dedc3 | accounts/fireworks/models/muse-glimmer-30b | none (Modal run: 34 s weight load, 394 s training) | LoRA r16 alpha 32, targets q/k/v/o + gate/up/down of the text tower, 2 epochs, batch 8, 76 steps, AdamW lr 1e-4 (betas 0.9/0.95, wd 0), bf16, gradient checkpointing, loss on the assistant turn only, rows above 16384 dropped (none); 95.8M trainable params on 1 x H200 | 301 | c3d508bfbff7f1726b838e32e2753caa0279b3873a6688c0ec47a71f81dea9f1 | about 1 (Modal H200 credits, outside the $0 cap; not a billing total) | pcc-glimmer:adapters/sft1 (`adapter_config.json`, `adapter_model.safetensors`); served as `glimmer-sft` |
 
 ## SFT 1 notes (2026-11-01)
 
@@ -100,10 +101,12 @@ from saved artifacts, not an account billing total.
   are as reported by the run controller in the issue record of 2026-11-01.
   Raw sampling output stays local per the header above, so no local training
   log is committed; checking those IDs needs access to the training console.
-- Spend: unknown, billing check pending. The plan records LoRA SFT on this
+- Spend (unverified): unknown, billing check pending. The plan records LoRA SFT on this
   model as free until Nov 30 through the UI or the Serverless Training API,
   so the expected total is 0; this is not a billing total until confirmed
-  on the billing page.
+  on the billing page. Follow-up: confirm on the billing page and update
+  this row (see issue #78); the repository alone cannot prove spend. A billed
+  amount would exceed the ticket's $0 cap and must be reported in #78.
 - Open: the PEFT download. Fireworks refuses it with an API key ("model
   downloads require signing in with `firectl signin` or the Fireworks
   console"). Once downloaded, the adapter goes to
@@ -112,3 +115,48 @@ from saved artifacts, not an account billing total.
 - Downstream: per the fallback in this issue, round 1 (#79) and the SFT 1
   evaluation run on a Fireworks on-demand deployment of the promoted
   model until the volume path above exists.
+
+## SFT 1 retrain notes (Modal, 2026-11-01)
+
+- Reason: the Fireworks adapter download stays unavailable without a
+  support-granted exception, and sampling the Fireworks checkpoint through
+  the training API timed out (2 x 600 s read timeout on a 68-token
+  prompt). SFT 1 was therefore retrained on Modal with the same data and
+  recipe; this adapter is the one served and evaluated. The Fireworks
+  model stays on record but is not used.
+- Data: `runs/round0/rescored.jsonl`, 301 rows, SHA-256
+  `c3d508bfbff7f1726b838e32e2753caa0279b3873a6688c0ec47a71f81dea9f1`
+  (same as the Fireworks run). The script refuses any other input.
+- Recipe: LoRA r=16, alpha 32, attention q/k/v/o plus MLP gate/up/down
+  of the text tower; 2 epochs, batch 8 (76 steps), AdamW lr 1e-4, betas
+  0.9/0.95, no weight decay; loss on the assistant turn only; rows above
+  16,384 dropped (none); seed 0 (script pin for deterministic reruns only;
+  the original retrain log recorded no seed).
+  Training script: `deploy/modal_sft.py`, which has not been executed
+  end to end in CI (hermetic tests pin its constants only).
+- Hardware: 1 x H200, bf16, gradient checkpointing; 95.8M trainable
+  params.
+- Tokens: 637,208 (identical to the Fireworks run).
+- Loss: 0.190 (step 1) to 0.020 (step 76).
+- Time: 34 s weight load, 394 s training.
+- Adapter: `pcc-glimmer:/adapters/sft1` (`adapter_config.json`,
+  `adapter_model.safetensors`).
+- Cost (unverified, requires owner sign-off): Modal credits, about $1 of H200
+  time; not a billing total. This is outside the ticket's original $0
+  Fireworks-free cap and is recorded here as controller-reported for sign-off;
+  it must not be treated as within the cap. Confirming the billing total remains
+  open.
+- Commit: `9af9b2759d52647843d6c7632d5b78d5aa5dedc3` is the `origin/main`
+  HEAD at run-record time. The retrain itself started no repository
+  commit; the table records the code base the training data came from.
+- Serving: the Glimmer deployment now runs FP8 with
+  `PCC_GLIMMER_ADAPTERS=glimmer-sft=/adapters/sft1`. A warm-up request to
+  model `glimmer-sft` returned HTTP 200 after a 285 s cold start, and the
+  base model `glimmer` answered from the warm container.
+- Provenance: loss, token, time, and serving figures above are as
+  reported by the run controller in the issue record of 2026-11-01; no
+  local training log is committed. Verification needs volume and console
+  access; the repository alone cannot prove adapter presence, serving,
+  loss, token, or time figures.
+- Downstream: supersedes the on-demand fallback above. Round 1 (#79) and
+  the SFT 1 evaluation use `glimmer-sft` on Modal.
