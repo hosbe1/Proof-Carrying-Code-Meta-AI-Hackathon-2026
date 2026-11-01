@@ -103,6 +103,38 @@ def _default_reward(answer: str, task_spec: str) -> float:
     return reward(answer, task_spec, resource_limit=Config().dafny.resource_limit)
 
 
+def _canonicalize_prefix(answer: str, task_spec: str) -> str:
+    """Restore the frozen prefix only when every nonblank prefix line is unchanged.
+
+    Models often add blank lines between supplied blocks or wrap an otherwise
+    complete program in one Markdown fence. Neither changes Dafny code. Any
+    changed nonblank line stays untouched and fails the normal reward guard.
+    """
+    candidate = answer
+    stripped = answer.strip()
+    if stripped.startswith("```dafny\n") or stripped.startswith("```\n"):
+        lines = stripped.splitlines(keepends=True)
+        if len(lines) < 3 or lines[-1].strip() != "```":
+            return answer
+        candidate = "".join(lines[1:-1]).lstrip("\r\n")
+    if task_spec in candidate:
+        return candidate
+    expected = [line.rstrip() for line in task_spec.splitlines() if line.strip()]
+    if not expected:
+        return answer
+    lines = candidate.splitlines(keepends=True)
+    matched = 0
+    for index, line in enumerate(lines):
+        if not line.strip():
+            continue
+        if line.rstrip() != expected[matched]:
+            return answer
+        matched += 1
+        if matched == len(expected):
+            return task_spec + "".join(lines[index + 1 :])
+    return answer
+
+
 def _chat_line(prompt: str, answer: str) -> dict[str, Any]:
     """One SFT chat line in the format of ``training/export_sft.py``."""
     return {
@@ -395,9 +427,9 @@ def run(
     for index in finished_order:
         frozen = task_spec_of(tasks[index])
         for _, answer in retained.get(shas[index], []):
-            verify_jobs.append((index, answer, frozen))
+            verify_jobs.append((index, _canonicalize_prefix(answer, frozen), frozen))
         for record in new_records[index]:
-            verify_jobs.append((index, record.answer, frozen))
+            verify_jobs.append((index, _canonicalize_prefix(record.answer, frozen), frozen))
     verified: dict[int, list[str]] = {index: [] for index in finished_order}
     with ProcessPoolExecutor(max_workers=workers) as pool:
         scored = [pool.submit(check_fn, answer, frozen) for _, answer, frozen in verify_jobs]

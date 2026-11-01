@@ -26,6 +26,7 @@ from training.rejection import RoundSummary, main, prompt_sha256, run
 from pcc.core import ToolError, Usage
 from pcc.evaluation.datasets import Task
 from pcc.evaluation.prompts import SYSTEM_MESSAGE, build_prompt
+from pcc.evaluation.vericoding import task_spec_of
 from pcc.models import FakeClient
 from pcc.models.client import Completion, Message
 from pcc.models.fake import Call
@@ -36,6 +37,36 @@ def fake_ok_reward(answer: str, task_spec: str) -> float:
     """Module-level fake reward (picklable): 1.0 for answers starting with ``ok``."""
     assert task_spec != ""
     return 1.0 if answer.startswith("ok") else 0.0
+
+
+def fake_prefix_reward(answer: str, task_spec: str) -> float:
+    """A changed immutable prefix fails; formatting-only changes may be normalized first."""
+    return 1.0 if answer.startswith(task_spec) else -1.0
+
+
+def test_fenced_answer_with_extra_blank_line_reuses_exact_prefix(tmp_path: Path) -> None:
+    original = _task("DA0001", TASK_ONE)
+    task = dataclasses.replace(original, payload={**original.payload, "vc-preamble": "predicate Ready() { true }"})
+    frozen = task_spec_of(task)
+    answer = "```dafny\n\n" + frozen.replace("}\nmethod", "}\n\nmethod") + "    r := 0;\n}\n```"
+    summary = run(
+        (task,), FakeClient([answer]), model="m", attempts=1, out=tmp_path / "round.jsonl", reward_fn=fake_prefix_reward
+    )
+
+    assert summary.tasks_solved == 1
+    saved = _read_jsonl(tmp_path / "round.jsonl")
+    assert saved[0]["messages"][2]["content"] == frozen + "    r := 0;\n}\n"
+
+
+def test_changed_prefix_still_fails_rejection(tmp_path: Path) -> None:
+    task = _task("DA0001", TASK_ONE)
+    frozen = task_spec_of(task)
+    answer = frozen.replace("returns (r: int)", "returns (r: bool)") + "    r := 0;\n}\n"
+    summary = run(
+        (task,), FakeClient([answer]), model="m", attempts=1, out=tmp_path / "round.jsonl", reward_fn=fake_prefix_reward
+    )
+
+    assert summary.tasks_solved == 0
 
 
 def fake_solved_reward(answer: str, task_spec: str) -> float:
