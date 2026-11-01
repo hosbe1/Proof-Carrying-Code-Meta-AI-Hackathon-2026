@@ -16,6 +16,12 @@ input. The adapter lands on the shared volume next to the serving deployment
 Heavy dependencies (torch, transformers, peft) are imported inside
 :func:`train`, which executes on Modal. Never import this module in tests:
 Modal is an optional dependency that is not installed in CI.
+
+Seed and execution note: ``SEED`` is a pin for deterministic reruns; the
+original retrain log recorded no seed, so the pin applies to reruns only.
+This script has not been executed end to end in CI; hermetic tests pin its
+constants only, and run figures stay controller-reported in
+``docs/results/training.md``.
 """
 
 from __future__ import annotations
@@ -57,7 +63,8 @@ def train(input_path: str = DEFAULT_INPUT) -> str:
     """Run the SFT 1 LoRA retrain and save the adapter to the shared volume.
 
     Uses seed 0, wraps the rows in a Dataset, and saves the model and the
-    tokenizer into the adapter directory.
+    tokenizer into the adapter directory. The seed pin covers reruns; the
+    original retrain log recorded no seed.
     """
     import hashlib
     import json

@@ -101,11 +101,12 @@ from saved artifacts, not an account billing total.
   are as reported by the run controller in the issue record of 2026-11-01.
   Raw sampling output stays local per the header above, so no local training
   log is committed; checking those IDs needs access to the training console.
-- Spend: unknown, billing check pending. The plan records LoRA SFT on this
+- Spend (unverified): unknown, billing check pending. The plan records LoRA SFT on this
   model as free until Nov 30 through the UI or the Serverless Training API,
   so the expected total is 0; this is not a billing total until confirmed
   on the billing page. Follow-up: confirm on the billing page and update
-  this row (see issue #78); the repository alone cannot prove spend.
+  this row (see issue #78); the repository alone cannot prove spend. A billed
+  amount would exceed the ticket's $0 cap and must be reported in #78.
 - Open: the PEFT download. Fireworks refuses it with an API key ("model
   downloads require signing in with `firectl signin` or the Fireworks
   console"). Once downloaded, the adapter goes to
@@ -129,8 +130,10 @@ from saved artifacts, not an account billing total.
 - Recipe: LoRA r=16, alpha 32, attention q/k/v/o plus MLP gate/up/down
   of the text tower; 2 epochs, batch 8 (76 steps), AdamW lr 1e-4, betas
   0.9/0.95, no weight decay; loss on the assistant turn only; rows above
-  16,384 dropped (none); seed 0 (script pin for deterministic reruns).
-  Training script: `deploy/modal_sft.py`.
+  16,384 dropped (none); seed 0 (script pin for deterministic reruns only;
+  the original retrain log recorded no seed).
+  Training script: `deploy/modal_sft.py`, which has not been executed
+  end to end in CI (hermetic tests pin its constants only).
 - Hardware: 1 x H200, bf16, gradient checkpointing; 95.8M trainable
   params.
 - Tokens: 637,208 (identical to the Fireworks run).
@@ -138,9 +141,10 @@ from saved artifacts, not an account billing total.
 - Time: 34 s weight load, 394 s training.
 - Adapter: `pcc-glimmer:/adapters/sft1` (`adapter_config.json`,
   `adapter_model.safetensors`).
-- Cost: Modal credits, about $1 of H200 time; not a billing total. This is
-  outside the ticket's original $0 Fireworks-free cap and is recorded here
-  as controller-reported for sign-off; confirming the billing total remains
+- Cost (unverified, requires owner sign-off): Modal credits, about $1 of H200
+  time; not a billing total. This is outside the ticket's original $0
+  Fireworks-free cap and is recorded here as controller-reported for sign-off;
+  it must not be treated as within the cap. Confirming the billing total remains
   open.
 - Commit: `9af9b2759d52647843d6c7632d5b78d5aa5dedc3` is the `origin/main`
   HEAD at run-record time. The retrain itself started no repository
@@ -151,6 +155,8 @@ from saved artifacts, not an account billing total.
   base model `glimmer` answered from the warm container.
 - Provenance: loss, token, time, and serving figures above are as
   reported by the run controller in the issue record of 2026-11-01; no
-  local training log is committed.
+  local training log is committed. Verification needs volume and console
+  access; the repository alone cannot prove adapter presence, serving,
+  loss, token, or time figures.
 - Downstream: supersedes the on-demand fallback above. Round 1 (#79) and
   the SFT 1 evaluation use `glimmer-sft` on Modal.
