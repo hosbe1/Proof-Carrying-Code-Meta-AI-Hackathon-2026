@@ -63,13 +63,18 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       pull-requests: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - uses: hosbe1/Proof-Carrying-Code-Meta-AI-Hackathon-2026@main
-        env:
-          META_API_KEY: ${{ secrets.META_API_KEY }}
+        with:
+          meta-api-key: ${{ secrets.META_API_KEY }}
 ```
+
+`fetch-depth: 0` provides the Git history needed to compare against the pull request's base branch.
 
 On each pull request the action checks the changed functions plus affected callers with `pcc-check run`, uploads the
 `proofs/` certificates as a workflow artifact, and updates one comment on the pull request. The check turns red only on
