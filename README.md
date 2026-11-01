@@ -117,35 +117,6 @@ function, confirmed bugs with links to the reported issues. That file does not e
 path without linking it. The model comparison (base Glimmer, SFT 1, SFT 2 against Spark and Wonder, with intervals
 and cost per solved task) is published the same way once the evaluations have run.
 
-### Vericoding code-and-proof comparison (test split)
-
-Paired comparison on the same fixed 150-task subset
-([subset.txt](docs/results/2026-10-31-60cdd58-vericoding-wonder-150-valid-low/subset.txt) in the Wonder
-run folder). Both runs are complete for their defined task sets; neither stopped at its cost cap.
-A joint `report compare` over both published folders rejects them because they cover different task
-IDs (569 vs 150), so each published run is compared on its own (the exact commands are recorded in
-the pull request); the paired subset row is computed from the published `summary.json`/`meta.json`
-files and, for the Spark 150-task subset, from that run's raw per-task results.
-
-| run | model | mode | n | attempts | pass@4 | pass@1 (est.) | 95% Wilson interval | cost (USD) | cost per solved task (USD) |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Spark, 150-task subset ([published run](docs/results/2026-10-31-ea0891a-vericoding-spark-eligible-low/summary.md)) | muse-spark-1.3-contributor | contributor | 150 | 4 | 15/150 (10.0%) | 47/600 (7.8%) | 6.15–15.84% (pass@4) | 0.341203 | 0.02275 |
-| Wonder ([vericoding-wonder-150-valid-low](docs/results/2026-10-31-60cdd58-vericoding-wonder-150-valid-low/summary.md)) | muse-wonder-1.0 | standard | 150 | 1 | — (single attempt) | 13/150 (8.7%) | 5.13–14.26% (pass@1) | 6.646832 | 0.51129 |
-
-Full published runs (different task sets, so not task-by-task comparable):
-
-- Spark, full eligible set: 55/569 pass@4 (9.7%, 95% Wilson interval 7.50–12.37%), pass@1
-  estimate 179/2276 (7.9%), cost $1.2644484, contributor mode, complete (cost cap not reached) —
-  [published run](docs/results/2026-10-31-ea0891a-vericoding-spark-eligible-low/summary.md).
-- Wonder, fixed 150-task subset: 13/150 pass@1, which equals pass@4 with one attempt per task
-  (8.7%, 95% Wilson interval 5.13–14.26%), cost $6.646832, standard mode, complete (cost cap not
-  reached) —
-  [published run](docs/results/2026-10-31-60cdd58-vericoding-wonder-150-valid-low/summary.md).
-
-Wilson intervals cover solved tasks (pass@k); no interval is given for the fractional pass@1
-estimates. With 15 vs 13 solved tasks on the shared subset the intervals overlap widely, so no
-significance claim is made.
-
 ### Vericoding: Spark against Wonder
 
 Paired comparison on the same fixed 150-task subset of the Vericoding test split (see
@@ -153,7 +124,10 @@ Paired comparison on the same fixed 150-task subset of the Vericoding test split
 Both runs are complete for their defined task set; neither stopped at a cost cap
 (`summary.json` reports `stopped_at_cost_cap: false`, `meta.json` reports `stopped_early: false`).
 Wilson intervals are 95% intervals over solved tasks (pass@k); the fractional Spark pass@1
-estimates carry no Wilson interval. No significance claim is made.
+estimates carry no Wilson interval. No significance claim is made. A joint `report compare`
+over both published folders rejects them because they cover different task IDs (569 vs 150),
+so each published run is compared on its own (the exact commands are recorded in the pull
+request).
 
 | run | model | mode | n | pass@4 | pass@1 | cost (USD) | cost per solved task (USD) | results |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -168,8 +142,12 @@ Spark solved 15 of them at pass@4
 `vericoding/DS0015`, `vericoding/DT0019`, `vericoding/DV0056`, `vericoding/DV0069`,
 `vericoding/DV0084`, `vericoding/DV0148`, `vericoding/DV0173`;
 intersection of the published Spark `solved_task_ids` with the 150-task subset).
-The Spark subset pass@1 estimate (47/600) and subset cost ($0.341203) come from the raw
-per-task attempt records of the Spark run; the full-run `summary.json` only records totals.
+The Spark subset pass@1 estimate (47/600 = 7.83%) and subset cost ($0.341203, hence
+$0.341203 / 15 = $0.02275 per solved task) are the canonical values recorded for this
+comparison from that run's raw per-task attempt records; they cannot be recomputed from the
+published `summary.json` alone, which only records run totals. The 15 solved task IDs above
+remain verifiable as the intersection of the published Spark `solved_task_ids` with the
+150-task subset.
 
 Full published runs (different task sets, not directly comparable):
 
