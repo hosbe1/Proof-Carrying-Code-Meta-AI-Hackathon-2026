@@ -213,6 +213,18 @@ def test_modal_app_bundles_deploy_sources_for_container() -> None:
     )
 
 
+def test_modal_app_caps_containers_at_one_gpu() -> None:
+    source = MODAL_APP_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    assert any(
+        isinstance(node, ast.keyword)
+        and node.arg == "max_containers"
+        and isinstance(node.value, ast.Constant)
+        and node.value.value == 1
+        for node in ast.walk(tree)
+    ), "deploy/modal_glimmer.py must cap the function at one container (max_containers=1)"
+
+
 def test_modal_app_defines_module_level_app_without_being_imported() -> None:
     source = MODAL_APP_PATH.read_text(encoding="utf-8")
     tree = ast.parse(source)

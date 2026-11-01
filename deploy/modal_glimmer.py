@@ -44,6 +44,8 @@ image = (
     volumes={VOLUME_MOUNT_PATH: volume},
     secrets=[modal.Secret.from_name(SECRET_NAME)],
     scaledown_window=SCALEDOWN_WINDOW_SECONDS,
+    # One GPU at most: queued requests during a cold start must not fan out to the GPU limit.
+    max_containers=1,
 )
 @modal.web_server(port=VLLM_PORT, startup_timeout=20 * 60)
 def serve() -> list[str]:

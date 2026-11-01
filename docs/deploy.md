@@ -16,6 +16,7 @@ is a manual step owned by the run tickets (#76, #77, #79, #57).
 | Served model name | `glimmer` |
 | Endpoint | authenticated web endpoint, bearer token from the secret |
 | Scale-down | 15 idle minutes (`scaledown_window` 900 s) |
+| Scale | at most one container (`max_containers=1`), so a cold start never fans out beyond one GPU |
 | LoRA | always `--enable-lora --max-lora-rank 16` |
 
 The base model id is a placeholder until #3 confirms it. It lives in one
@@ -97,9 +98,11 @@ Expect a `200` response with a completion. For the trained model, use
 ## Warm-up before a run
 
 A scaled-to-zero deployment needs a few minutes to load the weights. Before a
-run, send the test request above (or one short completion against the model
-the run uses) and wait for the `200`. Only then start the sampling or
-evaluation job, so cold-start latency is not billed as run time.
+run, send exactly one warm-up request (the test request above, or one short
+completion against the model the run uses) and wait for the `200`. Do not
+retry in parallel: queued requests during a cold start scale out to more
+containers. Only then start the sampling or evaluation job, so cold-start
+latency is not billed as run time.
 
 ## Stop
 
