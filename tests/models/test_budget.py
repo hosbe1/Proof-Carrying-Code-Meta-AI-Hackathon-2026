@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -11,6 +12,40 @@ from pcc.models import Completion, FakeClient, Message, ModelClient
 from pcc.models.budget import BudgetedClient, BudgetExceeded
 
 MESSAGES = (Message("user", "hi"),)
+
+
+def test_reserved_calls_run_concurrently_without_crossing_cost_cap() -> None:
+    entered = threading.Barrier(3)
+    release = threading.Event()
+
+    class BlockingClient:
+        def complete(
+            self,
+            model: str,
+            messages: tuple[Message, ...],
+            *,
+            step: str,
+            schema: dict[str, object] | None = None,
+            temperature: float = 0.0,
+            max_tokens: int | None = None,
+        ) -> Completion:
+            entered.wait(timeout=3)
+            assert release.wait(timeout=3)
+            return Completion("ok", Usage(step=step, model=model, cost_usd=0.003))
+
+    client = BudgetedClient(BlockingClient(), max_cost_usd=0.01, max_calls=3, max_seconds=30, max_cost_per_call=0.004)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(client.complete, "m", MESSAGES, step="one")
+        second = pool.submit(client.complete, "m", MESSAGES, step="two")
+        try:
+            entered.wait(timeout=3)
+            with pytest.raises(BudgetExceeded, match="max_cost_usd"):
+                client.complete("m", MESSAGES, step="three")
+        finally:
+            release.set()
+        assert first.result().text == "ok"
+        assert second.result().text == "ok"
+    assert sum(usage.cost_usd for usage in client.usage) == pytest.approx(0.006)
 
 
 class _CostClient:

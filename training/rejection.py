@@ -44,6 +44,7 @@ from pcc.core import ToolError, Usage
 from pcc.evaluation.datasets import Task, split
 from pcc.evaluation.vericoding import task_spec_of
 from pcc.models import BudgetedClient, BudgetExceeded, Message, ModelClient, OpenAICompatClient
+from pcc.models.openai_compat import META_PRICES
 from pcc.models.router import build_client
 from training.prompts import SYSTEM_MESSAGE, build_prompt
 from training.reward import reward
@@ -100,6 +101,38 @@ def _default_reward(answer: str, task_spec: str) -> float:
     reward the same way.
     """
     return reward(answer, task_spec, resource_limit=Config().dafny.resource_limit)
+
+
+def _canonicalize_prefix(answer: str, task_spec: str) -> str:
+    """Restore the frozen prefix only when every nonblank prefix line is unchanged.
+
+    Models often add blank lines between supplied blocks or wrap an otherwise
+    complete program in one Markdown fence. Neither changes Dafny code. Any
+    changed nonblank line stays untouched and fails the normal reward guard.
+    """
+    candidate = answer
+    stripped = answer.strip()
+    if stripped.startswith("```dafny\n") or stripped.startswith("```\n"):
+        lines = stripped.splitlines(keepends=True)
+        if len(lines) < 3 or lines[-1].strip() != "```":
+            return answer
+        candidate = "".join(lines[1:-1]).lstrip("\r\n")
+    if task_spec in candidate:
+        return candidate
+    expected = [line.rstrip() for line in task_spec.splitlines() if line.strip()]
+    if not expected:
+        return answer
+    lines = candidate.splitlines(keepends=True)
+    matched = 0
+    for index, line in enumerate(lines):
+        if not line.strip():
+            continue
+        if line.rstrip() != expected[matched]:
+            return answer
+        matched += 1
+        if matched == len(expected):
+            return task_spec + "".join(lines[index + 1 :])
+    return answer
 
 
 def _chat_line(prompt: str, answer: str) -> dict[str, Any]:
@@ -238,6 +271,7 @@ def run(
     max_tokens: int = 4096,
     max_per_task: int = 2,
     max_cost_usd: float | None = None,
+    max_cost_per_call: float | None = None,
     resume: bool = False,
 ) -> RoundSummary:
     """Sample ``attempts`` proofs per task, keep the verified ones, and return the summary.
@@ -333,7 +367,13 @@ def run(
 
     active: ModelClient = client
     if max_cost_usd is not None:
-        active = BudgetedClient(client, max_cost_usd=max_cost_usd, max_calls=sys.maxsize, max_seconds=float("inf"))
+        active = BudgetedClient(
+            client,
+            max_cost_usd=max_cost_usd,
+            max_calls=sys.maxsize,
+            max_seconds=float("inf"),
+            max_cost_per_call=max_cost_per_call,
+        )
 
     new_records: dict[int, list[_AttemptRecord]] = {index: [] for index in order}
     lock = threading.Lock()
@@ -387,9 +427,9 @@ def run(
     for index in finished_order:
         frozen = task_spec_of(tasks[index])
         for _, answer in retained.get(shas[index], []):
-            verify_jobs.append((index, answer, frozen))
+            verify_jobs.append((index, _canonicalize_prefix(answer, frozen), frozen))
         for record in new_records[index]:
-            verify_jobs.append((index, record.answer, frozen))
+            verify_jobs.append((index, _canonicalize_prefix(record.answer, frozen), frozen))
     verified: dict[int, list[str]] = {index: [] for index in finished_order}
     with ProcessPoolExecutor(max_workers=workers) as pool:
         scored = [pool.submit(check_fn, answer, frozen) for _, answer, frozen in verify_jobs]
@@ -512,13 +552,30 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error(f"--workers must be at least 1, got {args.workers}")
     if args.max_per_task < 1:
         parser.error(f"--max-per-task must be at least 1, got {args.max_per_task}")
+    if args.max_tokens < 1:
+        parser.error(f"--max-tokens must be at least 1, got {args.max_tokens}")
     if args.endpoint == "meta" and args.max_cost_usd is None:
         parser.error("--max-cost-usd is required with --endpoint meta")
     if args.out.exists() and not args.resume:
         parser.error(f"--out {args.out} exists; pass --resume to continue the run")
 
+    tasks = split("vericoding", "train")
+    max_cost_per_call: float | None = None
     env = os.environ
     if args.endpoint == "meta":
+        prices = META_PRICES.get(args.model)
+        if prices is None:
+            parser.error(f"unknown Meta model price for {args.model!r}")
+        prompt_bytes = []
+        for task in tasks:
+            try:
+                prompt_bytes.append(len((SYSTEM_MESSAGE + build_prompt(task)).encode("utf-8")))
+            except ValueError:
+                continue
+        # UTF-8 bytes bound input token count for this text-only request. Add
+        # message framing and double the estimate before reserving budget.
+        input_bound = max(prompt_bytes, default=0) + 1024
+        max_cost_per_call = 2 * (input_bound * prices[0] + args.max_tokens * prices[1]) / 1_000_000
         client: ModelClient = build_client(Config(), env)
     else:
         price = Config().models.endpoint_prices.get("glimmer", (0.0, 0.0))
@@ -529,7 +586,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     try:
         summary = run(
-            split("vericoding", "train"),
+            tasks,
             client,
             model=args.model,
             attempts=args.attempts,
@@ -541,6 +598,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             max_tokens=args.max_tokens,
             max_per_task=args.max_per_task,
             max_cost_usd=args.max_cost_usd,
+            max_cost_per_call=max_cost_per_call,
             resume=args.resume,
         )
     except ValueError as exc:
