@@ -157,11 +157,15 @@ precision. Re-measure after #3 confirms the model id if the id changes:
 
 At about $3.95 per H100 hour that is roughly $1.00 (BF16) or $0.74 (FP8) per
 million output tokens. Modal spend for the whole run day, including the failed
-starts while debugging, was $10.30 (covered by credits, $0 billed). The
-measurement itself stayed within the 1 H100 hour cap: two fresh servers at
-most 346 s cold start each plus 30.6 s and 22.1 s of measurement wall time is
-under 13 minutes (about 0.2 H100 hours); the remainder is debugging overhead
-from the failed starts, recorded honestly here.
+starts while debugging, was $10.30 (covered by credits, $0 billed), which
+exceeds the 1 H100 hour (about $4) cap of this run: the overrun comes from
+debugging before `max_containers=1` (queued warm-up requests scaled to nine
+H100 containers) and is recorded here as an overrun, not as compliance. The
+measurement slice alone stayed within the cap: two fresh servers at most
+346 s cold start each plus 30.6 s and 22.1 s of measurement wall time is under
+13 minutes (about 0.2 H100 hours). Later runs stay within the cap with
+`max_containers=1`, a single warm-up request, and no parallel retries during
+a cold start.
 
 ## Stop
 
