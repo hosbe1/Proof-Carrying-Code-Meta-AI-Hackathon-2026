@@ -70,5 +70,9 @@ def serve() -> None:
         "--api-key",
         os.environ["PCC_GLIMMER_API_KEY"],
     ]
+    # Log the launch to the container output so a failed start is visible in
+    # the deploy logs. Modal health-checks the web port; this print only aids
+    # diagnosis and does not change the required background-start contract.
+    print(f"Starting vLLM server for {_SETTINGS.base_model} on port {VLLM_PORT}", flush=True)
     subprocess.Popen(cmd)
     return
