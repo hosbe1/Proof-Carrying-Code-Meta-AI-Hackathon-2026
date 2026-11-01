@@ -144,10 +144,17 @@ Spark solved 15 of them at pass@4
 intersection of the published Spark `solved_task_ids` with the 150-task subset).
 The Spark subset pass@1 estimate (47/600 = 7.83%) and subset cost ($0.341203, hence
 $0.341203 / 15 = $0.02275 per solved task) are the canonical values recorded for this
-comparison from that run's raw per-task attempt records; they cannot be recomputed from the
-published `summary.json` alone, which only records run totals. The 15 solved task IDs above
+comparison from the raw per-task attempt records of the published Spark run
+(commit `ea0891a6348996e34fad44dfd643ab0d4a18a1be`, 2026-10-31, 4 attempts per task;
+see `docs/results/2026-10-31-ea0891a-vericoding-spark-eligible-low/meta.json`):
+pass@1 is successful attempts over 150 x 4 = 600 attempts on exactly the subset IDs
+above, and the subset cost is the summed per-task cost over those same IDs.
+Those raw per-task records are not part of the published result folder, which records
+only run totals in `summary.json`, so the two figures cannot be recomputed from the
+published files alone. The 15 solved task IDs above
 remain verifiable as the intersection of the published Spark `solved_task_ids` with the
-150-task subset.
+150-task subset, as are the Wilson intervals and the divisions (47/600,
+$0.341203 / 15, $6.646832 / 13).
 
 Full published runs (different task sets, not directly comparable):
 
