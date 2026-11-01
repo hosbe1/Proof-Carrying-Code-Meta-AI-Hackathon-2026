@@ -66,7 +66,8 @@ export PCC_GLIMMER_ADAPTERS="glimmer-sft=/adapters/sft1,other=some-org/other-lor
    ```
 
    The image sets `HF_HOME` to `/models/pcc-glimmer/hf`, so only files under
-   `/hf` land in the cache a cold start reuses. If you have no local copy,
+   the volume-relative `/hf` (container path `/models/pcc-glimmer/hf`) land
+   in the cache a cold start reuses. If you have no local copy,
    skip this step: the first cold start downloads the weights itself (about
    60 GB) and later starts reuse them.
 
@@ -87,8 +88,9 @@ export PCC_GLIMMER_ADAPTERS="glimmer-sft=/adapters/sft1,other=some-org/other-lor
 
     The image points `HF_HOME` at the mounted volume
     (`/models/pcc-glimmer/hf`), so a cold start reuses weights already
-    downloaded into `/hf` instead of downloading them again. The cache only
-    helps if the volume already holds a prior download in `/hf`; on an
+    downloaded into the volume-relative `/hf` instead of downloading them again. The cache only
+    helps if the volume already holds a prior download in the volume-relative
+    `/hf`; on an
     empty volume the first cold start still downloads them. The serving function allows 45 minutes
     to start (`startup_timeout`), since loading the weights takes tens of
     minutes; `serve()` starts the vLLM server in the background and returns,
