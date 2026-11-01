@@ -32,7 +32,8 @@ META_PRICES: dict[str, tuple[float, float]] = {
 }
 """Per-million-token (input, output) prices in USD, from docs/plan.md."""
 
-_RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
+# 408: Modal expires a long request it redirected (303) before the result is fetched.
+_RETRYABLE_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
 _BACKOFF_SECONDS = (1.0, 2.0, 4.0, 8.0)
 _FALLBACK_PREFIX = "\n\nAnswer with JSON matching this schema: "
 

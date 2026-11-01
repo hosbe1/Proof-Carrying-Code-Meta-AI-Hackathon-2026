@@ -209,7 +209,7 @@ def test_schema_sends_response_format() -> None:
     }
 
 
-@pytest.mark.parametrize("status", [429, 500, 502, 503, 504])
+@pytest.mark.parametrize("status", [408, 429, 500, 502, 503, 504])
 def test_retryable_status_then_success(status: int) -> None:
     state = _StubState([_err(status, "busy"), _ok("hi")])
     server = _serve(state)
