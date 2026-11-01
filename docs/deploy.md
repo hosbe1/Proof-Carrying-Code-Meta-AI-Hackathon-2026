@@ -162,12 +162,13 @@ million output tokens. Modal spend for the whole run day, including the failed
 starts while debugging, was $10.30 (covered by credits, $0 billed), which
 exceeds the 1 H100 hour (about $4) cap of this run: the overrun comes from
 debugging before `max_containers=1` (queued warm-up requests scaled to nine
-H100 containers) and is recorded here as an overrun, not as compliance. The
-measurement slice alone stayed within the cap: two fresh servers at most
-346 s cold start each plus 30.6 s and 22.1 s of measurement wall time is under
-13 minutes (about 0.2 H100 hours). Later runs stay within the cap with
-`max_containers=1`, a single warm-up request, and no parallel retries during
-a cold start.
+H100 containers) and is recorded here as an overrun, not as compliance.
+Closing this run with that overrun needs explicit PO acceptance in the run
+issue. The measurement slice alone stayed within the cap: two fresh servers
+at most 346 s cold start each plus 30.6 s and 22.1 s of measurement wall time
+is under 13 minutes (about 0.2 H100 hours). Later runs stay within the cap
+with `max_containers=1`, a single warm-up request, and no parallel retries
+during a cold start.
 
 ## Stop
 
@@ -185,9 +186,10 @@ token must go.
 
 Every run records its stop in its run issue: the `modal app stop` output,
 or `modal app list` showing no running containers after the scale-down
-window. For run #76, stop evidence lives in the issue record (the controller
-stopped the pre-fix deploy; the app itself scales to zero after 15 idle
-minutes).
+window. For run #76, the issue records the controller stopping the pre-fix
+deploy, but no separate stop output or app-list snapshot was captured for the
+final measurement servers, which were left to the 15-minute scale-down; this
+gap is recorded here, and closing the run needs PO acceptance of it.
 
 ## Cost
 
