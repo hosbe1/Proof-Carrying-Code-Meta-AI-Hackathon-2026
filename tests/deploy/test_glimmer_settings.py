@@ -217,19 +217,43 @@ def _image_add_local_call(tree: ast.Module) -> ast.Call:
     return call
 
 
+def _image_chain_calls(tree: ast.Module) -> list[ast.Call]:
+    """Unwrap the image build chain ending at add_local_python_source.
+
+    Returns the chained calls from the outermost (add_local_python_source)
+    inward, e.g. [add_local, env(settings), env(HF_HOME), pip_install, ...].
+    """
+    call = _image_add_local_call(tree)
+    chain = [call]
+    current = call.func.value if isinstance(call.func, ast.Attribute) else None
+    while isinstance(current, ast.Call) and isinstance(current.func, ast.Attribute):
+        chain.append(current)
+        current = current.func.value
+    return chain
+
+
+def _image_env_calls(tree: ast.Module) -> list[ast.Call]:
+    return [
+        call for call in _image_chain_calls(tree) if isinstance(call.func, ast.Attribute) and call.func.attr == "env"
+    ]
+
+
 def test_modal_app_bundles_deploy_sources_for_container() -> None:
     source = MODAL_APP_PATH.read_text(encoding="utf-8")
     tree = ast.parse(source)
     call = _image_add_local_call(tree)
     # The call must sit on the image build chain after pip_install and the
-    # HF_HOME env step, so the container resolves the
-    # `from deploy.glimmer_settings import ...` helpers with cached weights.
-    receiver = call.func.value if isinstance(call.func, ast.Attribute) else None
-    assert isinstance(receiver, ast.Call)
-    assert isinstance(receiver.func, ast.Attribute) and receiver.func.attr == "env"
-    pip_call = receiver.func.value
-    assert isinstance(pip_call, ast.Call)
-    assert isinstance(pip_call.func, ast.Attribute) and pip_call.func.attr == "pip_install"
+    # env steps, so the container resolves the
+    # `from deploy.glimmer_settings import ...` helpers with cached weights
+    # and baked-in settings.
+    chain = _image_chain_calls(tree)
+    assert chain[0] is call
+    env_calls = _image_env_calls(tree)
+    # HF_HOME env plus the PCC_GLIMMER_* settings env, both before add_local.
+    assert len(env_calls) >= 2
+    pip_calls = [node for node in chain if isinstance(node.func, ast.Attribute) and node.func.attr == "pip_install"]
+    assert len(pip_calls) == 1
+    pip_call = pip_calls[0]
     pip_args = {arg.value for arg in pip_call.args if isinstance(arg, ast.Constant) and isinstance(arg.value, str)}
     assert {"vllm", "huggingface_hub"} <= pip_args
     assert "from deploy.glimmer_settings import" in source
@@ -295,20 +319,29 @@ def _static_int(node: ast.expr) -> int:
 def test_modal_image_caches_hf_weights_on_volume() -> None:
     source = MODAL_APP_PATH.read_text(encoding="utf-8")
     tree = ast.parse(source)
-    call = _image_add_local_call(tree)
-    receiver = call.func.value if isinstance(call.func, ast.Attribute) else None
-    assert isinstance(receiver, ast.Call)
-    assert isinstance(receiver.func, ast.Attribute) and receiver.func.attr == "env"
+    env_calls = _image_env_calls(tree)
+    dict_envs = [call for call in env_calls if call.args and isinstance(call.args[0], ast.Dict)]
+    assert dict_envs, "image chain must hold an env dict with HF_HOME"
     # The env step must point HF_HOME at the mounted volume, so a cold start
     # reuses the downloaded weights instead of fetching them again.
-    assert len(receiver.args) == 1 and isinstance(receiver.args[0], ast.Dict)
-    keys = receiver.args[0].keys
-    values = receiver.args[0].values
-    hf_index = next(index for index, key in enumerate(keys) if isinstance(key, ast.Constant) and key.value == "HF_HOME")
-    hf_value = values[hf_index]
-    assert ("VOLUME_MOUNT_PATH" in ast.dump(hf_value) and "/hf" in ast.dump(hf_value)) or (
-        isinstance(hf_value, ast.Constant) and hf_value.value == "/models/pcc-glimmer/hf"
-    )
+    found = False
+    for env_call in dict_envs:
+        env_arg = env_call.args[0]
+        assert isinstance(env_arg, ast.Dict)
+        keys = env_arg.keys
+        values = env_arg.values
+        try:
+            hf_index = next(
+                index for index, key in enumerate(keys) if isinstance(key, ast.Constant) and key.value == "HF_HOME"
+            )
+        except StopIteration:
+            continue
+        hf_value = values[hf_index]
+        assert ("VOLUME_MOUNT_PATH" in ast.dump(hf_value) and "/hf" in ast.dump(hf_value)) or (
+            isinstance(hf_value, ast.Constant) and hf_value.value == "/models/pcc-glimmer/hf"
+        )
+        found = True
+    assert found, "no image env step sets HF_HOME"
 
 
 def test_modal_function_allows_slow_weight_load() -> None:
@@ -363,23 +396,28 @@ def test_deploy_docs_prime_the_hf_weight_cache() -> None:
 def test_modal_image_disables_flashinfer_sampler() -> None:
     source = MODAL_APP_PATH.read_text(encoding="utf-8")
     tree = ast.parse(source)
-    call = _image_add_local_call(tree)
-    receiver = call.func.value if isinstance(call.func, ast.Attribute) else None
-    assert isinstance(receiver, ast.Call)
-    assert isinstance(receiver.func, ast.Attribute) and receiver.func.attr == "env"
+    env_calls = _image_env_calls(tree)
+    dict_envs = [call for call in env_calls if call.args and isinstance(call.args[0], ast.Dict)]
+    assert dict_envs, "image chain must hold an env dict with the sampler flag"
     # The slim image has no nvcc, so vLLM must not JIT-compile the
     # FlashInfer top-k/top-p sampler during warm-up.
-    assert len(receiver.args) == 1 and isinstance(receiver.args[0], ast.Dict)
-    pairs = {
-        key.value: value
-        for key, value in zip(receiver.args[0].keys, receiver.args[0].values, strict=True)
-        if isinstance(key, ast.Constant)
-    }
-    assert "HF_HOME" in pairs
-    sampler = pairs.get("VLLM_USE_FLASHINFER_SAMPLER")
-    assert isinstance(sampler, ast.Constant) and sampler.value == "0", (
-        'image env must set VLLM_USE_FLASHINFER_SAMPLER to "0" next to HF_HOME'
-    )
+    found = False
+    for env_call in dict_envs:
+        env_arg = env_call.args[0]
+        assert isinstance(env_arg, ast.Dict)
+        pairs = {
+            key.value: value
+            for key, value in zip(env_arg.keys, env_arg.values, strict=True)
+            if isinstance(key, ast.Constant)
+        }
+        if "HF_HOME" not in pairs:
+            continue
+        sampler = pairs.get("VLLM_USE_FLASHINFER_SAMPLER")
+        assert isinstance(sampler, ast.Constant) and sampler.value == "0", (
+            'image env must set VLLM_USE_FLASHINFER_SAMPLER to "0" next to HF_HOME'
+        )
+        found = True
+    assert found, "no image env step sets HF_HOME with the sampler flag"
 
 
 def test_modal_serve_allows_concurrent_inputs_on_one_container() -> None:
@@ -402,6 +440,50 @@ def test_modal_serve_allows_concurrent_inputs_on_one_container() -> None:
     max_inputs = [keyword for keyword in concurrent.keywords if keyword.arg == "max_inputs"]
     assert len(max_inputs) == 1
     assert isinstance(max_inputs[0].value, ast.Constant) and max_inputs[0].value.value == 64
+
+
+def test_modal_image_carries_deploy_settings_without_key() -> None:
+    source = MODAL_APP_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    call = _image_add_local_call(tree)
+    # Fix 6: _SETTINGS is reloaded inside the container where PCC_GLIMMER_*
+    # is unset, so the deploy-time settings must be baked into the image.
+    # The second env step must sit between the HF_HOME env step and
+    # add_local_python_source, because build steps after add_local_* are
+    # rejected.
+    outer = call.func.value if isinstance(call.func, ast.Attribute) else None
+    assert isinstance(outer, ast.Call)
+    assert isinstance(outer.func, ast.Attribute) and outer.func.attr == "env"
+    assert len(outer.args) == 1
+    settings_env = outer.args[0]
+    dump = ast.dump(settings_env)
+    assert "PCC_GLIMMER_" in dump, "image must carry the PCC_GLIMMER_* settings into the container"
+    assert "PCC_GLIMMER_API_KEY" in dump, "image must name the key only to exclude it"
+    # The key itself must never be baked into the image; it arrives via the
+    # Modal secret at runtime.
+    assert isinstance(settings_env, (ast.DictComp, ast.Dict, ast.Call))
+    if isinstance(settings_env, ast.Dict):
+        keys = [key.value for key in settings_env.keys if isinstance(key, ast.Constant)]
+        assert "PCC_GLIMMER_API_KEY" not in keys
+    else:
+        assert "PCC_GLIMMER_API_KEY" in source
+        # The only allowed mention is the exclusion filter, never an inclusion.
+        assert 'k != "PCC_GLIMMER_API_KEY"' in source or "k != 'PCC_GLIMMER_API_KEY'" in source
+    assert "os.environ" in dump or "os.environ" in source
+    inner = outer.func.value
+    assert isinstance(inner, ast.Call)
+    assert isinstance(inner.func, ast.Attribute) and inner.func.attr == "env"
+    inner_dump = ast.dump(inner.args[0]) if inner.args else ""
+    assert "HF_HOME" in inner_dump
+
+
+def test_deploy_docs_records_concurrency_64_throughput() -> None:
+    docs = (REPO_ROOT / "docs" / "deploy.md").read_text(encoding="utf-8")
+    # Run #76 measured both precisions at concurrency 64 on one H100; the
+    # guide must record the numbers the cost estimates depend on.
+    assert "1,072" in docs or "1072" in docs
+    assert "1,485" in docs or "1485" in docs
+    assert "concurrency 64" in docs or "concurrency-64" in docs
 
 
 def _serve_function(tree: ast.Module) -> ast.FunctionDef:

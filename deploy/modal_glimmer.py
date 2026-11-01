@@ -40,6 +40,11 @@ image = (
     # The slim image has no nvcc, so vLLM must not JIT-compile the FlashInfer
     # sampler during warm-up.
     .env({"HF_HOME": f"{VOLUME_MOUNT_PATH}/hf", "VLLM_USE_FLASHINFER_SAMPLER": "0"})
+    # Carry the deploy-time settings into the container (never the key):
+    # _SETTINGS is reloaded inside the container where PCC_GLIMMER_* is
+    # unset, so without this the quantization and adapter choices would be
+    # silently ignored and vLLM would always run with defaults.
+    .env({k: v for k, v in os.environ.items() if k.startswith("PCC_GLIMMER_") and k != "PCC_GLIMMER_API_KEY"})
     # Bundle the deploy package so the container resolves its helpers.
     .add_local_python_source("deploy")
 )

@@ -89,6 +89,14 @@ export PCC_GLIMMER_ADAPTERS="glimmer-sft=/adapters/sft1,other=some-org/other-lor
     Deploy reads the environment when it runs; changing a setting means
     re-deploying.
 
+    The image bakes the deploy-time `PCC_GLIMMER_*` settings (never the
+    `PCC_GLIMMER_API_KEY`, which arrives via the secret at runtime) into the
+    container after the `HF_HOME` step and before `add_local_python_source`,
+    because the settings module reloads inside the container where those
+    variables are unset. Without this, `PCC_GLIMMER_QUANTIZATION` and
+    `PCC_GLIMMER_ADAPTERS` would be silently ignored and vLLM would always
+    run with defaults.
+
     The image points `HF_HOME` at the mounted volume
     (`/models/pcc-glimmer/hf`), so a cold start reuses weights already
     downloaded into the volume-relative `/hf` instead of downloading them again. The cache only
@@ -133,6 +141,24 @@ single container (vLLM batches them server-side); do not raise the container
 cap to reach that concurrency. Record the deploy log (no `ModuleNotFoundError`),
 the base URL without the key, the warm-up `200`, the BF16 and FP8 tokens per
 second, and the Modal spend in the run issue.
+
+## Measured throughput (run #76)
+
+Base model `meta-models/Muse-Glimmer-30B`, vLLM 0.32.0, one H100, served name
+`glimmer`. Cold start with cached weights: 255–346 s. Throughput measured at
+concurrency 64 with prompts of about 2,029 tokens and 512 output tokens each
+(`ignore_eos`), one fresh server per precision:
+
+| Precision | Wall time | Output tokens/s |
+|---|---|---|
+| BF16 | 30.6 s | 1,072 |
+| FP8 (`--quantization fp8`) | 22.1 s | 1,485 |
+
+At about $3.95 per H100 hour that is roughly $1.00 (BF16) or $0.74 (FP8) per
+million output tokens. Modal spend for the whole run day, including the failed
+starts while debugging, was $10.30 (covered by credits, $0 billed). The
+measurement itself stayed within the 1 H100 hour cap; the debugging overhead
+is recorded honestly here.
 
 ## Stop
 
