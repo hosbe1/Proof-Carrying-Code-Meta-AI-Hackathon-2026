@@ -12,7 +12,7 @@ from pcc.config import SpecConfig
 from pcc.core import CheckKind, CheckRecord, Spec, ToolError
 from pcc.models import Completion, FakeClient, Message, ModelClient
 from pcc.spec import check, spec_cases
-from pcc.spec.check import SCHEMA
+from pcc.spec.check import SCHEMA, _mutant_result
 from tests.helpers import function_ref
 
 CORRECT_PALINDROME = (
@@ -34,6 +34,25 @@ ADD_PREDICATE = "def spec(a, b, result):\n    return result == a + b\n"
 ADD_VACUOUS = "def spec(a, b, result):\n    return True\n"
 ADD_NONNEG_PRE = "def pre(a, b):\n    return a >= 0\n"
 ADD_NEVER_PRE = "def pre(a, b):\n    return False\n"
+
+
+def test_mutant_replays_the_exact_original_input_set(tmp_path: Path) -> None:
+    write_module(tmp_path, "adder.py", ADD_SOURCE)
+    function = function_ref(source=ADD_SOURCE, path="adder.py", qualname="add", lineno=1)
+    spec = Spec(function=function, predicate=ADD_PREDICATE)
+
+    result = _mutant_result(
+        function,
+        spec,
+        tmp_path,
+        "def add(a: int, b: int) -> int:\n    return a - b\n",
+        ["1, 2", "3, 4"],
+        [],
+    )
+
+    assert not result.load_error
+    assert [entry.arguments for entry in result.set_results] == ["1, 2", "3, 4"]
+
 
 HEAD_SOURCE = "def head(xs: list[int]) -> int:\n    return xs[0]\n"
 HEAD_PREDICATE = "def spec(xs, result):\n    return result == xs[0]\n"
