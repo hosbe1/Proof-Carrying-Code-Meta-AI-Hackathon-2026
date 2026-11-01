@@ -200,29 +200,67 @@ def test_vllm_args_carry_the_fixed_serving_parameters() -> None:
     assert args[args.index("--max-model-len") + 1] == "32768"
 
 
+def _image_add_local_call(tree: ast.Module) -> ast.Call:
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "add_local_python_source"
+    ]
+    assert len(calls) == 1, "deploy/modal_glimmer.py must call add_local_python_source exactly once"
+    call = calls[0]
+    assert len(call.args) == 1 and isinstance(call.args[0], ast.Constant) and call.args[0].value == "deploy"
+    return call
+
+
 def test_modal_app_bundles_deploy_sources_for_container() -> None:
     source = MODAL_APP_PATH.read_text(encoding="utf-8")
     tree = ast.parse(source)
-    assert "add_local_python_source" in source, "deploy/modal_glimmer.py must bundle the deploy package"
-    assert '"deploy"' in source or "'deploy'" in source
-    assert any(
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "add_local_python_source"
-        for node in ast.walk(tree)
-    )
+    call = _image_add_local_call(tree)
+    # The call must sit on the image build chain after pip_install, so the
+    # container resolves the `from deploy.glimmer_settings import ...` helpers.
+    receiver = call.func.value if isinstance(call.func, ast.Attribute) else None
+    assert isinstance(receiver, ast.Call)
+    assert isinstance(receiver.func, ast.Attribute) and receiver.func.attr == "pip_install"
+    pip_args = {arg.value for arg in receiver.args if isinstance(arg, ast.Constant) and isinstance(arg.value, str)}
+    assert {"vllm", "huggingface_hub"} <= pip_args
+    assert "from deploy.glimmer_settings import" in source
+    image_assigns = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "image" for target in node.targets)
+    ]
+    assert len(image_assigns) == 1
+    assert call in ast.walk(image_assigns[0].value)
+
+
+def _serve_function_decorator(tree: ast.Module) -> ast.Call:
+    serve_defs = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "serve"]
+    assert len(serve_defs) == 1, "deploy/modal_glimmer.py must define serve()"
+    decorators = serve_defs[0].decorator_list
+    app_calls = [
+        node
+        for node in decorators
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "function"
+    ]
+    assert len(app_calls) == 1, "serve() must carry exactly one @app.function decorator"
+    return app_calls[0]
 
 
 def test_modal_app_caps_containers_at_one_gpu() -> None:
     source = MODAL_APP_PATH.read_text(encoding="utf-8")
     tree = ast.parse(source)
-    assert any(
-        isinstance(node, ast.keyword)
-        and node.arg == "max_containers"
-        and isinstance(node.value, ast.Constant)
-        and node.value.value == 1
-        for node in ast.walk(tree)
-    ), "deploy/modal_glimmer.py must cap the function at one container (max_containers=1)"
+    decorator = _serve_function_decorator(tree)
+    cap = [keyword for keyword in decorator.keywords if keyword.arg == "max_containers"]
+    assert len(cap) == 1
+    assert isinstance(cap[0].value, ast.Constant) and cap[0].value.value == 1
+    # The cap must apply to the serving function with its image, so a stray
+    # keyword elsewhere cannot satisfy this test.
+    image_kw = [keyword for keyword in decorator.keywords if keyword.arg == "image"]
+    assert len(image_kw) == 1
+    assert isinstance(image_kw[0].value, ast.Name) and image_kw[0].value.id == "image"
 
 
 def test_modal_app_defines_module_level_app_without_being_imported() -> None:

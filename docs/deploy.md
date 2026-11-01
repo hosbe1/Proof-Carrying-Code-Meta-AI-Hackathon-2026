@@ -104,6 +104,13 @@ retry in parallel: queued requests during a cold start scale out to more
 containers. Only then start the sampling or evaluation job, so cold-start
 latency is not billed as run time.
 
+`max_containers=1` caps containers, not client concurrency. Measure the
+concurrency-64 throughput with 64 concurrent client requests against the
+single container (vLLM batches them server-side); do not raise the container
+cap to reach that concurrency. Record the deploy log (no `ModuleNotFoundError`),
+the base URL without the key, the warm-up `200`, the BF16 and FP8 tokens per
+second, and the Modal spend in the run issue.
+
 ## Stop
 
 The app scales to zero by itself after 15 idle minutes, so stopping is usually
