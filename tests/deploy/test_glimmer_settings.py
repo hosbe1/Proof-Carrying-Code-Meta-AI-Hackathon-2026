@@ -486,6 +486,32 @@ def test_deploy_docs_records_concurrency_64_throughput() -> None:
     assert "concurrency 64" in docs or "concurrency-64" in docs
 
 
+def _deploy_docs_section(docs: str, heading: str) -> str:
+    start = docs.index(heading)
+    rest = docs[start + len(heading) :]
+    end = rest.find("\n## ")
+    return rest if end == -1 else rest[:end]
+
+
+def test_deploy_docs_throughput_numbers_are_tied_to_the_model_id() -> None:
+    docs = (REPO_ROOT / "docs" / "deploy.md").read_text(encoding="utf-8")
+    section = _deploy_docs_section(docs, "## Measured throughput")
+    # The BF16/FP8 numbers were taken with the provisional id pending #3;
+    # they must not feed cost estimates if #3 confirms a different id.
+    assert "provisional" in section
+    assert "valid only for that id" in section
+
+
+def test_deploy_docs_stop_section_requires_stop_evidence_in_run_issue() -> None:
+    docs = (REPO_ROOT / "docs" / "deploy.md").read_text(encoding="utf-8")
+    section = _deploy_docs_section(docs, "## Stop")
+    # "The deployment is stopped" is a Done criterion of every run ticket,
+    # so the guide must say which stop evidence goes into the run issue
+    # instead of relying on the silent 15-minute scale-down alone.
+    assert "modal app stop" in section
+    assert "run issue" in section
+
+
 def _serve_function(tree: ast.Module) -> ast.FunctionDef:
     serve_defs = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "serve"]
     assert len(serve_defs) == 1, "deploy/modal_glimmer.py must define serve()"

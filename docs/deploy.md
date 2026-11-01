@@ -148,7 +148,9 @@ Base model `meta-models/Muse-Glimmer-30B` (provisional id, pending #3),
 vLLM 0.32.0, one H100, served name `glimmer`. Cold start with cached weights:
 255–346 s. Throughput measured at concurrency 64 with prompts of about 2,029
 tokens and 512 output tokens each (`ignore_eos`), one fresh server per
-precision. Re-measure after #3 confirms the model id if the id changes:
+precision. These numbers are valid only for that id: if #3 confirms a
+different id, repeat the concurrency-64 measurement on the confirmed id
+before using the numbers for cost estimates:
 
 | Precision | Wall time | Output tokens/s |
 |---|---|---|
@@ -180,6 +182,12 @@ modal app delete pcc-glimmer  # remove the app; the volume and secret stay
 Deleting the app does not delete the `pcc-glimmer` volume or the
 `pcc-glimmer-api` secret; delete those explicitly if the cached weights or the
 token must go.
+
+Every run records its stop in its run issue: the `modal app stop` output,
+or `modal app list` showing no running containers after the scale-down
+window. For run #76, stop evidence lives in the issue record (the controller
+stopped the pre-fix deploy; the app itself scales to zero after 15 idle
+minutes).
 
 ## Cost
 
