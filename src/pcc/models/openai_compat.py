@@ -95,7 +95,7 @@ class OpenAICompatClient:
     given ``prices`` map raises ``ToolError``. ``max_retries`` is the number of
     retries after the first request, so at most ``max_retries + 1`` HTTP
     attempts per call; the ``response_format`` fallback and the invalid-JSON
-    retry share this budget. Retryable failures (429, 500, 502, 503, 504 and
+    retry share this budget. Retryable failures (408, 429, 500, 502, 503, 504 and
     connection errors) sleep with backoff 1, 2, 4, 8 s, or ``Retry-After`` when
     valid; the fallbacks never sleep. ``Usage.seconds`` is the wall-clock time
     of the whole call, including sleeps. The API key is sent as
