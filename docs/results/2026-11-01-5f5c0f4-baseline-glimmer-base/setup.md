@@ -28,6 +28,13 @@ Ticketed baseline of base Glimmer on the Vericoding test split (issue #77).
 
 ## Deployment and spend
 
+- Warm-up: no separate warm-up receipt is stored in this branch. The
+  deployment (`pcc-glimmer`) was created under #76 and was already serving
+  when the baseline started: on 2026-11-01 18:46 UTC the server showed 16
+  active requests and 2.53M generated tokens (issue #77 coordination
+  comment). The completed sampling itself — verified completions returned
+  by the endpoint for both runs — evidences that the endpoint answered
+  requests.
 - Done criterion "deployment is stopped": NOT met by this pull request. The
   run was served by the shared app `pcc-glimmer`
   (`ap-TIrDtVN5Vc8Qd0A4zekEqJ`), used by both `glimmer` and `glimmer-sft`.
