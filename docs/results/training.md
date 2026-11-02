@@ -101,6 +101,34 @@ from saved artifacts, not an account billing total.
 |---|---|---|---|---|---|---|---|---|---|
 | sft1 | 2026-11-01 | 9af9b2759d52647843d6c7632d5b78d5aa5dedc3 | accounts/fireworks/models/muse-glimmer-30b | session ts-274df4913ef44e39a9127857726365ff, run run-4b87798e63b84123ab56a5630637db13, checkpoint sft1-final-6b3d4ef4 | LoRA r16, 2 epochs, batch 8, 76 steps, Adam lr 1e-4 (beta1 0.9, beta2 0.95, eps 1e-8, wd 0), cross_entropy, seed 0 | 301 | c3d508bfbff7f1726b838e32e2753caa0279b3873a6688c0ec47a71f81dea9f1 | unknown, billing check pending (expected 0 while LoRA SFT is free until Nov 30; not a billing total) | accounts/mick/models/pcc-glimmer-sft1 (Fireworks; on record but not used — SFT 1 is served from the Modal adapter below) |
 | sft1-modal | 2026-11-01 | 9af9b2759d52647843d6c7632d5b78d5aa5dedc3 | accounts/fireworks/models/muse-glimmer-30b | none (Modal run: 34 s weight load, 394 s training) | LoRA r16 alpha 32, targets q/k/v/o + gate/up/down of the text tower, 2 epochs, batch 8, 76 steps, AdamW lr 1e-4 (betas 0.9/0.95, wd 0), bf16, gradient checkpointing, loss on the assistant turn only, rows above 16384 dropped (none); 95.8M trainable params on 1 x H200 | 301 | c3d508bfbff7f1726b838e32e2753caa0279b3873a6688c0ec47a71f81dea9f1 | about 1 (Modal H200 credits, outside the $0 cap; not a billing total) | pcc-glimmer:adapters/sft1 (`adapter_config.json`, `adapter_model.safetensors`); served as `glimmer-sft` |
+| sft2-modal | 2026-11-02 | ea911e5a6d196719565e22d382dca7794c86d94d | meta-models/Muse-Glimmer-30B (base Glimmer, not SFT 1) | none (Modal app pcc-sft2, run ap-lZBFBgCwb01epRufhUBjJX) | same recipe as sft1-modal: LoRA r16 alpha 32, text-tower q/k/v/o + gate/up/down, 2 epochs, batch 8, 438 steps, AdamW lr 1e-4 (betas 0.9/0.95, wd 0), bf16, loss on the assistant turn only, rows above 16384 dropped, shuffle seed 0; 1 x H200 | 1751 (round 0 rescored 301 + round 1 1450) | 294b72a20f4bf7a0053deaaf64c10f55fcc30c5bf48fed7b119504dbeb23fde5 | about 3 (Modal H200 credits, 35 min training; not a billing total) | pcc-glimmer:adapters/sft2 (`adapter_config.json`, `adapter_model.safetensors`); served as `glimmer-sft2` |
+
+
+## SFT 2 notes (Modal, 2026-11-02)
+
+- Data: round 0 rescored (`runs/round0/rescored.jsonl`, 301 rows) followed
+  by round 1 (`runs/round1/round1.jsonl`, 1450 rows), concatenated:
+  1751 rows, SHA-256
+  `294b72a20f4bf7a0053deaaf64c10f55fcc30c5bf48fed7b119504dbeb23fde5`.
+  The HumanEval collection (#53) produced 0 SFT rows, so it adds nothing.
+  Proof-only lines (#83) were not added: SFT 2 keeps the task format of
+  SFT 1, so the SFT 1 to SFT 2 gain measures more data, not a new task
+  type, and the proof-only evaluation (#85) stays a held-out format.
+- Base: base Glimmer, not SFT 1, as the plan asks.
+- Platform: Modal instead of Fireworks, for the reason in the SFT 1 retrain
+  notes (no adapter download from Fireworks). The run used the controller
+  script of the SFT 1 retrain with only the output path changed to
+  `adapters/sft2`; `deploy/modal_sft.py` pins the SFT 1 input hash and was
+  not used.
+- Loss: from about 0.2 at the start to 0.01-0.03 at step 438; 2,780,606
+  trained tokens; 2,099 s training on 1 x H200.
+- Adapter config: PEFT wrote `target_modules` as the regex used for
+  training; it was replaced with the module-name list of SFT 1 so vLLM
+  loads it (same fix as SFT 1).
+- Serving: `PCC_GLIMMER_ADAPTERS="glimmer-sft=/adapters/sft1,glimmer-sft2=/adapters/sft2"`,
+  FP8; a warm-up request to `glimmer-sft2` returned HTTP 200.
+- Result: Vericoding test pass@4 0.448 (SFT 1 0.278, base Glimmer 0.076),
+  see `docs/results/2026-11-02-ea911e5-eval-glimmer-sft2/`.
 
 ## SFT 1 notes (2026-11-01)
 
