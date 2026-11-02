@@ -173,6 +173,34 @@ The Spark full run covers 569 of 571 eligible tasks (skipped `vericoding/DA0152`
 Glimmer rows will be added separately once those evaluations have run; the live
 palindrome certificate is tracked separately and is not claimed here.
 
+### Vericoding: base Glimmer against SFT 1
+
+Paired comparison on the identical 569 eligible task IDs of the Vericoding test split
+(same commit `5f5c0f4`, same split hash `014017d4...`, same skipped unbuildable prompts
+`vericoding/DA0152`, `vericoding/DA0818`). Both runs are complete for their defined task
+set; neither stopped at a cost cap (`summary.json` reports `stopped_at_cost_cap: false`,
+`meta.json` reports `stopped_early: false`, status `done`). Each task ran 4 attempts at
+temperature 0.8 with at most 4096 output tokens, reasoning strength `low`, served from the
+same deployment at FP8 precision, checked with Dafny 4.11.0 at resource limit 1000000.
+The comparator is the `low`-strength baseline; the extra `medium`-strength repeat in
+`docs/results/2026-11-01-5f5c0f4-baseline-glimmer-base-medium` is not part of this
+comparison. Wilson intervals are 95% intervals over solved tasks (pass@k). Token cost is
+$0.00 for both runs (the Glimmer endpoint bills $0 per token); GPU cost is labelled
+separately per run below and comes from the run notes, not from `summary.json`.
+
+| run | model | adapter | n | pass@4 | pass@1 | token cost (USD) | GPU cost (USD) | results |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| baseline, low strength | glimmer | none | 569 | 43/569 = 7.56% (95% CI 0.057-0.100) | 0.054 | 0.00 | about $23, including about $13 of lost runs | [summary](docs/results/2026-11-01-5f5c0f4-baseline-glimmer-base/summary.md) |
+| SFT 1, low strength | glimmer-sft | `pcc-glimmer:/adapters/sft1` | 569 | 158/569 = 27.77% (95% CI 0.242-0.316) | 0.202 | 0.00 | about $2 of shared-deployment GPU time | [summary](docs/results/2026-11-01-5f5c0f4-eval-glimmer-sft1/summary.md) |
+
+Of the 43 tasks the baseline solves, SFT 1 also solves 35 and misses 8; it newly solves
+123 tasks, for a net gain of 115 tasks on the same IDs (see the `solved_task_ids` lists in
+both `summary.json` files). SFT 1 was trained on 301 Vericoding train-split rows only
+(hash `c3d508bf...`, see [training.md](docs/results/training.md)); the evaluated IDs are
+held-out test tasks. Both runs shared the `pcc-glimmer` deployment, which stays at zero
+scale and belongs to the remaining evaluation work, not to this ticket. No significance
+claim is made beyond the paired counts and intervals above.
+
 ## Development
 
 ```bash
