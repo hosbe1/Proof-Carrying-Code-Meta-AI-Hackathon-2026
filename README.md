@@ -169,9 +169,9 @@ Full published runs (different task sets, not directly comparable):
 | Wonder, fixed 150 subset | muse-wonder-1.0 | standard | 150 | n/a (1 attempt) | 13/150 = 8.67% (95% CI 5.13-14.26%) | 6.646832 | 0.51129 | [summary](docs/results/2026-10-31-60cdd58-vericoding-wonder-150-valid-low/summary.md) |
 
 The Spark full run covers 569 of 571 eligible tasks (skipped `vericoding/DA0152`,
-`vericoding/DA0818`, unbuildable prompts). HumanEvalFix spec-writer, proof-only and
-Glimmer rows will be added separately once those evaluations have run; the live
-palindrome certificate is tracked separately and is not claimed here.
+`vericoding/DA0818`, unbuildable prompts). The HumanEvalFix spec-writer comparison is
+published separately at [spec-writer-comparison](docs/results/2026-11-02-spec-writer-comparison.md);
+the live palindrome certificate is tracked separately and is not claimed here.
 
 ### Vericoding: base Glimmer against SFT 1 and SFT 2
 
@@ -209,6 +209,41 @@ The model improves on proofs it produced itself, checked only by Dafny, with no 
 All runs shared the `pcc-glimmer` deployment, which stays at zero
 scale and belongs to the remaining evaluation work, not to this ticket. No significance
 claim is made beyond the paired counts and intervals above.
+
+### Proof-only tasks: Spark against base Glimmer and SFT 2
+
+Paired comparison on the same 33 proof-only tasks: the step-5 evaluation set on
+the Vericoding test split, built from the verified Spark answers of that split.
+The task build (`proof_only make` from the Spark Vericoding test run of #58)
+skipped 20 answers without ghost code and 2 already-verifying programs. All three
+runs are complete for their task set at commit `93a247f`; none stopped at a cost
+cap (`summary.json` reports `stopped_at_cost_cap: false`, `meta.json` reports
+`stopped_early: false`, status `done`). Each task ran 4 attempts with
+`--max-cost-usd 5`; the Glimmer runs used reasoning strength `low`, served from the
+same deployment at FP8 precision with
+`PCC_GLIMMER_ADAPTERS="glimmer-sft=/adapters/sft1,glimmer-sft2=/adapters/sft2"`,
+checked with Dafny 4.11.0 at resource limit 1000000. Wilson intervals are 95%
+intervals over solved tasks (pass@k); the fractional pass@1 estimates carry no
+Wilson interval. Token cost is $0.00 for both Glimmer runs (the Glimmer endpoint
+bills $0 per token); GPU cost is labelled separately below and comes from the run
+notes, not from `summary.json`.
+
+| run | model | adapter | mode | n | pass@4 | pass@1 | token cost (USD) | GPU cost (USD) | results |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Spark | muse-spark-1.3-contributor | none | contributor | 33 | 30/33 = 90.91% (95% CI 0.764-0.969) | est. 0.803 | 0.05 | n/a | [summary](docs/results/2026-11-02-93a247f-proof-only-spark/summary.md) |
+| base Glimmer, low strength | glimmer | none | standard | 33 | 28/33 = 84.85% (95% CI 0.691-0.933) | est. 0.614 | 0.00 | about 1 USD for both Glimmer runs | [summary](docs/results/2026-11-02-93a247f-proof-only-glimmer-base/summary.md) |
+| SFT 2, low strength | glimmer-sft2 | `pcc-glimmer:/adapters/sft2` | standard | 33 | 21/33 = 63.64% (95% CI 0.466-0.778) | est. 0.394 | 0.00 | about 1 USD for both Glimmer runs | [summary](docs/results/2026-11-02-93a247f-proof-only-glimmer-sft2/summary.md) |
+
+Spark alone misses `proof-only/vericoding/DD0083`, `proof-only/vericoding/DD0271`
+and `proof-only/vericoding/DD0648`; base Glimmer alone misses
+`proof-only/vericoding/DD0070`, `proof-only/vericoding/DD0083`,
+`proof-only/vericoding/DD0271`, `proof-only/vericoding/DD0761` and
+`proof-only/vericoding/DS0052`. Of the 28 tasks base Glimmer solves, SFT 2 also
+solves 19 and misses 9; it newly solves `proof-only/vericoding/DD0070` and
+`proof-only/vericoding/DS0052`, for a net of 21.
+
+SFT 2 is below base Glimmer on proof-only (21 vs 28), likely because SFT 2 was
+trained only on the full-task format. The tasks come from Spark's own verified answers, which favours Spark. No significance claim is made on n = 33.
 
 ## Development
 
