@@ -14,7 +14,9 @@ Ticketed baseline of base Glimmer on the Vericoding test split (issue #77).
   leaked-channel stripping in `src/pcc/models`); earlier commits cannot
   reproduce this baseline. The fixes stay in this pull request because
   reverting them would invalidate the published numbers; a follow-up code
-  ticket can own them.
+  ticket can own them. Known parsing limit: channel stripping keeps only the
+  tail after the last `to=user`, so an answer quoting `to=user` would be
+  truncated; no such answer was observed in the 569 baseline tasks.
 - Sampling: concurrency 32, `PCC_GLIMMER_REASONING_STRENGTH=low`.
   Low was chosen per the coordination decision recorded in the issue #77
   comments of 2026-11-01: the template default (`high`) returns reasoning only
