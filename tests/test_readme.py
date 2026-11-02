@@ -127,6 +127,37 @@ def test_results_section_has_paired_base_vs_sft1_comparison() -> None:
     assert re.search(r"\$2\b", section), "the comparison must label the SFT 1 GPU cost"
 
 
+def test_results_section_has_proof_only_comparison() -> None:
+    body = _text()
+    section = body.split("## Results", 1)[1].split("\n## ", 1)[0]
+    spark_run = "docs/results/2026-11-02-93a247f-proof-only-spark"
+    base_run = "docs/results/2026-11-02-93a247f-proof-only-glimmer-base"
+    sft2_run = "docs/results/2026-11-02-93a247f-proof-only-glimmer-sft2"
+    assert spark_run in section, "the Results section must name the proof-only Spark run folder"
+    assert base_run in section, "the Results section must name the proof-only base Glimmer run folder"
+    assert sft2_run in section, "the Results section must name the proof-only SFT 2 run folder"
+    assert "30/33" in section, "the comparison must report the Spark proof-only pass@k count"
+    assert "28/33" in section, "the comparison must report the base Glimmer proof-only pass@k count"
+    assert "21/33" in section, "the comparison must report the SFT 2 proof-only pass@k count"
+    assert "0.764" in section and "0.969" in section, (
+        "the comparison must report the Spark proof-only 95% interval from its summary.json"
+    )
+    assert "0.691" in section and "0.933" in section, (
+        "the comparison must report the base Glimmer proof-only 95% interval from its summary.json"
+    )
+    assert "0.466" in section and "0.778" in section, (
+        "the comparison must report the SFT 2 proof-only 95% interval from its summary.json"
+    )
+    assert "4 attempts" in section, "the comparison must state the per-task attempt count"
+    assert "reasoning strength `low`" in section, "the comparison must state the Glimmer reasoning strength"
+    assert "glimmer-sft2=/adapters/sft2" in section, "the comparison must state the serving adapter mapping"
+    assert "significance claim" in section and "n = 33" in section, (
+        "the comparison must state that n = 33 carries no significance claim"
+    )
+    assert "Spark's own verified answers" in section, "the comparison must state that the tasks favour Spark"
+    assert "SFT 2 is below base Glimmer" in section, "the comparison must state the SFT 2 result plainly"
+
+
 def test_every_relative_link_resolves() -> None:
     missing = []
     for target in _LINK_RE.findall(_text()):

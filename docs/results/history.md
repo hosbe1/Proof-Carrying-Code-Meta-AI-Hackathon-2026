@@ -8,3 +8,6 @@
 | 2026-11-02 | 48962e5 | muse-wonder-1.0 | humanevalfix/test | 39 | 0.077 | 8.32 |
 | 2026-11-02 | 48962e5 | glimmer | humanevalfix/test | 39 | 0.051 | 0.55 |
 | 2026-11-02 | ea911e5 | glimmer-sft2 | vericoding/test | 569 | 0.448 | 0.00 |
+| 2026-11-02 | 93a247f | muse-spark-1.3-contributor | vericoding/proof-only-test | 33 | 0.909 | 0.05 |
+| 2026-11-02 | 93a247f | glimmer | vericoding/proof-only-test | 33 | 0.848 | 0.00 |
+| 2026-11-02 | 93a247f | glimmer-sft2 | vericoding/proof-only-test | 33 | 0.636 | 0.00 |
