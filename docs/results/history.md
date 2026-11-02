@@ -7,3 +7,4 @@
 | 2026-11-02 | 48962e5 | muse-spark-1.3 | humanevalfix/test | 39 | 0.090 | 0.10 |
 | 2026-11-02 | 48962e5 | muse-wonder-1.0 | humanevalfix/test | 39 | 0.077 | 8.32 |
 | 2026-11-02 | 48962e5 | glimmer | humanevalfix/test | 39 | 0.051 | 0.55 |
+| 2026-11-02 | ea911e5 | glimmer-sft2 | vericoding/test | 569 | 0.448 | 0.00 |

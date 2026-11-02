@@ -173,7 +173,7 @@ The Spark full run covers 569 of 571 eligible tasks (skipped `vericoding/DA0152`
 Glimmer rows will be added separately once those evaluations have run; the live
 palindrome certificate is tracked separately and is not claimed here.
 
-### Vericoding: base Glimmer against SFT 1
+### Vericoding: base Glimmer against SFT 1 and SFT 2
 
 Paired comparison on the identical 569 eligible task IDs of the Vericoding test split
 (same commit `5f5c0f4`, same split hash `014017d4...`, same skipped unbuildable prompts
@@ -192,12 +192,21 @@ separately per run below and comes from the run notes, not from `summary.json`.
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | baseline, low strength | glimmer | none | 569 | 43/569 = 7.56% (95% CI 0.057-0.100) | 0.054 | 0.00 | about $23, including about $13 of lost runs | [summary](docs/results/2026-11-01-5f5c0f4-baseline-glimmer-base/summary.md) |
 | SFT 1, low strength | glimmer-sft | `pcc-glimmer:/adapters/sft1` | 569 | 158/569 = 27.77% (95% CI 0.242-0.316) | 0.202 | 0.00 | about $2 of shared-deployment GPU time | [summary](docs/results/2026-11-01-5f5c0f4-eval-glimmer-sft1/summary.md) |
+| SFT 2, low strength | glimmer-sft2 | `pcc-glimmer:/adapters/sft2` | 569 | 255/569 = 44.82% (95% CI 0.408-0.489) | 0.363 | 0.00 | about $3 of shared-deployment GPU time | [summary](docs/results/2026-11-02-ea911e5-eval-glimmer-sft2/summary.md) |
 
 Of the 43 tasks the baseline solves, SFT 1 also solves 35 and misses 8; it newly solves
 123 tasks, for a net gain of 115 tasks on the same IDs (see the `solved_task_ids` lists in
 both `summary.json` files). SFT 1 was trained on 301 Vericoding train-split rows only
 (hash `c3d508bf...`, see [training.md](docs/results/training.md)); the evaluated IDs are
-held-out test tasks. Both runs shared the `pcc-glimmer` deployment, which stays at zero
+held-out test tasks.
+
+SFT 2 ran at commit `ea911e5` on the same split hash, task IDs and settings. It was
+trained from base Glimmer on 1751 rows: the 301 above plus 1450 verified proofs that SFT 1
+found on the train split in rejection-sampling round 1. Of the 158 tasks SFT 1 solves,
+SFT 2 also solves 145 and misses 13; it newly solves 110, for a net gain of 97 tasks.
+The model improves on proofs it produced itself, checked only by Dafny, with no human labels.
+
+All runs shared the `pcc-glimmer` deployment, which stays at zero
 scale and belongs to the remaining evaluation work, not to this ticket. No significance
 claim is made beyond the paired counts and intervals above.
 
