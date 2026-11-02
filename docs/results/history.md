@@ -4,3 +4,6 @@
 | 2026-11-01 | 5f5c0f4 | glimmer | vericoding/test | 569 | 0.076 | 0.00 |
 | 2026-11-01 | 5f5c0f4 | glimmer | vericoding/test | 569 | 0.069 | 0.00 |
 | 2026-11-01 | 5f5c0f4 | glimmer-sft | vericoding/test | 569 | 0.278 | 0.00 |
+| 2026-11-02 | 48962e5 | muse-spark-1.3 | humanevalfix/test | 39 | 0.090 | 0.10 |
+| 2026-11-02 | 48962e5 | muse-wonder-1.0 | humanevalfix/test | 39 | 0.077 | 8.32 |
+| 2026-11-02 | 48962e5 | glimmer | humanevalfix/test | 39 | 0.051 | 0.55 |

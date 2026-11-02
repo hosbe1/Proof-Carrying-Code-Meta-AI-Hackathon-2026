@@ -19,6 +19,7 @@ import json
 import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -34,10 +35,11 @@ from pcc.core import (
     State,
     ToolError,
     TranslationPath,
+    UnsupportedConstruct,
     source_hash,
     to_data,
 )
-from pcc.evaluation import datasets
+from pcc.evaluation import datasets, vericoding
 from pcc.models import Message, ModelClient, Router
 from pcc.models.client import Completion
 
@@ -299,7 +301,8 @@ def run_spec_only(
                 checked, function, repo_root, client=recorder, model=config.models.mutants, config=config.spec
             )
             rewrites += 1
-    except NotCheckable as exc:
+    except (NotCheckable, UnsupportedConstruct) as exc:
+        # e.g. an untyped HumanEvalFix function has no input strategies: one version, not the whole run
         outcome, reason = "not_checkable", str(exc) or "not checkable"
     else:
         outcome, reason = classify_spec(checked, version)
@@ -484,7 +487,11 @@ def _write_run_json(
     status: str,
     metrics: dict[str, Any] | None,
 ) -> dict[str, Any]:
+    previous = out_dir / "run.json"
+    kept = json.loads(previous.read_text(encoding="utf-8")) if previous.exists() else {}
     summary: dict[str, Any] = {
+        "date": kept.get("date") or datetime.now(UTC).strftime("%Y-%m-%d"),
+        "commit": kept.get("commit") or vericoding._default_git_sha(),
         "harness": HARNESS,
         "split": split,
         "max_cost_usd": max_cost_usd,

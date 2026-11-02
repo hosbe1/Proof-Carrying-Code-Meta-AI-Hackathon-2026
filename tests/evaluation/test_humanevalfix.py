@@ -39,6 +39,7 @@ from pcc.core import (
     ToolError,
     Translation,
     TranslationPath,
+    UnsupportedConstruct,
     Usage,
     source_hash,
 )
@@ -349,6 +350,22 @@ def test_spec_only_outcomes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> 
     assert summary["metrics"] == run["metrics"]
 
 
+def test_spec_only_unsupported_construct_is_not_checkable(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    out = tmp_path / "runs" / "speconly"
+    client = spec_only_fakes(monkeypatch)
+
+    def untyped_check(*args: Any, **kwargs: Any) -> Spec:
+        raise UnsupportedConstruct("no types")
+
+    monkeypatch.setattr(pcc.spec, "check", untyped_check)
+    run_harness(split="test", out_dir=out, max_cost_usd=10.0, spec_only=True, tasks=(add_task(),), client=client)
+    lines = read_jsonl(out / "spec_only.jsonl")
+    assert [(line["version"], line["outcome"], line["reason"]) for line in lines] == [
+        ("fixed", "not_checkable", "unsupported construct: no types"),
+        ("buggy", "not_checkable", "unsupported construct: no types"),
+    ]
+
+
 def test_classify_spec_timeout_is_not_checkable() -> None:
     function = function_ref_for("def add(a, b):\n    return a + b\n", "add")
     checked = Spec(
@@ -486,3 +503,18 @@ def test_main_writes_run_files(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) 
     assert eval_main.main(["humanevalfix", "--split", "test", "--out", str(out), "--max-cost-usd", "10"]) == 0
     assert (out / "run.json").is_file()
     assert len(read_jsonl(out / "scan.jsonl")) == 2
+
+
+def test_run_json_records_date_and_commit_and_keeps_them_on_resume(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    out = tmp_path / "runs" / "dated"
+    patch_pipeline(monkeypatch, metrics_behavior)
+    monkeypatch.setattr("pcc.evaluation.vericoding._default_git_sha", lambda: "a" * 40)
+    run_harness(split="test", out_dir=out, max_cost_usd=10.0, tasks=(add_task(),), client=FakeClient([]))
+    run = json.loads((out / "run.json").read_text(encoding="utf-8"))
+    assert run["commit"] == "a" * 40
+    assert len(run["date"]) == 10
+    monkeypatch.setattr("pcc.evaluation.vericoding._default_git_sha", lambda: "b" * 40)
+    run_harness(split="test", out_dir=out, max_cost_usd=10.0, tasks=(add_task(),), client=FakeClient([]))
+    assert json.loads((out / "run.json").read_text(encoding="utf-8"))["commit"] == "a" * 40
