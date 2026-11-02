@@ -10,6 +10,7 @@ from saved artifacts, not an account billing total.
 | round | date (UTC) | commit | model | contributor | dataset | eligible | tasks run | tasks solved | attempts cached | SFT rows | input tokens | output tokens | wall time | spend (USD) | stop_reason |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | 0 | 2026-11-01 | e473c81fa7f85058f4fc48c7498febb4e4a912a0 | muse-spark-1.3-contributor | yes | vericoding/train (2247 rows, 2237 eligible) | 2237 | 323 | 170 | 2589 | 301 | not persisted (prompt bytes bounded by 4050372 UTF-8 bytes) | not persisted (4096 per attempt cap) | about 8 h sampling | 2.53 estimate, not a billing total | timeout (8 h) |
+| 1 | 2026-11-02 | 404d01f6f4399cafd61ba082138c1162009818be | glimmer-sft (SFT 1 adapter on Modal, FP8, reasoning low) | no | vericoding/train (2247 rows, 2237 eligible) | 2237 | 2067 (170 solved in round 0 skipped) | 836 | 16536 | 1450 | 6955812 (last try) | 7225089 (last try) | 4.3 h last try (sampling 2.2 h, Dafny check 2.1 h) | about 16 (Modal credits, 08:00-14:00 UTC window, includes about 30 min of the #84 Glimmer run; not a billing total) | done |
 | collection | 2026-11-01 | fa641442027a85fbe99d8d17452faf4f6d4ac169 | muse-spark-1.3-contributor | yes | humanevalfix/train (100 tasks, fixed+buggy; Python/32 excluded) | 101 tasks (100 evaluated, 1 excluded) | 200 | 0 | 0 (pipeline run, no attempt cache) | 0 | 50952 | 241543 | about 41 min pipeline | 0.0534 | done |
 
 ## Round 0 notes (partial checkpoint accepted as the round-0 result)
@@ -41,6 +42,34 @@ from saved artifacts, not an account billing total.
   data. No further paid sampling is planned from this round; round 1 adds
   data instead. No training job was started from this round.
 
+## Round 1 notes (SFT 1 sampling, 2026-11-02)
+
+- Coverage: all 2067 eligible Vericoding train tasks not solved in round 0
+  ran with 8 attempts each (16536 cached responses); the 170 tasks solved in
+  round 0 were skipped with `--skip-solved runs/round0/rescored.jsonl`.
+  Result: 836 of 2067 tasks solved, 1450 verified SFT rows.
+- Sampling: `python -m training.rejection --endpoint glimmer --model
+  glimmer-sft --tasks train --attempts 8 --concurrency 16 --workers 12
+  --resume`, `PCC_GLIMMER_REASONING_STRENGTH=low` (the setting of the SFT 1
+  test eval). Sampling and Dafny checks run in two phases; the run resumed
+  once from the attempt cache after a restart (3436 attempts were cached
+  then), so the token counts in the table cover the last try only.
+- Excluded: the same 10 rows without `vc-spec` as round 0.
+- Test split: never sampled; the run read `--tasks train` only.
+- Spend: the deployment bills GPU time, not tokens (`cost_usd` 0 in the
+  summary). Modal billing reports $15.97 for the `pcc-glimmer` app between
+  08:00 and 14:00 UTC, which also covers the first half hour of the #84
+  base Glimmer spec run. Paid from Modal credits; the month's billed cost
+  is $0.00. The deployment scales to zero when idle.
+- Local artifacts (not committed): `runs/round1/round1.jsonl` (SHA-256
+  `bc3f3e6e4439cfbf669397517b7914845c193df09b6c73305d782c6e746ef6d2`),
+  `runs/round1/round1.jsonl.attempts.jsonl` (SHA-256
+  `9825ce87485f4f044c211a7ccb4e87e52d5f7dc3255a1739d42db273f3a14ac3`),
+  `round1.jsonl.summary.json`, `round1.jsonl.tasks.jsonl`,
+  `round1.jsonl.skipped.json`.
+- Downstream: SFT 2 (#80) trains on round 0 (301 rows) plus round 1 (1450
+  rows).
+
 ## Collection notes (HumanEval pipeline collection, 2026-11-01)
 
 - Coverage: 200 function versions evaluated (100 fixed + 100 buggy from 100
@@ -63,7 +92,7 @@ from saved artifacts, not an account billing total.
   it has no rows in the scan.
 - Local artifacts (not committed): `runs/collection/run.json`,
   `runs/collection/scan.jsonl`.
-- Downstream: SFT 1 and SFT 2 train on round 0 only. Type inference for
+- Downstream: SFT 1 trains on round 0 only, SFT 2 on rounds 0 and 1. Type inference for
   untyped functions is follow-up work, tracked separately.
 
 ## SFT runs
