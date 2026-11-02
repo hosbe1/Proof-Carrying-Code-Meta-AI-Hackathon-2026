@@ -2,8 +2,19 @@
 
 Ticketed baseline of base Glimmer on the Vericoding test split (issue #77).
 
-- Command: `python -m pcc.evaluation vericoding --split test --endpoint glimmer
-  --model glimmer --attempts 4 --max-cost-usd 1 --out runs/baseline-glimmer-base`
+- Command (full reproduction, env included):
+  `PCC_GLIMMER_REASONING_STRENGTH=low python -m pcc.evaluation vericoding
+  --split test --endpoint glimmer --model glimmer --attempts 4
+  --max-cost-usd 1 --concurrency 32 --out runs/baseline-glimmer-base`.
+  `meta.json` records the same attempts, split hash `014017d4...`,
+  commit `5f5c0f4`, endpoint `glimmer` and model `glimmer`; the harness does
+  not store concurrency or reasoning strength, so this file does.
+- Code: commit `5f5c0f4` including the Glimmer client fixes required for any
+  verified answer (HTTP 408 retry, `chat_template_kwargs` reasoning strength,
+  leaked-channel stripping in `src/pcc/models`); earlier commits cannot
+  reproduce this baseline. The fixes stay in this pull request because
+  reverting them would invalidate the published numbers; a follow-up code
+  ticket can own them.
 - Sampling: concurrency 32, `PCC_GLIMMER_REASONING_STRENGTH=low`.
   Low was chosen per the coordination decision recorded in the issue #77
   comments of 2026-11-01: the template default (`high`) returns reasoning only

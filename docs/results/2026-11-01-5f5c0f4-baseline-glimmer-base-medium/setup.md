@@ -4,9 +4,12 @@ Medium-strength repeat of the base Glimmer baseline on the Vericoding test
 split (extra run next to the ticketed baseline in issue #77; not required by
 the ticket).
 
-- Command: same harness invocation as the baseline with
-  `--out runs/baseline-glimmer-base-medium`, concurrency 32,
-  `PCC_GLIMMER_REASONING_STRENGTH=medium`.
+- Command (full reproduction, env included): same harness invocation as the
+  baseline with `--out runs/baseline-glimmer-base-medium`, plus
+  `--concurrency 32` and `PCC_GLIMMER_REASONING_STRENGTH=medium`.
+  `meta.json` records the same attempts, split hash, commit, endpoint and
+  model; the harness does not store concurrency or reasoning strength, so
+  this file does.
 - Result: 39 of 569 eligible tasks verified (pass@k 0.069, 95% CI 0.051-0.092).
   2 of 571 tasks skipped (unbuildable prompts DA0152, DA0818).
   Token cost $0.00; GPU time is billed on the deployment (see the baseline
