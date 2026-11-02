@@ -226,7 +226,10 @@ checked with Dafny 4.11.0 at resource limit 1000000. Wilson intervals are 95%
 intervals over solved tasks (pass@k); the fractional pass@1 estimates carry no
 Wilson interval. Token cost is $0.00 for both Glimmer runs (the Glimmer endpoint
 bills $0 per token); GPU cost is labelled separately below and comes from the run
-notes, not from `summary.json`.
+notes, not from `summary.json`. Published `meta.json` files redact only the
+harness-recorded absolute tasks-file path to the portable
+`proof-only-test/tasks.jsonl` and `vericoding/proof-only-test`; every other
+field is verbatim and `split_sha256` pins the task bytes.
 
 | run | model | adapter | mode | n | pass@4 | pass@1 | token cost (USD) | GPU cost (USD) | results |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
