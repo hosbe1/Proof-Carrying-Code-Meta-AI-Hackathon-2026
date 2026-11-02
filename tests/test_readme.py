@@ -106,6 +106,27 @@ def test_licensing_links_third_party() -> None:
     assert "[THIRD_PARTY.md](THIRD_PARTY.md)" in section, "the Licensing section must link THIRD_PARTY.md"
 
 
+def test_results_section_has_paired_base_vs_sft1_comparison() -> None:
+    body = _text()
+    section = body.split("## Results", 1)[1].split("\n## ", 1)[0]
+    base_run = "docs/results/2026-11-01-5f5c0f4-baseline-glimmer-base"
+    sft1_run = "docs/results/2026-11-01-5f5c0f4-eval-glimmer-sft1"
+    assert base_run in section, "the Results section must name the base Glimmer run folder"
+    assert sft1_run in section, "the Results section must name the SFT 1 run folder"
+    assert "43/569" in section, "the comparison must report the base pass@k count"
+    assert "158/569" in section, "the comparison must report the SFT 1 pass@k count"
+    assert "0.057" in section and "0.100" in section, (
+        "the comparison must report the base 95% interval from its summary.json"
+    )
+    assert "0.242" in section and "0.316" in section, (
+        "the comparison must report the SFT 1 95% interval from its summary.json"
+    )
+    assert "4 attempts" in section, "the comparison must state the per-task attempt count"
+    assert "fp8" in section.lower(), "the comparison must state the serving precision"
+    assert re.search(r"\$23\b", section), "the comparison must label the base GPU cost"
+    assert re.search(r"\$2\b", section), "the comparison must label the SFT 1 GPU cost"
+
+
 def test_every_relative_link_resolves() -> None:
     missing = []
     for target in _LINK_RE.findall(_text()):
