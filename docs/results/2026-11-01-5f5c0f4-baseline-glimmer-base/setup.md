@@ -33,24 +33,32 @@ Ticketed baseline of base Glimmer on the Vericoding test split (issue #77).
   (`ap-TIrDtVN5Vc8Qd0A4zekEqJ`), used by both `glimmer` and `glimmer-sft`.
   The app is intentionally left up for the queued SFT 1 sampling (#171); the
   final stop and its receipt belong to the final active evaluation, not to
-  this ticket, because stopping here would break #171.
-- Cost mitigation observed (not a stop): at 2026-11-01 00:11 CET the app had
-  no request for 15 minutes and scaled to zero. GPU cost accrues while
-  containers run; any spend up to the final stop is recorded where the stop
-  is recorded.
+  this ticket, because stopping here would break #171. Merging this pull
+  request with `Closes #77` therefore still needs an explicit human-owner
+  decision; otherwise the stop criterion stays open.
+- Stop handoff for the finisher of the final active evaluation: run
+  `modal app stop pcc-glimmer` after the last sampling finishes, then record
+  the command output (or `modal app list` showing no running containers) and
+  the final Modal spend in that evaluation's issue. Cost mitigation observed
+  here (not a stop): at 2026-11-01 00:11 CET the app had no request for 15
+  minutes and scaled to zero. GPU cost accrues while containers run; any spend
+  up to the final stop is recorded where the stop is recorded.
 - Spend for this issue: about $23 of Modal GPU credit, over the 3 H100-hour
   (~$12) cap from the "evaluation and demo serving" bucket. About $13 went to
   the lost runs (base-URL 404 run, 408-crash run that saved nothing,
   high-strength run at 0 of 569) and about $10 to the low and medium runs;
   about $2 of the deployment cost belongs to the #57 eval. Token cost is
   $0.00 (the Glimmer endpoint bills $0 per token). The overrun and its cause
-  (lost runs that found two bugs every later eval needs) are accepted per the
-  issue #77 comment of 2026-11-01; together with #57 the runs stay well under
-  the shared $60 evaluation budget.
+  (lost runs that found two bugs every later eval needs) are noted as accepted
+  in the issue #77 comment of 2026-11-01; together with #57 the runs stay well
+  under the shared $60 evaluation budget. Human-owner acceptance of the
+  overrun is still required before merge; this pull request does not claim cap
+  compliance.
 - Review acceptance: the PO stand-in assessment in the PR discussion of
   2026-11-01 accepts the stop transfer, the spend overrun, the
   `src/pcc/models` fixes, the `low` strength and the two-row `history.md`
   mapping (empty container list at 00:44 CET, cost stopped at scale-to-zero;
   overrun against the shared $60 budget; fixes required for any verified
-  answer; `low` like-for-like with the SFT 1 eval). Whether to merge with the
-  stop transferred is a human-owner decision.
+  answer; `low` like-for-like with the SFT 1 eval). This is a stand-in
+  assessment only. Whether to merge with the stop transferred and the cap
+  exceeded is a human-owner decision.

@@ -28,4 +28,5 @@ the ticket).
 - Deployment and spend: see the baseline notes file. The deployment was
   shared with the ticketed baseline and is left up for the queued SFT 1
   sampling (#171); the final stop belongs to the final active evaluation,
-  not to this ticket.
+  not to this ticket. The stop transfer and the spend overrun still need a
+  human-owner decision; see the baseline notes file.
