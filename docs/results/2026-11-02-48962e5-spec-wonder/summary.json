@@ -1,0 +1,91 @@
+{
+  "commit": "48962e53fe8acb6a1faceba34d173074280cf36c",
+  "cost_usd": 8.32201875,
+  "dataset": "humanevalfix/test",
+  "date": "2026-11-02",
+  "kind": "spec",
+  "metrics": {
+    "buggy_caught": 4,
+    "buggy_caught_interval": [
+      0.040612655582869875,
+      0.23579158702244832
+    ],
+    "correct_passes": 2,
+    "correct_passes_interval": [
+      0.014177657646399524,
+      0.1688593904563791
+    ],
+    "correct_total": 6,
+    "cost_usd_total": 8.32201875,
+    "evaluated": 78,
+    "false_alarms": 0,
+    "false_alarms_interval": [
+      0.0,
+      0.08966985360023902
+    ],
+    "mean_cost_usd_per_function": 0.10669254807692308,
+    "mean_seconds_per_function": 66.40800492005357,
+    "missed": 0,
+    "n_buggy": 39,
+    "n_fixed": 39,
+    "not_checkable": 72,
+    "not_checkable_interval": [
+      0.842165824059759,
+      0.9642700227467552
+    ],
+    "stopped_at_cost_cap": false
+  },
+  "mode": "standard",
+  "model": "muse-wonder-1.0",
+  "n": 39,
+  "rate": 0.07692307692307693,
+  "rate_hi": 0.15783417594024104,
+  "rate_lo": 0.03572997725324492,
+  "rate_name": "correct_rate",
+  "run": "spec-wonder",
+  "solved_task_ids": [
+    "humanevalfix/Python/23",
+    "humanevalfix/Python/48"
+  ],
+  "task_ids": [
+    "humanevalfix/Python/0",
+    "humanevalfix/Python/10",
+    "humanevalfix/Python/114",
+    "humanevalfix/Python/115",
+    "humanevalfix/Python/116",
+    "humanevalfix/Python/118",
+    "humanevalfix/Python/120",
+    "humanevalfix/Python/121",
+    "humanevalfix/Python/123",
+    "humanevalfix/Python/125",
+    "humanevalfix/Python/146",
+    "humanevalfix/Python/15",
+    "humanevalfix/Python/153",
+    "humanevalfix/Python/156",
+    "humanevalfix/Python/17",
+    "humanevalfix/Python/18",
+    "humanevalfix/Python/23",
+    "humanevalfix/Python/24",
+    "humanevalfix/Python/25",
+    "humanevalfix/Python/3",
+    "humanevalfix/Python/31",
+    "humanevalfix/Python/33",
+    "humanevalfix/Python/42",
+    "humanevalfix/Python/48",
+    "humanevalfix/Python/52",
+    "humanevalfix/Python/55",
+    "humanevalfix/Python/57",
+    "humanevalfix/Python/64",
+    "humanevalfix/Python/67",
+    "humanevalfix/Python/7",
+    "humanevalfix/Python/78",
+    "humanevalfix/Python/8",
+    "humanevalfix/Python/82",
+    "humanevalfix/Python/83",
+    "humanevalfix/Python/87",
+    "humanevalfix/Python/88",
+    "humanevalfix/Python/89",
+    "humanevalfix/Python/9",
+    "humanevalfix/Python/96"
+  ]
+}
