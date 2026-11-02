@@ -209,7 +209,7 @@ def test_schema_sends_response_format() -> None:
     }
 
 
-@pytest.mark.parametrize("status", [429, 500, 502, 503, 504])
+@pytest.mark.parametrize("status", [408, 429, 500, 502, 503, 504])
 def test_retryable_status_then_success(status: int) -> None:
     state = _StubState([_err(status, "busy"), _ok("hi")])
     server = _serve(state)
@@ -576,3 +576,23 @@ def test_live_structured_completion() -> None:
     assert json.loads(completion.text)["greeting"]
     assert completion.usage.input_tokens >= 0
     assert completion.usage.output_tokens > 0
+
+
+@pytest.mark.parametrize(
+    ("content", "answer"),
+    [
+        (" to=userdef f(): pass", "def f(): pass"),
+        (" to=selfthink about to=user mentions to=usermethod M() {}", "method M() {}"),
+        (" to=selfreasoning cut off by the token limit", ""),
+        ("plain answer that mentions to=user inside", "plain answer that mentions to=user inside"),
+        ("to=5 is not a channel header", "to=5 is not a channel header"),
+    ],
+)
+def test_leaked_channel_headers_are_stripped(content: str, answer: str) -> None:
+    state = _StubState([_ok(content)])
+    server = _serve(state)
+    try:
+        completion = _client(server, []).complete("m", (Message("user", "hi"),), step="intent")
+    finally:
+        server.shutdown()
+    assert completion.text == answer

@@ -111,11 +111,14 @@ export PCC_GLIMMER_ADAPTERS="glimmer-sft=/adapters/sft1,other=some-org/other-lor
 
 ## One test request
 
-After deploy, Modal prints the web endpoint URL. Test it with the served
+After deploy, Modal prints the web endpoint URL. Set `PCC_GLIMMER_BASE_URL`
+to that URL with `/v1` appended: the client posts to
+`{base_url}/chat/completions`, so the base URL must end in `/v1` (a URL
+without it answers 404). Test it with the served
 model name (`glimmer`, or the adapter name for a trained model):
 
 ```bash
-curl "$PCC_GLIMMER_BASE_URL/v1/chat/completions" \
+curl "$PCC_GLIMMER_BASE_URL/chat/completions" \
   -H "Authorization: Bearer $PCC_GLIMMER_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"model": "glimmer", "messages": [{"role": "user", "content": "Say ok."}]}'
