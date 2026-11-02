@@ -503,3 +503,18 @@ def test_main_writes_run_files(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) 
     assert eval_main.main(["humanevalfix", "--split", "test", "--out", str(out), "--max-cost-usd", "10"]) == 0
     assert (out / "run.json").is_file()
     assert len(read_jsonl(out / "scan.jsonl")) == 2
+
+
+def test_run_json_records_date_and_commit_and_keeps_them_on_resume(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    out = tmp_path / "runs" / "dated"
+    patch_pipeline(monkeypatch, metrics_behavior)
+    monkeypatch.setattr("pcc.evaluation.vericoding._default_git_sha", lambda: "a" * 40)
+    run_harness(split="test", out_dir=out, max_cost_usd=10.0, tasks=(add_task(),), client=FakeClient([]))
+    run = json.loads((out / "run.json").read_text(encoding="utf-8"))
+    assert run["commit"] == "a" * 40
+    assert len(run["date"]) == 10
+    monkeypatch.setattr("pcc.evaluation.vericoding._default_git_sha", lambda: "b" * 40)
+    run_harness(split="test", out_dir=out, max_cost_usd=10.0, tasks=(add_task(),), client=FakeClient([]))
+    assert json.loads((out / "run.json").read_text(encoding="utf-8"))["commit"] == "a" * 40

@@ -19,6 +19,7 @@ import json
 import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -38,7 +39,7 @@ from pcc.core import (
     source_hash,
     to_data,
 )
-from pcc.evaluation import datasets
+from pcc.evaluation import datasets, vericoding
 from pcc.models import Message, ModelClient, Router
 from pcc.models.client import Completion
 
@@ -486,7 +487,11 @@ def _write_run_json(
     status: str,
     metrics: dict[str, Any] | None,
 ) -> dict[str, Any]:
+    previous = out_dir / "run.json"
+    kept = json.loads(previous.read_text(encoding="utf-8")) if previous.exists() else {}
     summary: dict[str, Any] = {
+        "date": kept.get("date") or datetime.now(UTC).strftime("%Y-%m-%d"),
+        "commit": kept.get("commit") or vericoding._default_git_sha(),
         "harness": HARNESS,
         "split": split,
         "max_cost_usd": max_cost_usd,
