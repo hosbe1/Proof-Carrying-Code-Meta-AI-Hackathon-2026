@@ -34,6 +34,7 @@ from pcc.core import (
     State,
     ToolError,
     TranslationPath,
+    UnsupportedConstruct,
     source_hash,
     to_data,
 )
@@ -299,7 +300,8 @@ def run_spec_only(
                 checked, function, repo_root, client=recorder, model=config.models.mutants, config=config.spec
             )
             rewrites += 1
-    except NotCheckable as exc:
+    except (NotCheckable, UnsupportedConstruct) as exc:
+        # e.g. an untyped HumanEvalFix function has no input strategies: one version, not the whole run
         outcome, reason = "not_checkable", str(exc) or "not checkable"
     else:
         outcome, reason = classify_spec(checked, version)

@@ -39,6 +39,7 @@ from pcc.core import (
     ToolError,
     Translation,
     TranslationPath,
+    UnsupportedConstruct,
     Usage,
     source_hash,
 )
@@ -347,6 +348,22 @@ def test_spec_only_outcomes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> 
     assert run["spec_only"] is True
     assert run["metrics"]["outcomes"] == {"pass": 1, "false_alarm": 0, "caught": 1, "missed": 0, "not_checkable": 0}
     assert summary["metrics"] == run["metrics"]
+
+
+def test_spec_only_unsupported_construct_is_not_checkable(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    out = tmp_path / "runs" / "speconly"
+    client = spec_only_fakes(monkeypatch)
+
+    def untyped_check(*args: Any, **kwargs: Any) -> Spec:
+        raise UnsupportedConstruct("no types")
+
+    monkeypatch.setattr(pcc.spec, "check", untyped_check)
+    run_harness(split="test", out_dir=out, max_cost_usd=10.0, spec_only=True, tasks=(add_task(),), client=client)
+    lines = read_jsonl(out / "spec_only.jsonl")
+    assert [(line["version"], line["outcome"], line["reason"]) for line in lines] == [
+        ("fixed", "not_checkable", "unsupported construct: no types"),
+        ("buggy", "not_checkable", "unsupported construct: no types"),
+    ]
 
 
 def test_classify_spec_timeout_is_not_checkable() -> None:
