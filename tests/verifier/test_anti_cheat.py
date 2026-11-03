@@ -225,6 +225,16 @@ def test_body_less_function_and_method() -> None:
     assert anti_cheat("method M(n: int)", "") == ("line 1: body-less method",)
 
 
+def test_unterminated_string_ending_in_backslash_does_not_raise() -> None:
+    code = 'method M() { var s := "abc\\'
+    assert anti_cheat(code, "") == ("line 1: unbalanced braces",)
+
+
+def test_unterminated_char_literal_ending_in_backslash_does_not_raise() -> None:
+    code = "method M() { var c := 'a\\"
+    assert anti_cheat(code, "") == ("line 1: unbalanced braces",)
+
+
 def test_any_input_gives_a_result() -> None:
     assert anti_cheat("", "") == ()
     assert anti_cheat("{{{", "???") != ()
