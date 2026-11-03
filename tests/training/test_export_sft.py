@@ -206,7 +206,11 @@ def test_build_index_holds_only_train_tasks(monkeypatch: pytest.MonkeyPatch, tmp
     cache_dir, splits_dir, _tasks = _fixture_cache_and_splits(monkeypatch, tmp_path)
     index = build_index(cache_dir, splits_dir)
     assert set(index.tasks) == {"vericoding/DA0002"}
-    assert index.test_ids == frozenset({"vericoding/DA0003", "humanevalfix/Python/0"})
+    assert index.test_ids == frozenset({"vericoding/DA0003", "humanevalfix/Python/0", "algoveri/held_back"})
+    assert all(not task_id.startswith("algoveri/") for task_id in index.tasks)
+    algoveri_test = datasets.load("algoveri", cache_dir)
+    assert [task.id for task in algoveri_test] == ["algoveri/held_back"]
+    assert build_prompt(algoveri_test[0]) in index.test_prompts
 
 
 def test_source_blocked_task_id_raises(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -251,6 +255,19 @@ def test_source_blocked_task_id_raises(monkeypatch: pytest.MonkeyPatch, tmp_path
     humanevalfix_bytes = json.dumps(humanevalfix_rows, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode(
         "utf-8"
     )
+    algoveri_rows = [
+        {
+            "problem_id": "held_back",
+            "nl_desc": "Hold back an integer.",
+            "spec": (
+                "// <preamble>\nfunction Held(x: int): int\n{\n  x\n}\n// </preamble>\n"
+                "// <spec>\nmethod held(x: int) returns (result: int)\n"
+                "  ensures result == Held(x)\n// </spec>\n"
+                "// <code>\n{\n  result := x;\n}\n// </code>"
+            ),
+        }
+    ]
+    algoveri_bytes = "".join(json.dumps(row) + "\n" for row in algoveri_rows).encode("utf-8")
     specs = {
         "humanevalfix": datasets._DatasetSpec(
             name="humanevalfix",
@@ -268,11 +285,21 @@ def test_source_blocked_task_id_raises(monkeypatch: pytest.MonkeyPatch, tmp_path
             cache_filename="vericoding-train.jsonl",
             kind="jsonl",
         ),
+        "algoveri": datasets._DatasetSpec(
+            name="algoveri",
+            url="https://example.invalid/algoveri-dafny.jsonl",
+            revision="fixture",
+            sha256=hashlib.sha256(algoveri_bytes).hexdigest(),
+            cache_filename="algoveri-dafny.jsonl",
+            kind="jsonl",
+        ),
     }
 
     def fake_http_get(url: str) -> bytes:
         if url == specs["vericoding"].url:
             return vericoding_bytes
+        if url == specs["algoveri"].url:
+            return algoveri_bytes
         if url == specs["humanevalfix"].url or url.startswith(specs["humanevalfix"].url + "?"):
             query = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
             offset = int(query.get("offset", ["0"])[0])
@@ -287,6 +314,7 @@ def test_source_blocked_task_id_raises(monkeypatch: pytest.MonkeyPatch, tmp_path
     splits_dir.mkdir(parents=True)
     (splits_dir / "vericoding_test.txt").write_text("", encoding="utf-8")
     (splits_dir / "humanevalfix_test.txt").write_text("humanevalfix/Python/0\n", encoding="utf-8")
+    (splits_dir / "algoveri_test.txt").write_text("algoveri/held_back\n", encoding="utf-8")
     index = build_index(cache_dir, splits_dir)
     assert set(index.tasks) == {"vericoding/DA0002"}
     assert "vericoding/DA0009" not in index.test_ids
@@ -516,6 +544,18 @@ def _fixture_cache_and_splits(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
         },
     ]
     vericoding_bytes = "".join(json.dumps(row) + "\n" for row in vericoding_rows).encode("utf-8")
+    algoveri_rows = [
+        {
+            "problem_id": "held_back",
+            "nl_desc": "Hold back an integer.",
+            "spec": (
+                "// <preamble>\nfunction Held(x: int): int\n{\n  x\n}\n// </preamble>\n"
+                "// <spec>\nmethod held(x: int) returns (result: int)\n  ensures result == Held(x)\n// </spec>\n"
+                "// <code>\n{\n  result := x;\n}\n// </code>"
+            ),
+        }
+    ]
+    algoveri_bytes = "".join(json.dumps(row) + "\n" for row in algoveri_rows).encode("utf-8")
     humanevalfix_rows = [
         {
             "task_id": "Python/0",
@@ -546,11 +586,21 @@ def _fixture_cache_and_splits(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
             cache_filename="vericoding-train.jsonl",
             kind="jsonl",
         ),
+        "algoveri": datasets._DatasetSpec(
+            name="algoveri",
+            url="https://example.invalid/algoveri-dafny.jsonl",
+            revision="fixture",
+            sha256=hashlib.sha256(algoveri_bytes).hexdigest(),
+            cache_filename="algoveri-dafny.jsonl",
+            kind="jsonl",
+        ),
     }
 
     def fake_http_get(url: str) -> bytes:
         if url == specs["vericoding"].url:
             return vericoding_bytes
+        if url == specs["algoveri"].url:
+            return algoveri_bytes
         if url == specs["humanevalfix"].url or url.startswith(specs["humanevalfix"].url + "?"):
             query = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
             offset = int(query.get("offset", ["0"])[0])
@@ -565,6 +615,7 @@ def _fixture_cache_and_splits(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
     splits_dir.mkdir(parents=True)
     (splits_dir / "vericoding_test.txt").write_text("vericoding/DA0003\n", encoding="utf-8")
     (splits_dir / "humanevalfix_test.txt").write_text("humanevalfix/Python/0\n", encoding="utf-8")
+    (splits_dir / "algoveri_test.txt").write_text("algoveri/held_back\n", encoding="utf-8")
     tasks = {task.id: task for task in datasets.split("vericoding", "train", cache_dir, splits_dir)}
     return cache_dir, splits_dir, tasks
 

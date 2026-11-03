@@ -264,9 +264,11 @@ apply unchanged: the contract (requires/ensures and signatures) is frozen and no
 `{:verify false}` is allowed. A dry run builds all 77 tasks with no skips.
 
 Protocol caveat: our numbers are reported side by side with the AlgoVeri paper (which reports 40.3% for
-Gemini-3 Flash in Dafny, with iterative repair roughly tripling pass rates), never as like-for-like. Our
-attempt counts and repair turns (`--repair N`) differ from the paper's setup, and we use no LLM judge. The
-paper's figures and ours come from different protocols, so any comparison is indicative only.
+Gemini-3 Flash in Dafny, with iterative repair roughly tripling pass rates), never as like-for-like. Every
+run records its exact protocol settings (attempt count, repair turns, model) in `run.json`; those recorded
+settings — not the paper's setup — define what our figures mean, and we use no LLM judge. The paper's
+figures and ours come from different protocols, so any comparison is indicative only and must cite the
+run's settings.
 
 ## Development
 

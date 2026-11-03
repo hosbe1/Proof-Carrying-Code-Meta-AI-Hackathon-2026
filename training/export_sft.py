@@ -266,7 +266,7 @@ def build_index(cache_dir: Path | None = None, splits_dir: Path | None = None) -
     train_tasks: dict[str, Task] = {}
     test_tasks: dict[str, Task] = {}
     test_ids: set[str] = set()
-    for name in (datasets.VERICODING, datasets.HUMANEVALFIX):
+    for name in (datasets.VERICODING, datasets.HUMANEVALFIX, datasets.ALGOVERI):
         for task in datasets.split(name, "train", cache_dir, splits_dir):
             train_tasks[task.id] = task
         for task in datasets.split(name, "test", cache_dir, splits_dir):
