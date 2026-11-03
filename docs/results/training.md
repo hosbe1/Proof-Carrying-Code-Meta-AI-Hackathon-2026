@@ -231,10 +231,9 @@ from saved artifacts, not an account billing total.
 - Serving: `PCC_GLIMMER_ADAPTERS` gains `glimmer-sft3=/adapters/sft3`; the
   eval runs below prove serving.
 - Result: Vericoding test pass@4 0.455 (SFT 2 0.448, SFT 1 0.278), see
-  `docs/results/2026-11-02-93a247f-eval-glimmer-sft3/`; proof-only 33-task
-  set: 24/33 (SFT 2 21, base Glimmer 28); proof-only v2 (327 tasks): 283/327
-  at reasoning low, 285/327 at reasoning medium. SFT 2 to SFT 3 is +4 net on
-  the same 569 test IDs (32 newly solved, 28 missed).
+  `docs/results/2026-11-02-93a247f-eval-glimmer-sft3/`; proof-only v2 (327
+  tasks): 283/327 at reasoning low, 285/327 at reasoning medium. SFT 2 to
+  SFT 3 is +4 net on the same 569 test IDs (32 newly solved, 28 missed).
 - Test split: never sampled for training (see the round 2 leakage check).
 - Provenance: recipe, row, hash, and adapter figures above are as reported by
   the run controller in the issue record of 2026-11-03; no local training log

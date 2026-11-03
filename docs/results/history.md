@@ -26,5 +26,3 @@
 | 2026-11-02 | 93a247f | glimmer-sft3 | vericoding/proof-only-v2 | 327 | 0.865 | 0.00 |
 | 2026-11-03 | 2a2a777 | glimmer-sft4 | vericoding/proof-only-v2 | 327 | 0.862 | 0.00 |
 | 2026-11-02 | 93a247f | glimmer-sft3 | vericoding/proof-only-v2 | 327 | 0.872 | 0.00 |
-| 2026-11-02 | 93a247f | glimmer-sft3 | vericoding/proof-only-test | 33 | 0.727 | 0.00 |
-| 2026-11-03 | 2a2a777 | glimmer-sft4 | vericoding/proof-only-test | 33 | 0.727 | 0.00 |

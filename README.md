@@ -264,8 +264,6 @@ field is verbatim and `split_sha256` pins the task bytes.
 | Spark | muse-spark-1.3-contributor | none | contributor | 33 | 30/33 = 90.91% (95% CI 0.764-0.969) | est. 0.803 | 0.05 | n/a | [summary](docs/results/2026-11-02-93a247f-proof-only-spark/summary.md) |
 | base Glimmer, low strength | glimmer | none | standard | 33 | 28/33 = 84.85% (95% CI 0.691-0.933) | est. 0.614 | 0.00 | about 1 USD for both Glimmer runs | [summary](docs/results/2026-11-02-93a247f-proof-only-glimmer-base/summary.md) |
 | SFT 2, low strength | glimmer-sft2 | `pcc-glimmer:/adapters/sft2` | standard | 33 | 21/33 = 63.64% (95% CI 0.466-0.778) | est. 0.394 | 0.00 | about 1 USD for both Glimmer runs | [summary](docs/results/2026-11-02-93a247f-proof-only-glimmer-sft2/summary.md) |
-| SFT 3, low strength | glimmer-sft3 | `pcc-glimmer:/adapters/sft3` | standard | 33 | 24/33 = 72.73% (95% CI 0.558-0.849) | est. 0.576 | 0.00 | billing total pending | [summary](docs/results/2026-11-02-93a247f-proof-only-glimmer-sft3/summary.md) |
-| SFT 4, low strength | glimmer-sft4 | `pcc-glimmer:/adapters/sft4` | standard | 33 | 24/33 = 72.73% (95% CI 0.558-0.849) | est. 0.689 | 0.00 | billing total pending | [summary](docs/results/2026-11-03-2a2a777-proof-only-glimmer-sft4/summary.md) |
 
 Spark alone misses `proof-only/vericoding/DD0083`, `proof-only/vericoding/DD0271`
 and `proof-only/vericoding/DD0648`; base Glimmer alone misses
@@ -278,20 +276,10 @@ solves 19 and misses 9; it newly solves `proof-only/vericoding/DD0070` and
 SFT 2 is below base Glimmer on proof-only (21 vs 28), likely because SFT 2 was
 trained only on the full-task format. The tasks come from Spark's own verified answers, which favours Spark. No significance claim is made on n = 33.
 
-SFT 3 and SFT 4 each solve 24 of 33 (pass@1 0.576 and 0.689). Of the 28 tasks base Glimmer
-solves, SFT 3 also solves 22 and misses 6; it newly solves `proof-only/vericoding/DD0070` and
-`proof-only/vericoding/DS0052`. SFT 4 matches that count with the same 22, but misses
-`proof-only/vericoding/DD0701` instead of `proof-only/vericoding/DD0648`. Against SFT 2, SFT 3
-newly solves `proof-only/vericoding/DD0736`, `proof-only/vericoding/DV0062`,
-`proof-only/vericoding/DV0068` and `proof-only/vericoding/DV0108` while missing
-`proof-only/vericoding/DD0648`; SFT 4 differs from SFT 3 only on `proof-only/vericoding/DD0648`
-(solved) versus `proof-only/vericoding/DD0701` (missed). Like every other model, both miss
-`proof-only/vericoding/DD0083` and `proof-only/vericoding/DD0271`.
-
 ### Proof-only v2: 327 tasks built from test-split answers
 
 Paired comparison on 327 proof-only tasks built from verified model answers on the Vericoding test
-split (`runs/proof-only-v2/tasks.jsonl`, SHA-256 `873c8249...`, pinned in each `meta.json` as
+split (`docs/results/proof-only-v2/tasks.jsonl`, SHA-256 `873c8249...`, pinned in each `meta.json` as
 `split_sha256`). Each task ran 4 attempts with `--max-cost-usd 5`; every Glimmer run below except
 the last used reasoning strength `low`, served from the same deployment at FP8 precision, checked
 with Dafny 4.11.0 at resource limit 1000000. Wilson intervals are 95% intervals over solved tasks
@@ -308,11 +296,11 @@ with Dafny 4.11.0 at resource limit 1000000. Wilson intervals are 95% intervals 
 | SFT 3, medium strength | glimmer-sft3 | `pcc-glimmer:/adapters/sft3` | standard | 327 | 285/327 = 87.16% (95% CI 0.831-0.904) | est. 0.739 | 0.00 | billing total pending | [summary](docs/results/2026-11-02-93a247f-po2-sft3-med/summary.md) |
 
 Task-source caveat: the 327 tasks are built from model answers on the test split, so most come from
-SFT answers. `runs/proof-only-v2/sources.json` maps each task to the models whose answers it came
+SFT answers. `docs/results/proof-only-v2/sources.json` maps each task to the models whose answers it came
 from (base 27, base-medium 26, SFT 1 68, SFT 2 130, SFT 3 111, Spark 33), so every model meets many
 tasks built from its own answers. The comparison therefore also reports, per model, the rate on
 tasks not sourced from the model itself and the rate on the 53 tasks sourced only from base or
-Spark answers: base 211/300 = 70.33% and 45/53 = 84.91%; Spark 227/294 = 77.21% and 45/53 =
+Spark answers: base 198/286 = 69.23% (base-medium-sourced tasks count as base-sourced) and 45/53 = 84.91%; Spark 227/294 = 77.21% and 45/53 =
 84.91%; SFT 1 207/259 = 79.92% and 41/53 = 77.36%; SFT 2 120/197 = 60.91% and 37/53 = 69.81%;
 SFT 3 low 182/216 = 84.26% and 41/53 = 77.36%; SFT 4 low 282/327 = 86.24% (no task is sourced
 from SFT 4, so the non-self rate equals the overall rate) and 41/53 = 77.36%; SFT 3 medium
