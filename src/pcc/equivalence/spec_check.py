@@ -222,8 +222,11 @@ def check_spec(
     On every case the Python ``pre`` runs against the Dafny ``pre``; where ``pre`` holds, the Python ``spec``
     runs against the Dafny ``spec``, with values converted by the ``equivalence.convert`` converter. A case
     where a predicate raises counts as ``False``. Any disagreement gives ``passed=False`` with the first
-    differing case in the detail. With no cases the check fails with detail ``"spec: no cases"``.
+    differing case in the detail. Cases whose result is ``raises <ExcType>`` are skipped. With no cases left the
+    check fails with detail ``"spec: no cases"``.
     """
+    # A ``raises <ExcType>`` result (``spec_cases``, from a raising mutant) has no value for ``spec`` (issue #195).
+    cases = [case for case in cases if not case[1].startswith("raises ")]
     if not cases:
         return CheckRecord(CheckKind.DIFFERENTIAL, False, "spec: no cases")
     dafny_code = assemble(function, dafny_spec, "")
