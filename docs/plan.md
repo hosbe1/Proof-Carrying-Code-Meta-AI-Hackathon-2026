@@ -427,8 +427,8 @@ contributor mode.
    proofs are added.
 4. **SFT 2:** LoRA SFT (rank 16) of base Glimmer, not of SFT 1, on all verified proofs of rounds 0 and 1 and of the
    collection, plus the proof-only tasks where they are ready.
-5. **GRPO (stretch only):** starts from SFT 2 on Fireworks with the tasks that are left, capped at $50, after a bounded
-   pre-pass (see below).
+5. **GRPO (dropped):** would have started from SFT 2 on Fireworks with the tasks that were left, capped at $50, after a bounded
+   pre-pass (see below). Dropped: rejection-sampling rounds up to SFT 4 replaced it; see #72.
 
 **Proof-only tasks:** the verified answers are turned into tasks for the proof step alone. The executable code stays as
 it is, the ghost code is removed, and the model is asked to add the annotations. That is the product's step 5. These
@@ -441,10 +441,11 @@ unambiguous reward, so HumanEvalFix is its evaluation set. Trained Glimmer is pr
 evaluation, the demo and the bug hunt.
 
 **Why rejection sampling:** training is free, so the money buys data. The cost and speed of round 1 on Modal are
-measured in its first hour. At the $50 GRPO cap only about 9 to 12 steps fit, which would not give a measurable gain, so
-GRPO is a stretch goal.
+measured in its first hour. At the $50 GRPO cap only about 9 to 12 steps would have fit, which would not have given a
+measurable gain. Dropped: rejection-sampling rounds up to SFT 4 replaced it; see #72.
 
-**GRPO (stretch):** Glimmer learns directly from Dafny's verdict, with a graded reward:
+**GRPO (dropped):** Glimmer would have learned directly from Dafny's verdict, with a graded reward (plan dropped, not run).
+Dropped: rejection-sampling rounds up to SFT 4 replaced it; see #72.
 
 | Outcome | Reward |
 |---|---|
@@ -456,15 +457,16 @@ Groups in which every attempt gets the same reward are dropped, because they tea
 verified proofs comes only if too few groups differ, because it is easy to game with trivial lemmas. LoRA instead of
 full fine-tuning: for reinforcement learning it matches full fine-tuning at a fraction of the GPU cost.
 
-GRPO runs through the Fireworks Serverless Training API with a custom loop: Fireworks samples and trains, our code
+GRPO would have run through the Fireworks Serverless Training API with a custom loop: Fireworks samples and trains, our code
 computes the reward with Dafny. Glimmer rates per 1M tokens: prefill $1.96, cached prefill $0.39, sample $4.88, train
-$5.86; spend cap $50.
+$5.86; spend cap $50. Dropped: rejection-sampling rounds up to SFT 4 replaced it; see #72.
 
-GRPO is a small proof of concept. The pre-pass samples 64 Vericoding training tasks (fixed seed) 8 times each with SFT
-2; its cost counts toward the $50. Assuming about 2k prompt and 2k sample tokens per attempt, a step of 16 tasks × 8
-samples costs about $4.75 (the pre-pass about $7.00, prefill and sample only). After the pre-pass, $50 buys about 9
-such steps; with 1.5k prompt and sample tokens per attempt, about 12. The pre-pass keeps the tasks that SFT 2 solves in
-1 to 7 of 8 attempts, so the groups in a step can differ in reward.
+GRPO was a small proof-of-concept plan and did not run. Dropped: rejection-sampling rounds up to SFT 4 replaced it;
+see #72. The dropped pre-pass would have sampled 64 Vericoding training tasks (fixed seed) 8 times each with SFT
+2; its cost would have counted toward the $50. Assuming about 2k prompt and 2k sample tokens per attempt, a step of 16 tasks × 8
+samples would have cost about $4.75 (the pre-pass about $7.00, prefill and sample only). After the pre-pass, $50 would have bought about 9
+such steps; with 1.5k prompt and sample tokens per attempt, about 12. The pre-pass would have kept the tasks that SFT 2 solves in
+1 to 7 of 8 attempts, so the groups in a step could have differed in reward.
 
 **Training data:** 500 to 2,000 verified proofs from rounds 0 and 1 on the Vericoding training tasks, the collection,
 and the proof-only tasks. The collection is the exact input the proof agent gets in the product, because pipeline output
@@ -483,7 +485,7 @@ which are the same 164 problems.
 |---|---|---|---|
 | Meta Model API | $150 per person, three people ($450) | Bug hunt (full pipeline, Spark in contributor mode, Wonder in proof stage 3), round 0 and training data collection (Spark, contributor mode), model comparison (Wonder), pipeline development, evaluation and demo, reserve | bug hunt $100, training data $100 (round 0 and collection), development, evaluation, comparison and demo $200, reserve $50 |
 | Modal | $100, plus $30 free per month as reserve | Round 1 sampling with vLLM on an H100, evaluation of base, SFT 1 and SFT 2, demo serving | round 1 sampling $40, evaluation and demo serving $60 |
-| Fireworks | $100 | SFT 1 and SFT 2 (free until Nov 30, if #3 confirms it), GRPO stretch; reserve for an on-demand deployment if a trained adapter cannot be served on Modal, or for sampling if Modal fails | GRPO $50, reserve $50 |
+| Fireworks | $100 | SFT 1 and SFT 2 (free until Nov 30, if #3 confirms it), GRPO stretch (dropped; see #72); reserve for an on-demand deployment if a trained adapter cannot be served on Modal, or for sampling if Modal fails. Dropped: rejection-sampling rounds up to SFT 4 replaced it; see #72. | GRPO $50 (dropped, not spent), reserve $50 |
 
 Modal's caps add up to the $100 partner credits. The free $30 per month, confirmed for November too, is the reserve. The
 three Meta keys sit in one Meta environment on one team member's machine.
@@ -497,7 +499,7 @@ Hard limits per run, set with `--max-cost-usd` (Meta) or `--max-seconds` (Modal 
   runs in contributor mode at $10 each $80; development $40; demo $10. $25 stays unassigned as margin.
 - Reserve $50 on Meta.
 - Modal: round 1 sampling $40, about 10 H100 hours; evaluation and demo serving $60, about 15 H100 hours.
-- Fireworks: GRPO stretch $50, the `max_spend_usd` of the training config.
+- Fireworks: GRPO stretch $50 (dropped, not spent), the `max_spend_usd` of the training config. Dropped: rejection-sampling rounds up to SFT 4 replaced it; see #72.
 
 - Glimmer is served only while a job runs and scales to zero; nothing runs permanently.
 - SFT is free on Fireworks until Nov 30, if #3 confirms it, through the UI or the Serverless Training API.
@@ -539,7 +541,7 @@ stage contributes (proven by Glimmer, then Spark, then Wonder), second-opinion a
 of functions whose `pre` accepts less than 20 % of inputs, and cost and time per function. False alarms and false proofs
 must stay close to zero. Target values are set after the first run.
 
-**Comparison:** base Glimmer, SFT 1, SFT 2 and, if it ran, GRPO on the same tasks, against Spark and Wonder:
+**Comparison:** base Glimmer, SFT 1 to SFT 4, Spark and Wonder on the same tasks (GRPO dropped, not run; see #72):
 
 - Vericoding test split: base Glimmer first, as the baseline, then SFT 1 and SFT 2, each with four
   attempts. Spark with four attempts. Wonder with one attempt on a fixed 150-task subset, compared by pass@1.
@@ -640,7 +642,7 @@ hackathon disqualifies projects that use code or data without the rights to it, 
 
 ## Cut order
 
-If the demo is at risk, these go first, in this order: GRPO, the bug hunt, round 1 of rejection sampling, the search
+If the demo is at risk, these go first, in this order: GRPO (already dropped; see #72), the bug hunt, round 1 of rejection sampling, the search
 agent of step 1, calls inside the project, the `find_pattern` highlight, crosshair (differential testing stays), the
 second opinion. The red pull request needs steps 1 to 3 and, for its counterexample, the second opinion, so it is built
 first; the green one needs translation and proof.

@@ -62,7 +62,7 @@ Why this shape:
 | `evaluation` | eval | Runs on fixed dataset splits, metrics |
 
 Training code (SFT and GRPO) lives in `training/` outside the package: it imports `pcc` (for the verifier as reward)
-but the package never imports it. The compute provider is decided in [plan.md](plan.md), not here.
+but the package never imports it. GRPO is kept for reference and is not used for results. The compute provider is decided in [plan.md](plan.md), not here.
 
 ### Transpile subset (code mode)
 
