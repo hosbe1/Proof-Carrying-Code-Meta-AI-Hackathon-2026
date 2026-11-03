@@ -291,12 +291,8 @@ def _default_started_utc() -> str:
 
 
 def _split_sha256() -> str:
-    """SHA-256 of the raw committed ``vericoding_test.txt`` bytes."""
-    try:
-        raw = SPLIT_FILE.read_bytes()
-    except OSError as exc:
-        raise ToolError(f"could not read the committed split file {SPLIT_FILE}: {exc}") from exc
-    return hashlib.sha256(raw).hexdigest()
+    """SHA-256 of the raw committed ``vericoding_test.txt`` bytes; legacy alias of ``_split_sha256_for("test")``."""
+    return _split_sha256_for("test")
 
 
 def _split_sha256_for(split: str) -> str:

@@ -391,13 +391,15 @@ def test_main_rejects_unknown_command() -> None:
 def test_main_make_splits_calls_command(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     calls: list[Sequence[object]] = []
 
-    def fake_make_splits(*args: object, **kwargs: object) -> tuple[Path, Path]:
+    def fake_make_splits(*args: object, **kwargs: object) -> tuple[Path, Path, Path]:
         calls.append(args)
         first = tmp_path / "humanevalfix_test.txt"
         second = tmp_path / "vericoding_test.txt"
+        third = tmp_path / "algoveri_test.txt"
         first.write_text("", encoding="utf-8")
         second.write_text("", encoding="utf-8")
-        return first, second
+        third.write_text("", encoding="utf-8")
+        return first, second, third
 
     monkeypatch.setattr(datasets, "make_splits", fake_make_splits)
     assert main(["make-splits"]) == 0
@@ -476,5 +478,8 @@ def test_live_algoveri_dry_run_builds_all_prompts_without_cheat_tokens(tmp_path:
         hits = [token for token in _CHEAT_TOKENS if token in prompt or token in prefix]
         if hits:
             tainted.append(f"{task.id}: {', '.join(hits)}")
+        code = task.payload.get("vc-code", "")
+        if isinstance(code, str) and code.strip() and (code in prompt or code in prefix):
+            tainted.append(f"{task.id}: vc-code leaks into prompt or prefix")
     assert failures == []
     assert tainted == []

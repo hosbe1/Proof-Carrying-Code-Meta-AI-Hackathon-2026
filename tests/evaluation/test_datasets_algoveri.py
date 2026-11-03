@@ -84,6 +84,9 @@ def test_cheat_line_in_code_hole_never_reaches_prompt_or_prefix() -> None:
     prefix = vericoding.task_spec_of(task)
     assert "assume {:axiom} false;" not in prompt
     assert "assume {:axiom} false;" not in prefix
+    code = task.payload["vc-code"]
+    assert code not in prompt
+    assert code not in prefix
 
 
 def test_train_is_empty_even_for_a_partial_test_file(algoveri_env: Path, tmp_path: Path) -> None:
