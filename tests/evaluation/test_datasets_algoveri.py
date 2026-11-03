@@ -14,8 +14,9 @@ from pathlib import Path
 import pytest
 
 from pcc.core.errors import ToolError
-from pcc.evaluation import datasets
+from pcc.evaluation import datasets, vericoding
 from pcc.evaluation.datasets import load, split
+from pcc.evaluation.prompts import build_prompt
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 ALGOVERI_BYTES = (FIXTURES / "algoveri-dafny.jsonl").read_bytes()
@@ -61,6 +62,28 @@ def test_code_hole_kept_but_prompt_and_prefix_stay_clean(algoveri_env: Path) -> 
     assert "absolute value here" in by_id["algoveri/abs_val"].payload["vc-code"]
     assert "method Main()" in by_id["algoveri/is_empty"].payload["vc-postamble"]
     assert by_id["algoveri/max_two"].payload["vc-postamble"] == ""
+
+
+def _cheat_hole_spec() -> str:
+    """A spec shaped like the live ``sieve_method`` row: the ``<code>`` hole holds a cheat line."""
+    return (
+        "// <preamble>\nfunction Sieve(n: int): int\n{\n  n\n}\n// </preamble>\n"
+        "// <spec>\nmethod sieve_method(n: int) returns (r: int)\n"
+        "  ensures r == Sieve(n)\n// </spec>\n"
+        "// <code>\n{\n  assume {:axiom} false;\n}\n// </code>"
+    )
+
+
+def test_cheat_line_in_code_hole_never_reaches_prompt_or_prefix() -> None:
+    row = {"problem_id": "sieve_like", "nl_desc": "Sieve something.", "spec": _cheat_hole_spec()}
+    tasks = datasets._parse_algoveri((json.dumps(row) + "\n").encode("utf-8"))
+    assert len(tasks) == 1
+    task = tasks[0]
+    assert "assume {:axiom} false;" in task.payload["vc-code"]
+    prompt = build_prompt(task)
+    prefix = vericoding.task_spec_of(task)
+    assert "assume {:axiom} false;" not in prompt
+    assert "assume {:axiom} false;" not in prefix
 
 
 def test_train_is_empty_even_for_a_partial_test_file(algoveri_env: Path, tmp_path: Path) -> None:

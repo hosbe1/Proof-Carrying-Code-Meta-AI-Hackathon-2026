@@ -18,6 +18,8 @@ import pytest
 from pcc.core.errors import ToolError
 from pcc.evaluation import datasets
 from pcc.evaluation.datasets import Task, fetch, load, main, make_splits, split
+from pcc.evaluation.prompts import build_prompt
+from pcc.evaluation.vericoding import task_spec_of
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 HUMANEVALFIX_ROWS: list[dict[str, str]] = json.loads((FIXTURES / "humanevalfix.json").read_text(encoding="utf-8"))
@@ -443,3 +445,36 @@ def test_live_downloads_both_datasets_and_checks_counts(tmp_path: Path) -> None:
         task.source_task for task in split("vericoding", "test", cache_dir)
     }
     assert all(task.source_task not in test_source_tasks for task in vericoding_train)
+
+
+#: Cheat-token forms that must never appear in an AlgoVeri prompt or frozen prefix (issue #181).
+_CHEAT_TOKENS = ("assume {:axiom} false;", "{:axiom}", "@Axiom", "{:verify false}")
+
+
+@pytest.mark.live
+def test_live_algoveri_dry_run_builds_all_prompts_without_cheat_tokens(tmp_path: Path) -> None:
+    """Dry run over every AlgoVeri problem: each task builds and no cheat token leaks into prompt or prefix.
+
+    Prompt or prefix building failures and cheat-token hits fail the test with the
+    task IDs and reasons, so the run either builds all 77 tasks or lists the ones
+    it cannot build.
+    """
+    tasks = load("algoveri", tmp_path / "datasets")
+    assert len(tasks) == 77
+    failures: list[str] = []
+    tainted: list[str] = []
+    for task in tasks:
+        try:
+            prompt = build_prompt(task)
+        except ValueError as exc:
+            failures.append(f"{task.id}: {exc}")
+            continue
+        prefix = task_spec_of(task)
+        if not prefix.strip():
+            failures.append(f"{task.id}: empty frozen prefix")
+            continue
+        hits = [token for token in _CHEAT_TOKENS if token in prompt or token in prefix]
+        if hits:
+            tainted.append(f"{task.id}: {', '.join(hits)}")
+    assert failures == []
+    assert tainted == []
