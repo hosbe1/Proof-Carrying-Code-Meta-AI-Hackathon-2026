@@ -19,6 +19,14 @@ Dataset findings (checked against the live sources while writing this module):
   ``THIRD_PARTY.md``), leaving 2,857 tasks. Rows with ``source == "humaneval"`` carry ``source-id`` values such as
   ``humaneval_001_separate-paren-groups``; their numeric part is the HumanEval index, so they share the
   ``humaneval/HumanEval/<n>`` source-task form with HumanEvalFix for deduplication.
+- ``algoveri`` is the Dafny split (``dafny.jsonl``, 77 rows) of ``zzzzzhy/algoveri`` (Apache-2.0): classical
+  algorithms with aligned Dafny contracts. Each row holds ``problem_id``, ``nl_desc`` and ``spec``; the loader
+  maps the ``<preamble>``/``<helpers>``/``<proofs>``/``<spec>`` sections of ``spec`` onto the Vericoding
+  ``vc-*`` payload shape, keeping the ``<code>`` hole as ``vc-code`` (never entering the prompt or the frozen
+  prefix: AlgoVeri ships no reference answer, only the placeholder body to implement), so the harness prompt,
+  the frozen prefix and the anti-cheat rules apply unchanged. Task IDs and source tasks share the distinct
+  ``algoveri/<problem_id>`` form and the committed test split holds every task: AlgoVeri is evaluation only
+  and ``split(name, "train")`` is empty for it, so no AlgoVeri task ever enters training data.
 """
 
 from __future__ import annotations
@@ -40,6 +48,7 @@ from pcc.core.errors import ToolError
 
 HUMANEVALFIX = "humanevalfix"
 VERICODING = "vericoding"
+ALGOVERI = "algoveri"
 
 DEFAULT_CACHE_DIR = Path.home() / ".cache/pcc/datasets"
 
@@ -96,6 +105,17 @@ _DATASETS: dict[str, _DatasetSpec] = {
         revision="f14842db1b41fa92035940a520cc76b8620293a1",
         sha256="4f8400da4b2cf0edb4b479d3511f9979bac85fe19763c5c9c691c907a085b341",
         cache_filename="vericoding-train.jsonl",
+        kind="jsonl",
+    ),
+    ALGOVERI: _DatasetSpec(
+        name=ALGOVERI,
+        url=(
+            "https://huggingface.co/datasets/zzzzzhy/algoveri/resolve/"
+            "a220ba993dc735fa9250168c44ad895e7d2b4d02/dafny.jsonl"
+        ),
+        revision="a220ba993dc735fa9250168c44ad895e7d2b4d02",
+        sha256="f933a98def137b1d5aabe460b61db4edceb06c749ba45c8d45d1b7cd34f526b1",
+        cache_filename="algoveri-dafny.jsonl",
         kind="jsonl",
     ),
 }
@@ -243,10 +263,88 @@ def _parse_vericoding(data: bytes) -> tuple[Task, ...]:
     return tuple(sorted(tasks, key=lambda task: task.id))
 
 
+_ALGOVERI_BLOCK = re.compile(r"//\s*<(preamble|helpers|proofs|spec|code)>(.*?)//\s*</\1>", re.DOTALL)
+_ALGOVERI_CODE_CLOSE = re.compile(r"//\s*</code>")
+_ALGOVERI_PROBLEM_ID = re.compile(r"^[A-Za-z0-9_]+$")
+
+
+def _extract_algoveri_blocks(spec_text: str, problem_id: str) -> tuple[dict[str, str], str]:
+    """The named ``<preamble>``/``<helpers>``/``<proofs>``/``<spec>``/``<code>`` blocks plus the trailing tail.
+
+    The tail is the raw text after the ``// </code>`` close marker (for example a closing ``}`` of a class
+    or a trailing ``method main() {}``); it becomes the ``vc-postamble`` so the prompt stays faithful to
+    the dataset file without entering the frozen prefix.
+    """
+    blocks: dict[str, str] = {}
+    for match in _ALGOVERI_BLOCK.finditer(spec_text):
+        blocks.setdefault(match.group(1), match.group(2).strip())
+    missing = [key for key in ("preamble", "spec", "code") if not blocks.get(key, "").strip()]
+    if missing:
+        raise ToolError(f"could not parse the algoveri task {problem_id!r}: missing block(s) {', '.join(missing)}")
+    close = _ALGOVERI_CODE_CLOSE.search(spec_text)
+    tail = spec_text[close.end() :].strip() if close is not None else ""
+    return blocks, tail
+
+
+def _parse_algoveri(data: bytes) -> tuple[Task, ...]:
+    """Dafny tasks from the cached AlgoVeri ``dafny.jsonl`` bytes, mapped onto the Vericoding payload shape."""
+    tasks: list[Task] = []
+    seen: set[str] = set()
+    for lineno, line in enumerate(data.decode("utf-8").splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError as exc:
+            raise ToolError(f"could not parse the algoveri cache line {lineno}: {exc}") from exc
+        try:
+            problem_id = row["problem_id"]
+            description = row["nl_desc"]
+            spec_text = row["spec"]
+        except (KeyError, TypeError) as exc:
+            raise ToolError(f"could not parse the algoveri cache line {lineno}: {exc}") from exc
+        if not isinstance(problem_id, str) or not problem_id or _ALGOVERI_PROBLEM_ID.match(problem_id) is None:
+            raise ToolError(f"could not parse the algoveri cache line {lineno}: bad problem_id {problem_id!r}")
+        if not isinstance(description, str) or not description.strip():
+            raise ToolError(f"could not parse the algoveri cache line {lineno}: bad nl_desc")
+        if not isinstance(spec_text, str) or not spec_text.strip():
+            raise ToolError(f"could not parse the algoveri cache line {lineno}: bad spec")
+        if problem_id in seen:
+            raise ToolError(f"could not parse the algoveri cache line {lineno}: duplicate problem_id")
+        seen.add(problem_id)
+        try:
+            blocks, tail = _extract_algoveri_blocks(spec_text, problem_id)
+        except ToolError as exc:
+            raise ToolError(f"could not parse the algoveri cache line {lineno}: {exc}") from exc
+        helpers = blocks.get("helpers", "")
+        proofs = blocks.get("proofs", "")
+        combined_helpers = "\n".join(part for part in (helpers, proofs) if part.strip()).strip()
+        code = blocks["code"]
+        if not code.startswith("{"):
+            raise ToolError(f"could not parse the algoveri cache line {lineno}: the <code> block must start with '{{'")
+        payload: dict[str, Any] = {
+            "problem_id": problem_id,
+            "language": "dafny",
+            "source": "algoveri",
+            "source-id": problem_id,
+            "vc-description": description.strip(),
+            "vc-preamble": blocks["preamble"],
+            "vc-helpers": combined_helpers,
+            "vc-spec": blocks["spec"],
+            "vc-code": code,
+            "vc-postamble": tail,
+        }
+        task_id = f"{ALGOVERI}/{problem_id}"
+        tasks.append(Task(id=task_id, source_task=task_id, payload=payload))
+    return tuple(sorted(tasks, key=lambda task: task.id))
+
+
 def load(name: str, cache_dir: Path | None = None) -> tuple[Task, ...]:
     """All tasks of dataset ``name`` from its cache, sorted by ID (fetching first when the cache is missing)."""
     spec = _spec(name)
     raw = fetch(name, _resolve_cache_dir(cache_dir)).read_bytes()
+    if name == ALGOVERI:
+        return _parse_algoveri(raw)
     if spec.kind == "jsonl":
         return _parse_vericoding(raw)
     return _parse_humanevalfix(raw)
@@ -291,7 +389,8 @@ def split(
     The test split holds exactly the task IDs of the committed ``<name>_test.txt`` file. Train holds every other
     task except those whose ``source_task`` appears in any test split of any dataset, so no benchmark task leaks
     from a test split into training through another dataset. A test ID with no matching task raises a
-    ``ToolError`` instead of silently shrinking the test split.
+    ``ToolError`` instead of silently shrinking the test split. AlgoVeri is evaluation only: its test split
+    holds every task and its train split is always empty, so no AlgoVeri task ever enters training data.
     """
     if which not in ("test", "train"):
         raise ValueError(f"unknown split {which!r}; expected 'test' or 'train'")
@@ -299,6 +398,8 @@ def split(
     test_ids = _checked_test_ids(name, tasks, splits_dir)
     if which == "test":
         return tuple(task for task in tasks if task.id in test_ids)
+    if name == ALGOVERI:
+        return ()
     blocked = _test_source_tasks(cache_dir, splits_dir)
     return tuple(task for task in tasks if task.id not in test_ids and task.source_task not in blocked)
 
@@ -309,13 +410,18 @@ def make_splits(
     *,
     humanevalfix_test_size: int = _HUMANEVALFIX_TEST_SIZE,
     vericoding_test_fraction: float = _VERICODING_TEST_FRACTION,
-) -> tuple[Path, Path]:
-    """Draw both test splits with ``random.Random(2026)`` and write them sorted, one ID per line.
+) -> tuple[Path, Path, Path]:
+    """Draw the test splits with ``random.Random(2026)`` and write them sorted, one ID per line.
 
     Forty of the 164 HumanEvalFix tasks and twenty percent of the Vericoding tasks go to test; the rest,
     minus cross-dataset test source tasks, is train (see :func:`split`). One ``random.Random(2026)`` stream
     draws HumanEvalFix first and Vericoding second, so both committed files come from a single deterministic
-    sequence. Returns the two split file paths.
+    sequence. The AlgoVeri benchmark is evaluation only: every AlgoVeri task goes to test and its train
+    split stays empty, so no AlgoVeri task ever enters training data. Returns the three split file paths.
+
+    Changed in #181: previously returned the ``(humanevalfix, vericoding)`` paths and now
+    returns ``(humanevalfix, vericoding, algoveri)`` in that order, so callers unpacking two
+    values must unpack three.
     """
     for name in _DATASETS:
         fetch(name, _resolve_cache_dir(cache_dir))
@@ -324,13 +430,15 @@ def make_splits(
     humanevalfix_test = sorted(rng.sample(humanevalfix_ids, humanevalfix_test_size))
     vericoding_ids = sorted(task.id for task in load(VERICODING, cache_dir))
     vericoding_test = sorted(rng.sample(vericoding_ids, int(len(vericoding_ids) * vericoding_test_fraction)))
+    algoveri_test = sorted(task.id for task in load(ALGOVERI, cache_dir))
     directory = _SPLITS_DIR if splits_dir is None else splits_dir
     directory.mkdir(parents=True, exist_ok=True)
     first = directory / f"{HUMANEVALFIX}_test.txt"
     second = directory / f"{VERICODING}_test.txt"
-    for path, ids in ((first, humanevalfix_test), (second, vericoding_test)):
+    third = directory / f"{ALGOVERI}_test.txt"
+    for path, ids in ((first, humanevalfix_test), (second, vericoding_test), (third, algoveri_test)):
         path.write_text("".join(f"{task_id}\n" for task_id in ids), encoding="utf-8")
-    return first, second
+    return first, second, third
 
 
 def main(argv: Sequence[str]) -> int:

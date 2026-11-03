@@ -542,6 +542,112 @@ def test_concurrent_sampling_covers_all_tasks(tmp_path: Path) -> None:
     assert summary["metrics"]["verified"] == 3
 
 
+def _algoveri_task() -> Task:
+    """An AlgoVeri-shaped task: ``vc-*`` contract parts with the ``<code>`` hole as ``vc-code``."""
+    return Task(
+        id="algoveri/abs_val",
+        source_task="algoveri/abs_val",
+        payload={
+            "vc-description": "Return the absolute value of an integer.",
+            "vc-preamble": "function AbsVal(x: int): int\n{\n  if x >= 0 then x else -x\n}",
+            "vc-helpers": "",
+            "vc-spec": "method abs_val(x: int) returns (r: int)\n  ensures r == AbsVal(x)",
+            "vc-code": "{\n  // Implement and verify the absolute value here.\n}",
+            "vc-postamble": "",
+        },
+    )
+
+
+def _algoveri_answer(task: Task) -> str:
+    """A complete answer for an AlgoVeri-shaped task: the frozen prefix plus a real body."""
+    return f"{frozen_of(task)}  r := AbsVal(x);\n}}\n"
+
+
+def test_task_spec_of_supports_a_task_without_a_reference_answer() -> None:
+    assert frozen_of(_algoveri_task()) == (
+        "function AbsVal(x: int): int\n{\n  if x >= 0 then x else -x\n}\n"
+        "method abs_val(x: int) returns (r: int)\n  ensures r == AbsVal(x)\n{\n"
+    )
+    prompt = build_prompt(_algoveri_task())
+    assert "Return the absolute value of an integer." in prompt
+    assert "method abs_val(x: int) returns (r: int)" in prompt
+    # The <code> hole never leaks into the frozen prefix or the prompt.
+    assert "absolute value here" not in frozen_of(_algoveri_task())
+    assert "absolute value here" not in prompt
+
+
+def test_algoveri_frozen_prefix_and_cheat_scan_reject_a_changed_spec() -> None:
+    from pcc.verifier import anti_cheat
+    from pcc.verifier.header import header_violations
+
+    task = _algoveri_task()
+    frozen = frozen_of(task)
+    good = _algoveri_answer(task)
+    assert frozen in good
+    assert anti_cheat(good, frozen) == ()
+    assert header_violations(good, frozen) == ()
+    cheated = frozen.replace("ensures r == AbsVal(x)", "ensures true", 1)
+    cheated += "  r := 0;\n}\n"
+    assert cheated != good
+    assert vericoding._is_cheat(cheated, frozen)
+
+
+def test_run_harness_accepts_the_algoveri_split(tmp_path: Path) -> None:
+    task = _algoveri_task()
+    client = ScriptedClient({"method abs_val(": [(_algoveri_answer(task), 0.1, 1.0)]})
+    out = tmp_path / "runs" / "algoveri"
+    summary = vericoding.run_harness(
+        split="algoveri",
+        out_dir=out,
+        model=GOOD_MODEL,
+        attempts=1,
+        max_cost_usd=10.0,
+        concurrency=1,
+        tasks=(task,),
+        client=client,
+        verify_fn=_ok,
+        git_sha="0" * 40,
+        started_utc="2026-10-31T07:53:42Z",
+    )
+    assert summary["split"] == "algoveri"
+    assert summary["dataset"] == "vericoding/algoveri"
+    expected_sha = hashlib.sha256(vericoding.ALGOVERI_SPLIT_FILE.read_bytes()).hexdigest()
+    assert summary["split_sha256"] == expected_sha
+    lines = read_jsonl(out / "results.jsonl")
+    assert [line["task_id"] for line in lines] == ["algoveri/abs_val"]
+    assert summary["metrics"]["verified"] == 1
+
+
+def test_run_harness_rejects_an_unknown_split(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="unknown split"):
+        vericoding.run_harness(
+            split="bogus",
+            out_dir=tmp_path / "runs" / "bogus",
+            model=GOOD_MODEL,
+            attempts=1,
+            max_cost_usd=10.0,
+        )
+
+
+def test_parser_accepts_the_algoveri_split() -> None:
+    args = eval_main.build_parser().parse_args(
+        [
+            "vericoding",
+            "--split",
+            "algoveri",
+            "--model",
+            GOOD_MODEL,
+            "--attempts",
+            "2",
+            "--max-cost-usd",
+            "1",
+            "--out",
+            "runs/a",
+        ]
+    )
+    assert args.split == "algoveri"
+
+
 def test_parser_defaults() -> None:
     args = eval_main.build_parser().parse_args(
         [

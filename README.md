@@ -248,6 +248,32 @@ solves 19 and misses 9; it newly solves `proof-only/vericoding/DD0070` and
 SFT 2 is below base Glimmer on proof-only (21 vs 28), likely because SFT 2 was
 trained only on the full-task format. The tasks come from Spark's own verified answers, which favours Spark. No significance claim is made on n = 33.
 
+### AlgoVeri: external Dafny benchmark (evaluation only)
+
+[AlgoVeri](https://huggingface.co/datasets/zzzzzhy/algoveri) (Apache-2.0, see
+[THIRD_PARTY.md](THIRD_PARTY.md)) contributes 77 classical-algorithm Dafny tasks with aligned contracts as an
+external comparison point for our SFT models. It never enters training data: the committed
+`algoveri_test.txt` holds every task and the train split is always empty. Run it through the same harness:
+
+```bash
+python -m pcc.evaluation vericoding --split algoveri --model <model> --attempts 4 --repair 0 --max-cost-usd 10 --out runs/<name>
+```
+
+`--repair` defaults to `0`; the example passes it explicitly so the recorded protocol is unambiguous.
+
+The loader maps each problem onto the Vericoding task shape, so the frozen spec and the anti-cheat rules
+apply unchanged: the contract (requires/ensures and signatures) is frozen and no `assume`, `{:axiom}` or
+`{:verify false}` is allowed. A dry run builds all 77 tasks with no skips; reproduce it with
+`uv run pytest -m live tests/evaluation/test_datasets.py -k algoveri_dry_run`, which also checks that no
+prompt or frozen prefix holds a cheat token and that the `<code>` hole never leaks into either.
+
+Protocol caveat: our numbers are reported side by side with the AlgoVeri paper (which reports 40.3% for
+Gemini-3 Flash in Dafny, with iterative repair roughly tripling pass rates), never as like-for-like. Every
+run records its exact protocol settings (attempt count, repair turns, model) in `run.json`; those recorded
+settings — not the paper's setup — define what our figures mean, and we use no LLM judge. The paper's
+figures and ours come from different protocols, so any comparison is indicative only and must cite the
+run's settings.
+
 ## Development
 
 ```bash
