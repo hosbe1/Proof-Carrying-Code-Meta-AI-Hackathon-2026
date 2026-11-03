@@ -7,6 +7,13 @@ the same prompt. Sampling runs in a thread pool (``--concurrency``); every answe
 process pool. Cost comes from completed model usage; once it reaches ``--max-cost-usd`` no new
 task is submitted, work already submitted finishes and its actual cost is recorded.
 
+With ``--repair N`` every failing attempt gets up to ``N`` follow-up turns in the same
+conversation: the previous answer as the assistant turn, then a user turn with the Dafny
+errors (``verifier.format_dafny_errors``) or the cheat violation and the instruction to
+return the full corrected program. The first verified turn counts; all ``attempts`` chains
+are sampled and costed, each chain stops at its first verified turn, and each repair turn
+counts against ``--max-cost-usd`` like an attempt.
+
 ``runs/<name>`` holds ``results.jsonl`` (one line per completed task, in stable task-ID order),
 ``run.json`` (the protocol fields) and ``summary.md`` (proof rate, cost and time per task).
 Tasks whose prompt cannot be built (``build_prompt`` raises ``ValueError``) are skipped before
@@ -39,7 +46,7 @@ from pcc.evaluation.prompts import SYSTEM_MESSAGE, build_prompt
 from pcc.evaluation.proof_only import build_proof_only_prompt
 from pcc.models import Message, ModelClient
 from pcc.models.router import ModelUnavailable
-from pcc.verifier import anti_cheat, same_executable, verify
+from pcc.verifier import anti_cheat, format_dafny_errors, same_executable, verify
 from pcc.verifier.ghost import declared_lemma_names
 from pcc.verifier.header import header_violations
 
@@ -123,43 +130,114 @@ def _is_proof_only_cheat(answer: str, program: str) -> bool:
     return bool(anti_cheat(answer, ""))
 
 
-def _verify_answer(answer: str, frozen_prefix: str, resource_limit: int) -> tuple[bool, float]:
-    """Verify one attempt: ``(verified, Dafny seconds)``; a cheat never reaches Dafny.
+def _cheat_form(violation: str) -> str:
+    """The violation of ``anti_cheat`` without its ``"line <n>: "`` prefix."""
+    _, _, form = violation.partition(": ")
+    return form or violation
 
-    This runs in process-pool workers, so it stays a module-level function taking picklable
+
+def _primary_violation(violations: tuple[str, ...]) -> str:
+    """The violation to feed back: the first non-``body-less`` one when there is one.
+
+    Trailing top-level code (such as a stray ``assume``) makes the scanner report the
+    method as body-less in addition to the real cheat; feeding back ``body-less method``
+    would hide the actionable ``assume`` violation, so the actionable one wins.
+    """
+    for violation in violations:
+        if not _cheat_form(violation).startswith("body-less"):
+            return violation
+    return violations[0]
+
+
+def _full_cheat_feedback(answer: str, frozen_prefix: str) -> str:
+    """The repair feedback for a cheating full-task answer."""
+    violations = anti_cheat(answer, frozen_prefix)
+    if violations:
+        return f"anti-cheat: {_cheat_form(_primary_violation(violations))}; remove it and prove without it"
+    header = header_violations(answer, frozen_prefix)
+    if header:
+        return f"{header[0]}; keep every method header exactly as given"
+    return "frozen spec changed: keep the supplied specification and method declaration exactly as given"
+
+
+def _proof_only_cheat_feedback(answer: str, program: str) -> str:
+    """The repair feedback for a cheating proof-only answer."""
+    violations = anti_cheat(answer, "")
+    if violations:
+        return f"anti-cheat: {_cheat_form(_primary_violation(violations))}; remove it and prove without it"
+    return (
+        "executable code changed: keep every line of executable code and every method header "
+        "exactly as given and add only proof annotations"
+    )
+
+
+def _repair_message(feedback: str) -> str:
+    """The repair user turn carrying ``feedback`` and asking for the full program."""
+    return f"{feedback}\n\nReturn the full corrected program."
+
+
+def _base_messages(task: Task) -> tuple[Message, Message]:
+    """The two opening turns of every chain for ``task``: system plus the shared user prompt."""
+    if _is_proof_only(task):
+        program = task.payload["program"]
+        assert isinstance(program, str)
+        return (Message("system", SYSTEM_MESSAGE), Message("user", build_proof_only_prompt(program)))
+    return (Message("system", SYSTEM_MESSAGE), Message("user", build_prompt(task)))
+
+
+def _verify_answer(answer: str, frozen_prefix: str, resource_limit: int) -> tuple[bool, float, str]:
+    """Verify one attempt: ``(verified, Dafny seconds, feedback)``; a cheat never reaches Dafny.
+
+    ``feedback`` is ``""`` when verified, otherwise the text fed back on a repair turn:
+    the cheat violation or ``format_dafny_errors`` over Dafny's errors. This runs in
+    process-pool workers, so it stays a module-level function taking picklable
     arguments only. A broken Dafny tool raises ``ToolError`` in the worker and aborts the run.
     """
     if _is_cheat(answer, frozen_prefix):
-        return False, 0.0
+        return False, 0.0, _full_cheat_feedback(answer, frozen_prefix)
     outcome = verify(answer, resource_limit=resource_limit)
-    return outcome.verified, outcome.seconds
+    if outcome.verified:
+        return True, outcome.seconds, ""
+    return False, outcome.seconds, format_dafny_errors(outcome.errors)
 
 
-def _verify_proof_only_answer(answer: str, program: str, resource_limit: int) -> tuple[bool, float]:
-    """Verify one proof-only attempt: ``(verified, Dafny seconds)``; a cheat never reaches Dafny.
+def _verify_proof_only_answer(answer: str, program: str, resource_limit: int) -> tuple[bool, float, str]:
+    """Verify one proof-only attempt: ``(verified, Dafny seconds, feedback)``; a cheat never reaches Dafny.
 
+    ``feedback`` is ``""`` when verified, otherwise the text fed back on a repair turn.
     This runs in process-pool workers, so it stays a module-level function taking picklable
     arguments only. A broken Dafny tool raises ``ToolError`` in the worker and aborts the run.
     """
     if _is_proof_only_cheat(answer, program):
-        return False, 0.0
+        return False, 0.0, _proof_only_cheat_feedback(answer, program)
     outcome = verify(answer, resource_limit=resource_limit)
-    return outcome.verified, outcome.seconds
+    if outcome.verified:
+        return True, outcome.seconds, ""
+    return False, outcome.seconds, format_dafny_errors(outcome.errors)
 
 
 def _sample_task(task: Task, client: ModelClient, model: str, attempts: int) -> list[_Attempt]:
     """Sample ``attempts`` independent answers for ``task``; a ``ToolError`` escapes to the caller."""
-    if _is_proof_only(task):
-        program = task.payload["program"]
-        assert isinstance(program, str)
-        messages = (Message("system", SYSTEM_MESSAGE), Message("user", build_proof_only_prompt(program)))
-    else:
-        messages = (Message("system", SYSTEM_MESSAGE), Message("user", build_prompt(task)))
+    messages = _base_messages(task)
     found: list[_Attempt] = []
     for _ in range(attempts):
         completion = client.complete(model, messages, step=_STEP, temperature=_TEMPERATURE, max_tokens=_MAX_TOKENS)
         found.append(_Attempt(completion.text, completion.usage.cost_usd, completion.usage.seconds))
     return found
+
+
+@dataclass
+class _ChainState:
+    """One mutable repair chain: the current answer with its accumulated cost and verification."""
+
+    answer: str
+    cost_usd: float
+    model_seconds: float
+    verify_seconds: float
+    repairs_sent: int
+    verified: bool
+    feedback: str
+    history: list[Message]
 
 
 def _read_jsonl(path: Path, label: str) -> list[dict[str, Any]]:
@@ -267,14 +345,15 @@ def _load_resume(
     contributor: bool,
     started_utc: str | None,
     git_sha: str | None,
+    repair: int = 0,
 ) -> tuple[dict[str, dict[str, Any]], float, str, str, str]:
     """The (done lines, spent cost, started_utc, git_sha, split_sha256) of a previous partial run.
 
     Resuming with different harness options would silently mix results from another
     configuration into the metrics, so a mismatch in ``split`` (the test/train name
     or the resolved tasks-file path), ``split_sha256`` (the committed split or the
-    tasks file bytes), ``endpoint``, ``model``, ``attempts``, ``max_cost_usd`` or
-    ``contributor`` raises a ``ToolError`` instead. The run
+    tasks file bytes), ``endpoint``, ``model``, ``attempts``, ``repair``,
+    ``max_cost_usd`` or ``contributor`` raises a ``ToolError`` instead. The run
     metadata (``started_utc``, ``git_sha``, ``split_sha256``) stays stable across resumes.
     """
     done = _done_lines(out_dir)
@@ -300,13 +379,15 @@ def _load_resume(
         ("endpoint", endpoint),
         ("model", model),
         ("attempts", attempts),
+        ("repair", repair),
         ("max_cost_usd", max_cost_usd),
         ("contributor", contributor),
     ):
-        if previous.get(key) != value:
+        previous_value = previous.get(key, 0 if key == "repair" else None)
+        if previous_value != value:
             raise ToolError(
                 f"cannot resume from {run_file}: {key} mismatch "
-                f"({previous.get(key)!r} != {value!r}); use a fresh --out directory"
+                f"({previous_value!r} != {value!r}); use a fresh --out directory"
             )
     if previous.get("split_sha256") != split_sha256:
         raise ToolError(f"cannot resume from {run_file}: the split content changed; use a fresh --out directory")
@@ -381,6 +462,8 @@ def _result_line(
     cost_usd: float,
     seconds: float,
     answer: str,
+    repair_turns_used: int | None = None,
+    repair_turns_total: int = 0,
 ) -> dict[str, Any]:
     """One ``results.jsonl`` line; ``id`` and ``task_id`` carry the same task ID."""
     return {
@@ -389,6 +472,8 @@ def _result_line(
         "verified": verified,
         "attempts": attempts,
         "verified_attempts": verified_attempts,
+        "repair_turns_used": repair_turns_used,
+        "repair_turns_total": repair_turns_total,
         "cost_usd": cost_usd,
         "seconds": seconds,
         "answer": answer,
@@ -401,6 +486,7 @@ def _write_run_json(
     endpoint: str,
     model: str,
     attempts: int,
+    repair: int = 0,
     split: str,
     split_sha256: str,
     contributor: bool,
@@ -424,6 +510,7 @@ def _write_run_json(
         "endpoint": endpoint,
         "model": model,
         "attempts": attempts,
+        "repair": repair,
         "split": split,
         "split_sha256": split_sha256,
         "contributor": contributor,
@@ -452,6 +539,7 @@ def _write_summary(
     endpoint: str,
     model: str,
     attempts: int,
+    repair: int = 0,
     split: str,
     lines: list[dict[str, Any]],
     stopped: bool,
@@ -468,6 +556,7 @@ def _write_summary(
         f"- Model: {model} (endpoint {endpoint})",
         f"- Split: {split}",
         f"- Attempts per task: {attempts}",
+        f"- Repair turns per attempt: {repair}",
         f"- Eligible tasks: {metrics['total']} of {total} (skipped {len(skipped)})",
         f"- Verified: {metrics['verified']} of {metrics['total']} (proof rate {metrics['proof_rate']:.3f})",
         f"- Total cost: {metrics['total_cost_usd']:.2f} USD",
@@ -483,6 +572,8 @@ def _write_summary(
         text.append(
             f"- {line.get('task_id')}: {state} "
             f"(attempts={line.get('attempts')}, verified_attempts={line.get('verified_attempts')}, "
+            f"repair_turns_used={line.get('repair_turns_used')}, "
+            f"repair_turns_total={line.get('repair_turns_total', 0)}, "
             f"cost_usd={float(line.get('cost_usd', 0.0)):.2f}, seconds={float(line.get('seconds', 0.0)):.1f})"
         )
     (out_dir / "summary.md").write_text("\n".join(text) + "\n", encoding="utf-8")
@@ -502,7 +593,8 @@ def run_harness(
     config: Config | None = None,
     tasks: tuple[Task, ...] | None = None,
     tasks_file: Path | None = None,
-    verify_fn: Callable[[str, str], tuple[bool, float]] | None = None,
+    verify_fn: Callable[[str, str], tuple[bool, float, str]] | None = None,
+    repair: int = 0,
     git_sha: str | None = None,
     started_utc: str | None = None,
 ) -> dict[str, Any]:
@@ -510,11 +602,13 @@ def run_harness(
 
     ``tasks`` overrides the dataset split (a test hook that avoids downloads); ``client``
     overrides the model client (tests pass a scripted client); ``verify_fn`` replaces the
-    process-pool Dafny verification with ``(verified, seconds)`` per answer (a test hook —
-    production always verifies with ``verifier.verify``); ``workers`` sizes the process pool
-    (the default is ``os.cpu_count()``); ``git_sha`` and ``started_utc`` override the
-    detected run metadata. ``verify_fn`` still sees no cheat: answers that fail the frozen-prefix
-    contract never reach it.
+    process-pool Dafny verification with ``(verified, seconds, feedback)`` per answer (a test
+    hook — production always verifies with ``verifier.verify``); ``workers`` sizes the process
+    pool (the default is ``os.cpu_count()``); ``repair`` adds up to that many follow-up turns
+    in the same conversation for every failing attempt; ``git_sha`` and ``started_utc``
+    override the detected run metadata. ``verify_fn`` still sees no cheat: answers that fail
+    the frozen-prefix contract never reach it; the harness feeds back the cheat violation
+    instead.
 
     With ``tasks_file`` (mutually exclusive with ``split``) the harness runs proof-only
     tasks from a JSONL file instead of a split: every line holds ``id``,
@@ -558,6 +652,8 @@ def run_harness(
         file_sha = hashlib.sha256(file_bytes).hexdigest()
     if attempts < 1:
         raise ValueError(f"attempts must be at least 1, got {attempts}")
+    if repair < 0:
+        raise ValueError(f"repair must be at least 0, got {repair}")
     if concurrency < 1:
         raise ValueError(f"concurrency must be at least 1, got {concurrency}")
     if workers is not None and workers < 1:
@@ -585,13 +681,24 @@ def run_harness(
     task_ids = [task.id for task in ordered]
     _write_skipped_report(out_dir, total_tasks=len(ordered_all), eligible_tasks=len(ordered), skipped_ids=skipped_ids)
     done, spent, kept_utc, kept_sha, split_sha = _load_resume(
-        out_dir, split_label, file_sha, endpoint, model, attempts, max_cost_usd, contributor, started_utc, git_sha
+        out_dir,
+        split_label,
+        file_sha,
+        endpoint,
+        model,
+        attempts,
+        max_cost_usd,
+        contributor,
+        started_utc,
+        git_sha,
+        repair,
     )
     _write_run_json(
         out_dir,
         endpoint=endpoint,
         model=model,
         attempts=attempts,
+        repair=repair,
         split=split_label,
         split_sha256=split_sha,
         contributor=contributor,
@@ -607,23 +714,61 @@ def run_harness(
     )
     pending = [task for task in ordered if task.id not in done]
     stopped = False
+    repairs_open = True
     try:
         sampled = _sample_pending(pending, active, model, attempts, concurrency, max_cost_usd, spent)
         if len(sampled) < len(pending):
             stopped = True
+        running = spent + sum(attempt.cost_usd for attempts_done in sampled.values() for attempt in attempts_done)
         results_path = out_dir / "results.jsonl"
         with results_path.open("a", encoding="utf-8") as handle:
             if verify_fn is not None:
                 for task in ordered:
                     if task.id in done or task.id not in sampled:
                         continue
-                    checks = _check_inline(task, sampled[task.id], verify_fn)
-                    line = _score_task(task, sampled[task.id], checks)
+                    base = _base_messages(task)
+                    chains: list[_ChainState] = []
+                    for attempt in sampled[task.id]:
+                        passed, check_seconds, feedback = _check_single_with_hook(task, attempt.text, verify_fn)
+                        chains.append(
+                            _ChainState(
+                                answer=attempt.text,
+                                cost_usd=attempt.cost_usd,
+                                model_seconds=attempt.seconds,
+                                verify_seconds=check_seconds,
+                                repairs_sent=0,
+                                verified=passed,
+                                feedback=feedback,
+                                history=[*base, Message("assistant", attempt.text)],
+                            )
+                        )
+                    for chain in chains:
+                        while repairs_open and not chain.verified and chain.repairs_sent < repair:
+                            if running >= max_cost_usd:
+                                stopped = True
+                                repairs_open = False
+                                break
+                            repair_text = _repair_message(chain.feedback)
+                            messages = tuple([*chain.history, Message("user", repair_text)])
+                            completion = active.complete(
+                                model, messages, step=_STEP, temperature=_TEMPERATURE, max_tokens=_MAX_TOKENS
+                            )
+                            chain.cost_usd += completion.usage.cost_usd
+                            chain.model_seconds += completion.usage.seconds
+                            running += completion.usage.cost_usd
+                            chain.history = [*messages, Message("assistant", completion.text)]
+                            chain.answer = completion.text
+                            chain.repairs_sent += 1
+                            passed, check_seconds, feedback = _check_single_with_hook(task, completion.text, verify_fn)
+                            chain.verify_seconds += check_seconds
+                            chain.verified = passed
+                            chain.feedback = feedback
+                    line = _score_chains(task, chains, len(sampled[task.id]))
                     handle.write(json.dumps(line, sort_keys=True) + "\n")
                     done[task.id] = line
             else:
                 with ProcessPoolExecutor(max_workers=workers) as pool:
-                    future_of: dict[str, list[Future[tuple[bool, float]]]] = {}
+                    future_of: dict[str, list[Future[tuple[bool, float, str]]]] = {}
                     for task in ordered:
                         if task.id in done or task.id not in sampled:
                             continue
@@ -643,11 +788,69 @@ def run_harness(
                                 pool.submit(_verify_answer, attempt.text, context, effective.dafny.resource_limit)
                                 for attempt in sampled[task.id]
                             ]
+                    chains_of: dict[str, list[_ChainState]] = {}
                     for task in ordered:
                         if task.id not in future_of:
                             continue
                         checks = [future.result() for future in future_of[task.id]]
-                        line = _score_task(task, sampled[task.id], checks)
+                        base = _base_messages(task)
+                        initial: list[_ChainState] = []
+                        for attempt, (passed, check_seconds, feedback) in zip(sampled[task.id], checks, strict=True):
+                            initial.append(
+                                _ChainState(
+                                    answer=attempt.text,
+                                    cost_usd=attempt.cost_usd,
+                                    model_seconds=attempt.seconds,
+                                    verify_seconds=check_seconds,
+                                    repairs_sent=0,
+                                    verified=passed,
+                                    feedback=feedback,
+                                    history=[*base, Message("assistant", attempt.text)],
+                                )
+                            )
+                        chains_of[task.id] = initial
+                    for task in ordered:
+                        if task.id not in chains_of:
+                            continue
+                        chains = chains_of[task.id]
+                        context = task_spec_of(task)
+                        proof_only = _is_proof_only(task)
+                        for chain in chains:
+                            while repairs_open and not chain.verified and chain.repairs_sent < repair:
+                                if running >= max_cost_usd:
+                                    stopped = True
+                                    repairs_open = False
+                                    break
+                                repair_text = _repair_message(chain.feedback)
+                                messages = tuple([*chain.history, Message("user", repair_text)])
+                                completion = active.complete(
+                                    model, messages, step=_STEP, temperature=_TEMPERATURE, max_tokens=_MAX_TOKENS
+                                )
+                                chain.cost_usd += completion.usage.cost_usd
+                                chain.model_seconds += completion.usage.seconds
+                                running += completion.usage.cost_usd
+                                chain.history = [*messages, Message("assistant", completion.text)]
+                                chain.answer = completion.text
+                                chain.repairs_sent += 1
+                                if proof_only:
+                                    future = pool.submit(
+                                        _verify_proof_only_answer,
+                                        chain.answer,
+                                        context,
+                                        effective.dafny.resource_limit,
+                                    )
+                                else:
+                                    future = pool.submit(
+                                        _verify_answer,
+                                        chain.answer,
+                                        context,
+                                        effective.dafny.resource_limit,
+                                    )
+                                passed, check_seconds, feedback = future.result()
+                                chain.verify_seconds += check_seconds
+                                chain.verified = passed
+                                chain.feedback = feedback
+                        line = _score_chains(task, chains, len(sampled[task.id]))
                         handle.write(json.dumps(line, sort_keys=True) + "\n")
                         done[task.id] = line
     except ToolError:
@@ -657,6 +860,7 @@ def run_harness(
             endpoint=endpoint,
             model=model,
             attempts=attempts,
+            repair=repair,
             split=split_label,
             split_sha256=split_sha,
             contributor=contributor,
@@ -675,6 +879,7 @@ def run_harness(
             endpoint=endpoint,
             model=model,
             attempts=attempts,
+            repair=repair,
             split=split_label,
             lines=lines,
             stopped=stopped,
@@ -688,6 +893,7 @@ def run_harness(
         endpoint=endpoint,
         model=model,
         attempts=attempts,
+        repair=repair,
         split=split_label,
         split_sha256=split_sha,
         contributor=contributor,
@@ -706,6 +912,7 @@ def run_harness(
         endpoint=endpoint,
         model=model,
         attempts=attempts,
+        repair=repair,
         split=split_label,
         lines=lines,
         stopped=stopped,
@@ -750,44 +957,46 @@ def _sample_pending(
     return sampled
 
 
-def _check_inline(
+def _check_single_with_hook(
     task: Task,
-    attempts_done: list[_Attempt],
-    verify_fn: Callable[[str, str], tuple[bool, float]],
-) -> list[tuple[bool, float]]:
-    """Check sampled attempts without Dafny: cheats fail, the rest go to ``verify_fn`` (tests)."""
+    answer: str,
+    verify_fn: Callable[[str, str], tuple[bool, float, str]],
+) -> tuple[bool, float, str]:
+    """Verify one answer with the test hook: cheats fail with repair feedback, the rest go to ``verify_fn``."""
     if _is_proof_only(task):
         program = task.payload["program"]
         assert isinstance(program, str)
-        checks: list[tuple[bool, float]] = []
-        for attempt in attempts_done:
-            if _is_proof_only_cheat(attempt.text, program):
-                checks.append((False, 0.0))
-            else:
-                checks.append(verify_fn(attempt.text, program))
-        return checks
+        if _is_proof_only_cheat(answer, program):
+            return False, 0.0, _proof_only_cheat_feedback(answer, program)
+        return verify_fn(answer, program)
     frozen = task_spec_of(task)
-    checks = []
-    for attempt in attempts_done:
-        if _is_cheat(attempt.text, frozen):
-            checks.append((False, 0.0))
-        else:
-            checks.append(verify_fn(attempt.text, frozen))
-    return checks
+    if _is_cheat(answer, frozen):
+        return False, 0.0, _full_cheat_feedback(answer, frozen)
+    return verify_fn(answer, frozen)
 
 
-def _score_task(task: Task, attempts_done: list[_Attempt], checks: list[tuple[bool, float]]) -> dict[str, Any]:
-    """One result line: verified when at least one attempt verifies, else the last attempt."""
-    verified_attempts = sum(1 for passed, _ in checks if passed)
-    first_good = next(
-        (attempt.text for attempt, (passed, _) in zip(attempts_done, checks, strict=True) if passed),
-        None,
-    )
-    answer = first_good if first_good is not None else attempts_done[-1].text
-    cost_usd = sum(attempt.cost_usd for attempt in attempts_done)
-    seconds = sum(attempt.seconds for attempt in attempts_done) + sum(check_seconds for _, check_seconds in checks)
+def _score_chains(task: Task, chains: list[_ChainState], attempts: int) -> dict[str, Any]:
+    """One result line from repair chains: verified when any chain verified at any turn."""
+    verified_attempts = sum(1 for chain in chains if chain.verified)
+    first_good = next((chain.answer for chain in chains if chain.verified), None)
+    answer = first_good if first_good is not None else chains[-1].answer
+    cost_usd = sum(chain.cost_usd for chain in chains)
+    seconds = sum(chain.model_seconds + chain.verify_seconds for chain in chains)
+    repair_total = sum(chain.repairs_sent for chain in chains)
+    repair_used: int | None = None
+    for chain in chains:
+        if chain.verified and (repair_used is None or chain.repairs_sent < repair_used):
+            repair_used = chain.repairs_sent
     return _result_line(
-        task.id, verified_attempts >= 1, len(attempts_done), verified_attempts, cost_usd, seconds, answer
+        task.id,
+        verified_attempts >= 1,
+        attempts,
+        verified_attempts,
+        cost_usd,
+        seconds,
+        answer,
+        repair_used,
+        repair_total,
     )
 
 

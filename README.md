@@ -260,6 +260,10 @@ Needs Python 3.12, [uv](https://docs.astral.sh/uv/) and [Dafny](https://dafny.or
 [AGENTS.md](AGENTS.md) for the rules every contributor, human or agent, follows. All work is tracked as GitHub issues
 and follows the process in AGENTS.md.
 
+The Vericoding evaluation harness (`python -m pcc.evaluation vericoding ...`) samples independent proofs per task;
+`--repair N` sends up to N Dafny-feedback repair turns per failing attempt in the same conversation and records
+`repair_turns_used` per task (`0` when the first turn verifies).
+
 ## Licensing
 
 [AGPL-3.0](LICENSE).

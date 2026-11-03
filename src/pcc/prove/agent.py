@@ -12,7 +12,7 @@ from pcc.core import Assumption, DafnyError, ProofOutcome, Translation
 from pcc.models import Message, ModelClient
 from pcc.prove.prompts import SCHEMA, SYSTEM_PROMPT, build_user_prompt
 from pcc.pylib import signatures
-from pcc.verifier import anti_cheat, assemble, same_executable, verify
+from pcc.verifier import anti_cheat, assemble, format_dafny_errors, same_executable, verify
 
 STEP = "proof"
 
@@ -167,11 +167,7 @@ def _cheat_form(violation: str) -> str:
     return form or violation
 
 
-def _format_dafny_errors(errors: tuple[DafnyError, ...]) -> str:
-    """One error line for the next prompt, always carrying the ``dafny`` marker."""
-    if not errors:
-        return "dafny: verification failed"
-    return "dafny: " + "; ".join(f"line {error.line}: {error.message}" for error in errors)
+_format_dafny_errors = format_dafny_errors
 
 
 def prove(
