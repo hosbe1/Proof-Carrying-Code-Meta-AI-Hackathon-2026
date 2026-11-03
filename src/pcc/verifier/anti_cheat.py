@@ -252,7 +252,7 @@ def _blanked(code: str, spans: list[tuple[int, int]]) -> str:
     """Replace every span with spaces, keeping newlines so positions still line up."""
     chars = list(code)
     for start, end in spans:
-        for index in range(start, end):
+        for index in range(start, min(end, len(chars))):
             if chars[index] != "\n":
                 chars[index] = " "
     return "".join(chars)
