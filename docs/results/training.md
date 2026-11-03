@@ -11,6 +11,7 @@ from saved artifacts, not an account billing total.
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | 0 | 2026-11-01 | e473c81fa7f85058f4fc48c7498febb4e4a912a0 | muse-spark-1.3-contributor | yes | vericoding/train (2247 rows, 2237 eligible) | 2237 | 323 | 170 | 2589 | 301 | not persisted (prompt bytes bounded by 4050372 UTF-8 bytes) | not persisted (4096 per attempt cap) | about 8 h sampling | 2.53 estimate, not a billing total | timeout (8 h) |
 | 1 | 2026-11-02 | 404d01f6f4399cafd61ba082138c1162009818be | glimmer-sft (SFT 1 adapter on Modal, FP8, reasoning low) | no | vericoding/train (2247 rows, 2237 eligible) | 2237 | 2067 (170 solved in round 0 skipped) | 836 | 16536 | 1450 | 6955812 (last try) | 7225089 (last try) | 4.3 h last try (sampling 2.2 h, Dafny check 2.1 h) | about 16 (Modal credits, 08:00-14:00 UTC window, includes about 30 min of the #84 Glimmer run; not a billing total) | done |
+| 2 | 2026-11-02 | 93a247fb73ff265d9b14793591ee83055d46a5df | glimmer-sft2 (SFT 2 adapter on Modal, FP8, reasoning low) | no | vericoding/train (2247 rows, 2237 eligible) | 2237 | 1231 (1006 solved in rounds 0 and 1 skipped) | 143 | 9848 | 5853992 (summary) | 6299896 (summary) | about 2.0 h sampling (7326 s) | unknown, Modal credits within the ticket's $30 cap; no billing total recorded locally (not a billing total) | done |
 | collection | 2026-11-01 | fa641442027a85fbe99d8d17452faf4f6d4ac169 | muse-spark-1.3-contributor | yes | humanevalfix/train (100 tasks, fixed+buggy; Python/32 excluded) | 101 tasks (100 evaluated, 1 excluded) | 200 | 0 | 0 (pipeline run, no attempt cache) | 0 | 50952 | 241543 | about 41 min pipeline | 0.0534 | done |
 
 ## Round 0 notes (partial checkpoint accepted as the round-0 result)
@@ -70,6 +71,50 @@ from saved artifacts, not an account billing total.
 - Downstream: SFT 2 (#80) trains on round 0 (301 rows) plus round 1 (1450
   rows).
 
+## Round 2 notes (SFT 2 sampling, 2026-11-02)
+
+- Coverage: 1231 of 2237 eligible Vericoding train tasks ran with 8 attempts
+  each (9848 cached responses in `round2.jsonl.attempts.jsonl`, exactly 8 per
+  task); the 1006 tasks solved in rounds 0 (170) and 1 (836) were skipped with
+  `--skip-solved` on the round 0 and round 1 rows. Result: 143 of 1231 tasks
+  solved, 239 verified SFT rows (`round2.jsonl`).
+- Sampling: `python -m training.rejection --endpoint glimmer --model
+  glimmer-sft2 --tasks train --attempts 8 --concurrency 16 --workers 12
+  --skip-solved <round 0 + round 1 rows>` (per #179),
+  `PCC_GLIMMER_REASONING_STRENGTH=low` (the setting of the SFT 3 test eval).
+  Sampling and Dafny checks run in two phases like round 1.
+- Excluded: the same 10 rows without `vc-spec` as rounds 0 and 1.
+- Test split: never sampled; the run read `--tasks train` only. Leakage check
+  recorded: the 1231 sampled task IDs in `round2.jsonl.attempts.jsonl` have
+  zero intersection with the 569 Vericoding test-split IDs (checked locally
+  when publishing #179).
+- Tokens and wall time: `round2.jsonl.summary.json` reports 5853992 input and
+  6299896 output tokens, 7326 s wall time (about 2.0 h sampling),
+  `stop_reason` done and `cost_usd` 0 (GPU time bills separately). The summary
+  reports 9264 attempts while the attempts file holds 9848 lines (1231 x 8);
+  the difference is not reconciled locally and both figures are recorded here.
+- Spend: sampling ran on the shared `pcc-glimmer` Modal deployment, paid from
+  Modal credits within the ticket's $30 cap. No billing total is recorded
+  locally; confirming it remains open and this is not a billing total.
+- Local artifacts (not committed): `runs/round2/round2.jsonl` (SHA-256
+  `24e0ab7fe120c6bb5882888e5b890ee12b54e2e2231284c52ec96df66e8b05f5`
+  239 verified rows), `round2.jsonl.attempts.jsonl` (9848 lines),
+  `round2.jsonl.summary.json`, `round2.jsonl.tasks.jsonl` (1231 lines),
+  `round2.jsonl.skipped.json`, `solved-r0r1.jsonl` (1751 lines: the 301
+  round-0 plus 1450 round-1 SFT rows skipped),
+  `full-r012.jsonl` (SHA-256
+  `6ae2938e1201156c6635b5d244302143eeb713ec6030ccd4dd269f58eda73cb3`,
+  1990 lines: the SFT 3 full-task input),
+  `proof-only-r0r1.jsonl` (848 lines) and `proof-only-r2.jsonl` (181 lines),
+  `proof-only-train-tasks.jsonl` (SHA-256
+  `9842e8b9ea823bbfb50d67233c6770f1a6ab6f8366a8b521cc565b12d7965a02`,
+  1029 train proof-only tasks built from the round 0-2 answers),
+  `sft4-proof-only.jsonl` (SHA-256
+  `c4534f136303d9d8ab7b75479a167120314cf0b61b03ddb99054b527365b32f5`,
+  922 SFT 3-verified rows on those tasks).
+- Downstream: SFT 3 trains on `full-r012.jsonl` plus the 1029 proof-only
+  lines; SFT 4 adds `sft4-proof-only.jsonl`.
+
 ## Collection notes (HumanEval pipeline collection, 2026-11-01)
 
 - Coverage: 200 function versions evaluated (100 fixed + 100 buggy from 100
@@ -102,6 +147,8 @@ from saved artifacts, not an account billing total.
 | sft1 | 2026-11-01 | 9af9b2759d52647843d6c7632d5b78d5aa5dedc3 | accounts/fireworks/models/muse-glimmer-30b | session ts-274df4913ef44e39a9127857726365ff, run run-4b87798e63b84123ab56a5630637db13, checkpoint sft1-final-6b3d4ef4 | LoRA r16, 2 epochs, batch 8, 76 steps, Adam lr 1e-4 (beta1 0.9, beta2 0.95, eps 1e-8, wd 0), cross_entropy, seed 0 | 301 | c3d508bfbff7f1726b838e32e2753caa0279b3873a6688c0ec47a71f81dea9f1 | unknown, billing check pending (expected 0 while LoRA SFT is free until Nov 30; not a billing total) | accounts/mick/models/pcc-glimmer-sft1 (Fireworks; on record but not used — SFT 1 is served from the Modal adapter below) |
 | sft1-modal | 2026-11-01 | 9af9b2759d52647843d6c7632d5b78d5aa5dedc3 | accounts/fireworks/models/muse-glimmer-30b | none (Modal run: 34 s weight load, 394 s training) | LoRA r16 alpha 32, targets q/k/v/o + gate/up/down of the text tower, 2 epochs, batch 8, 76 steps, AdamW lr 1e-4 (betas 0.9/0.95, wd 0), bf16, gradient checkpointing, loss on the assistant turn only, rows above 16384 dropped (none); 95.8M trainable params on 1 x H200 | 301 | c3d508bfbff7f1726b838e32e2753caa0279b3873a6688c0ec47a71f81dea9f1 | about 1 (Modal H200 credits, outside the $0 cap; not a billing total) | pcc-glimmer:adapters/sft1 (`adapter_config.json`, `adapter_model.safetensors`); served as `glimmer-sft` |
 | sft2-modal | 2026-11-02 | ea911e5a6d196719565e22d382dca7794c86d94d | meta-models/Muse-Glimmer-30B (base Glimmer, not SFT 1) | none (Modal app pcc-sft2, run ap-lZBFBgCwb01epRufhUBjJX) | same recipe as sft1-modal: LoRA r16 alpha 32, text-tower q/k/v/o + gate/up/down, 2 epochs, batch 8, 438 steps, AdamW lr 1e-4 (betas 0.9/0.95, wd 0), bf16, loss on the assistant turn only, rows above 16384 dropped, shuffle seed 0; 1 x H200 | 1751 (round 0 rescored 301 + round 1 1450) | 294b72a20f4bf7a0053deaaf64c10f55fcc30c5bf48fed7b119504dbeb23fde5 | about 3 (Modal H200 credits, 35 min training; not a billing total) | pcc-glimmer:adapters/sft2 (`adapter_config.json`, `adapter_model.safetensors`); served as `glimmer-sft2` |
+| sft3-modal | 2026-11-02 | 93a247fb73ff265d9b14793591ee83055d46a5df | meta-models/Muse-Glimmer-30B (base Glimmer, not SFT 2) | controller record in #179 (no local training log committed) | same recipe as sft2-modal: LoRA r16 alpha 32, text-tower q/k/v/o + gate/up/down, 2 epochs, batch 8, 756 steps, AdamW lr 1e-4 (betas 0.9/0.95, wd 0), bf16, loss on the assistant turn only, rows above 16384 dropped, shuffle seed 0; 1 x H200 | 3019 (rounds 0 + 1 + 2 verified proofs, 1990, plus 1029 train proof-only lines) | 8b2c5a797358416b8e9f66133aabad671de89558839c9fe61791f07813cc703f | Modal H200 credits within the ticket's $30 cap; billing total pending controller record (not a billing total) | pcc-glimmer:/adapters/sft3 (path by the sft1/sft2 naming convention; served as `glimmer-sft3`, proven by the eval runs below) |
+| sft4-modal | 2026-11-03 | 2a2a777c2855b5a5bd0271b9422814766f9b5118 | meta-models/Muse-Glimmer-30B (base Glimmer, not SFT 3) | controller record in #179 (no local training log committed) | same recipe as sft3-modal: LoRA r16 alpha 32, text-tower q/k/v/o + gate/up/down, 2 epochs, batch 8, 986 steps, AdamW lr 1e-4 (betas 0.9/0.95, wd 0), bf16, loss on the assistant turn only, rows above 16384 dropped, shuffle seed 0; 1 x H200 | 3941 (SFT 3 data, 3019, plus 922 proof-only rows self-generated by SFT 3 on 1029 train proof-only tasks, 922/1029 verified at attempts 8 low) | 17fcef71cf92332d (SHA-256 prefix; full hash pending controller record) | Modal H200 credits within the ticket's $30 cap; billing total pending controller record (not a billing total) | pcc-glimmer:/adapters/sft4 (`adapter_model.safetensors`); served as `glimmer-sft4` |
 
 
 ## SFT 2 notes (Modal, 2026-11-02)
@@ -129,6 +176,70 @@ from saved artifacts, not an account billing total.
   FP8; a warm-up request to `glimmer-sft2` returned HTTP 200.
 - Result: Vericoding test pass@4 0.448 (SFT 1 0.278, base Glimmer 0.076),
   see `docs/results/2026-11-02-ea911e5-eval-glimmer-sft2/`.
+
+## SFT 4 notes (Modal, 2026-11-03)
+
+- Data: the SFT 3 data (3019 rows) plus `sft4-proof-only.jsonl`: 922
+  proof-only rows that SFT 3 itself generated on the 1029 train proof-only
+  tasks (`proof-only-train-tasks.jsonl`, built with `proof_only make
+  --format tasks` from the round 0-2 train answers). The generating run
+  (`runs/sft4-sample`, 2026-11-03, attempts 8, reasoning low) verified
+  922/1029 (proof rate 0.896). Total: 3941 rows, SHA-256 prefix
+  `17fcef71cf92332d` (full hash pending controller record; the local
+  `sft4-proof-only.jsonl` hashes to
+  `c4534f136303d9d8ab7b75479a167120314cf0b61b03ddb9a510b30fd6463c530`).
+  The HumanEval collection (#53) produced 0 SFT rows, so it adds nothing.
+- Base: base Glimmer, not SFT 3, as the plan asks.
+- Platform: Modal, same recipe as SFT 3; 986 steps, 6.58M trained tokens,
+  4895 s training on 1 x H200 (controller record in #179).
+- Adapter config: same LoRA r16 setup as SFT 2/3 (PEFT target-module fix as
+  in SFT 1/2 applies where needed; controller record).
+- Serving: `PCC_GLIMMER_ADAPTERS` gains `glimmer-sft4=/adapters/sft4`; the
+  eval runs below prove serving.
+- Gate (decided before training): SFT 4 replaces SFT 3 only if test pass@4 >=
+  253/569. Result 273/569 (0.480) vs SFT 3 259/569 (0.455): the gate passed
+  and SFT 4 is the main model.
+- Test split: never sampled for training. Leakage check recorded: the 1029
+  train proof-only tasks all derive from round 0-2 train answers
+  (`source_task` prefix `sft/` throughout), and the 33-task and 327-task
+  proof-only eval sets are test-derived and used for evaluation only.
+- Provenance: step, token, time, and adapter figures above are as reported by
+  the run controller in the issue record of 2026-11-03; no local training log
+  is committed. Verification needs volume and console access; the repository
+  alone cannot prove adapter presence, loss, token, or time figures.
+- Downstream: SFT 4 is the proof stage 1 model for evaluation, demo, and bug
+  hunt until a later round replaces it.
+
+## SFT 3 notes (Modal, 2026-11-02)
+
+- Data: `full-r012.jsonl` (1990 verified full-task rows: round 0 rescored 301
+  plus round 1 1450 plus round 2 239) followed by 1029 proof-only SFT lines
+  built from the round 0-2 train answers (`proof_only make --format sft` on
+  the train split): 3019 rows, SHA-256
+  `8b2c5a797358416b8e9f66133aabad671de89558839c9fe61791f07813cc703f`
+  (combined training-file hash as reported by the controller; the local
+  components hash to `6ae2938e...` for `full-r012.jsonl` and `9842e8b9...`
+  for `proof-only-train-tasks.jsonl`). The HumanEval collection (#53)
+  produced 0 SFT rows, so it adds nothing. Proof-only lines are new in SFT 3:
+  SFT 2 kept the full-task format only, and the SFT 1 to SFT 3 gain now mixes
+  more data with the new task type.
+- Base: base Glimmer, not SFT 2, as the plan asks.
+- Platform: Modal, same recipe as SFT 2; 756 steps (derived: ceil(3019/8)
+  batches x 2 epochs, same batching as SFT 1/2) on 1 x H200. Trained tokens,
+  loss curve, and wall time are not recorded locally (controller record in
+  #179).
+- Serving: `PCC_GLIMMER_ADAPTERS` gains `glimmer-sft3=/adapters/sft3`; the
+  eval runs below prove serving.
+- Result: Vericoding test pass@4 0.455 (SFT 2 0.448, SFT 1 0.278), see
+  `docs/results/2026-11-02-93a247f-eval-glimmer-sft3/`; proof-only 33-task
+  set: 24/33 (SFT 2 21, base Glimmer 28); proof-only v2 (327 tasks): 283/327
+  at reasoning low, 285/327 at reasoning medium. SFT 2 to SFT 3 is +4 net on
+  the same 569 test IDs (32 newly solved, 28 missed).
+- Test split: never sampled for training (see the round 2 leakage check).
+- Provenance: recipe, row, hash, and adapter figures above are as reported by
+  the run controller in the issue record of 2026-11-03; no local training log
+  is committed. Verification needs volume and console access; the repository
+  alone cannot prove adapter presence, loss, token, or time figures.
 
 ## SFT 1 notes (2026-11-01)
 
