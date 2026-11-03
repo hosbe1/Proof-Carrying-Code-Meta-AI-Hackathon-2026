@@ -386,7 +386,14 @@ def test_nested_generator_is_checked_normally(monkeypatch: pytest.MonkeyPatch, t
 
 
 @pytest.mark.parametrize(
-    "source", ["def f(x: int) -> int:\n    return eval(x)\n", "def f(x: int) -> int:\n    exec(x)\n"]
+    "source",
+    [
+        "def f(x: int) -> int:\n    return eval(x)\n",
+        "def f(x: int) -> int:\n    exec(x)\n",
+        "def f(x: str) -> float:\n    return timeit(stmt=x, number=1)\n",
+        "def f(x: str) -> float:\n    return timeit.timeit(x, number=1)\n",
+        "def f(x: str) -> list[float]:\n    return timeit.repeat(x)\n",
+    ],
 )
 def test_eval_exec_is_not_checkable(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, source: str) -> None:
     ref = function_ref(source=source, path=PATH, qualname="f", lineno=1)
@@ -1340,7 +1347,14 @@ def test_precheck_async(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "source", ["def f(x: int) -> int:\n    return eval(x)\n", "def f(x: int) -> int:\n    exec(x)\n"]
+    "source",
+    [
+        "def f(x: int) -> int:\n    return eval(x)\n",
+        "def f(x: int) -> int:\n    exec(x)\n",
+        "def f(x: str) -> float:\n    return timeit(stmt=x, number=1)\n",
+        "def f(x: str) -> float:\n    return timeit.timeit(x, number=1)\n",
+        "def f(x: str) -> list[float]:\n    return timeit.repeat(x)\n",
+    ],
 )
 def test_precheck_eval_exec(tmp_path: Path, source: str) -> None:
     ref = function_ref(source=source, path=PATH, qualname="f", lineno=1)

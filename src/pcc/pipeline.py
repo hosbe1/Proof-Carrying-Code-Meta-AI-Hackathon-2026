@@ -550,6 +550,19 @@ def _is_method(function: FunctionRef, repo_root: Path) -> bool:
     return any(isinstance(parent, ast.ClassDef) for parent in parents[:-1])
 
 
+def _runs_code_strings(func: ast.expr) -> bool:
+    """Whether a call of ``func`` compiles and runs code strings: ``eval``, ``exec``, or ``timeit``'s
+    ``timeit``/``repeat`` (issue #193), whose ``stmt``/``setup`` strings run outside the checked module."""
+    if isinstance(func, ast.Name):
+        return func.id in ("eval", "exec", "timeit")
+    return (
+        isinstance(func, ast.Attribute)
+        and isinstance(func.value, ast.Name)
+        and func.value.id == "timeit"
+        and func.attr in ("timeit", "repeat")
+    )
+
+
 def _has_own_yield(node: ast.AST) -> bool:
     """Whether ``node`` itself yields, ignoring nested scopes.
 
@@ -625,7 +638,7 @@ def precheck(
     """The step-0 not-checkable reason for ``function``, or ``None`` when it is checked normally.
 
     The first matching reason wins: a module import failure first (the module cannot even be
-    loaded), then generators, ``async`` functions, ``eval``/``exec``, ``threading``/
+    loaded), then generators, ``async`` functions, ``eval``/``exec``/``timeit``, ``threading``/
     ``multiprocessing``, methods, ``strategies_source`` failures such as ``"no types"``, and
     finally calls into the project other than a call of the function to itself (a callee with the
     same ``(path, qualname)`` counts as the function itself: the graph holds freshly discovered
@@ -645,7 +658,7 @@ def precheck(
     if any(isinstance(node, ast.AsyncFunctionDef) for node in definitions):
         return _ASYNC_REASON
     for node in ast.walk(tree):
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in ("eval", "exec"):
+        if isinstance(node, ast.Call) and _runs_code_strings(node.func):
             return _EVAL_REASON
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
