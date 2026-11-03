@@ -203,6 +203,11 @@ from saved artifacts, not an account billing total.
   train proof-only tasks all derive from round 0-2 train answers
   (`source_task` prefix `sft/` throughout), and the 33-task and 327-task
   proof-only eval sets are test-derived and used for evaluation only.
+  Content check (controller record in #179): the 3941 SFT 4 rows vs the 571
+  test-split specs (vc-preamble + vc-spec, whitespace-normalised) show 8 rows
+  containing 2 test specs (DD0114, DD0926), both of which also appear inside
+  train tasks upstream (e.g. DD0114 inside train DD0116) -- dataset
+  near-duplicates, not leakage; effect at most 2/569.
 - Provenance: step, token, time, and adapter figures above are as reported by
   the run controller in the issue record of 2026-11-03; no local training log
   is committed. Verification needs volume and console access; the repository
