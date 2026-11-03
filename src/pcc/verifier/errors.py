@@ -24,6 +24,13 @@ _CODE_LINE = re.compile(r"^\s*\d+\s*\|(?P<code>.*)$")
 _PYLIB_NAME = "PyLib.dfy"
 
 
+def format_dafny_errors(errors: tuple[DafnyError, ...]) -> str:
+    """One error line for the next prompt, always carrying the ``dafny`` marker."""
+    if not errors:
+        return "dafny: verification failed"
+    return "dafny: " + "; ".join(f"line {error.line}: {error.message}" for error in errors)
+
+
 def parse_errors(output: str) -> tuple[DafnyError, ...]:
     """Parse Dafny's combined output into one ``DafnyError`` per ``Error`` line.
 
@@ -72,4 +79,4 @@ def parse_errors(output: str) -> tuple[DafnyError, ...]:
     return tuple(errors)
 
 
-__all__ = ["parse_errors"]
+__all__ = ["format_dafny_errors", "parse_errors"]

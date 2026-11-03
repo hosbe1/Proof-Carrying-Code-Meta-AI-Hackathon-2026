@@ -149,8 +149,8 @@ class ScriptedClient:
             raise AssertionError(f"no scripted answer for prompt: {user[:80]!r}")
 
 
-def _ok(answer: str, frozen: str) -> tuple[bool, float]:
-    return True, 0.5
+def _ok(answer: str, frozen: str) -> tuple[bool, float, str]:
+    return True, 0.5, ""
 
 
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -220,9 +220,9 @@ def test_first_verified_answer_wins(tmp_path: Path) -> None:
     good = good_answer(task)
     seen: list[str] = []
 
-    def verify_second(answer: str, prefix: str) -> tuple[bool, float]:
+    def verify_second(answer: str, prefix: str) -> tuple[bool, float, str]:
         seen.append(answer)
-        return answer == good, 0.5
+        return (answer == good, 0.5, "" if answer == good else "dafny: line 1: failure")
 
     out = tmp_path / "runs" / "second"
     vericoding.run_harness(
@@ -259,7 +259,7 @@ def test_failed_attempts_keep_last_answer(tmp_path: Path) -> None:
         max_cost_usd=10.0,
         tasks=(task,),
         client=ScriptedClient({"method add(": [(f"{frozen}  r := 0;\n}}\n", 0.25, 1.0)] * 2}),
-        verify_fn=lambda answer, prefix: (False, 0.5),
+        verify_fn=lambda answer, prefix: (False, 0.5, "dafny: line 1: failure"),
         git_sha="0" * 40,
         started_utc="2026-10-31T00:00:00Z",
     )
@@ -420,9 +420,9 @@ def test_cheat_never_reaches_verifier(tmp_path: Path) -> None:
     task = add_task()
     calls: list[str] = []
 
-    def spy(answer: str, frozen: str) -> tuple[bool, float]:
+    def spy(answer: str, frozen: str) -> tuple[bool, float, str]:
         calls.append(answer)
-        return True, 0.1
+        return True, 0.1, ""
 
     out = tmp_path / "runs" / "cheat"
     vericoding.run_harness(
@@ -451,9 +451,9 @@ def test_header_change_never_reaches_verifier(tmp_path: Path) -> None:
     frozen = frozen_of(task)
     calls: list[str] = []
 
-    def spy(answer: str, prefix: str) -> tuple[bool, float]:
+    def spy(answer: str, prefix: str) -> tuple[bool, float, str]:
         calls.append(answer)
-        return True, 0.1
+        return True, 0.1, ""
 
     answer = (
         good_answer(task)
@@ -485,10 +485,10 @@ def test_tool_error_keeps_partial_results(tmp_path: Path) -> None:
     out = tmp_path / "runs" / "aborted"
     first, second = add_task(), neg_task()
 
-    def abort_on_neg(answer: str, frozen: str) -> tuple[bool, float]:
+    def abort_on_neg(answer: str, frozen: str) -> tuple[bool, float, str]:
         if "Neg(" in frozen:
             raise ToolError("boom: verifier failed")
-        return True, 0.5
+        return True, 0.5, ""
 
     client = ScriptedClient(
         {
@@ -561,6 +561,7 @@ def test_parser_defaults() -> None:
     assert args.endpoint == "meta"
     assert args.concurrency == 16
     assert args.workers is None
+    assert args.repair == 0
 
 
 def test_started_utc_default_format(tmp_path: Path) -> None:

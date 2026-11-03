@@ -392,7 +392,7 @@ def test_tasks_file_sends_proof_only_prompt(tmp_path: Path) -> None:
         max_cost_usd=10.0,
         tasks=None,
         client=fake,
-        verify_fn=lambda answer, context: (True, 0.5),
+        verify_fn=lambda answer, context: (True, 0.5, ""),
         git_sha="0" * 40,
         started_utc="2026-10-31T00:00:00Z",
     )
@@ -413,7 +413,7 @@ def test_tasks_file_run_json_holds_file_split(tmp_path: Path) -> None:
         attempts=1,
         max_cost_usd=10.0,
         client=FakeClient([ANSWER]),
-        verify_fn=lambda answer, context: (True, 0.5),
+        verify_fn=lambda answer, context: (True, 0.5, ""),
         git_sha="0" * 40,
         started_utc="2026-10-31T00:00:00Z",
     )
@@ -428,9 +428,9 @@ def test_tasks_file_body_change_is_not_verified(tmp_path: Path) -> None:
     answer = program.replace("x <= 2", "x <= 1")
     calls: list[str] = []
 
-    def spy(text: str, context: str) -> tuple[bool, float]:
+    def spy(text: str, context: str) -> tuple[bool, float, str]:
         calls.append(text)
-        return True, 0.5
+        return True, 0.5, ""
 
     out = tmp_path / "runs" / "file-body"
     vericoding.run_harness(
@@ -453,9 +453,9 @@ def test_tasks_file_header_change_is_not_verified(tmp_path: Path) -> None:
     answer = "method M(x: int) requires x > 0 {\n  var y := x;\n}\n"
     calls: list[str] = []
 
-    def spy(text: str, context: str) -> tuple[bool, float]:
+    def spy(text: str, context: str) -> tuple[bool, float, str]:
         calls.append(text)
-        return True, 0.5
+        return True, 0.5, ""
 
     out = tmp_path / "runs" / "file-header"
     vericoding.run_harness(
@@ -485,7 +485,7 @@ def test_tasks_file_resume_skips_completed(tmp_path: Path) -> None:
         attempts=1,
         max_cost_usd=10.0,
         client=first,
-        verify_fn=lambda answer, context: (True, 0.5),
+        verify_fn=lambda answer, context: (True, 0.5, ""),
         git_sha="0" * 40,
         started_utc="2026-10-31T00:00:00Z",
     )
@@ -498,7 +498,7 @@ def test_tasks_file_resume_skips_completed(tmp_path: Path) -> None:
         attempts=1,
         max_cost_usd=10.0,
         client=second,
-        verify_fn=lambda answer, context: (True, 0.5),
+        verify_fn=lambda answer, context: (True, 0.5, ""),
         git_sha="0" * 40,
         started_utc="2026-10-31T00:00:00Z",
     )
@@ -517,7 +517,7 @@ def test_tasks_file_changed_content_or_path_is_an_error(tmp_path: Path) -> None:
         attempts=1,
         max_cost_usd=10.0,
         client=FakeClient([ANSWER]),
-        verify_fn=lambda answer, context: (True, 0.5),
+        verify_fn=lambda answer, context: (True, 0.5, ""),
         git_sha="0" * 40,
         started_utc="2026-10-31T00:00:00Z",
     )
@@ -531,7 +531,7 @@ def test_tasks_file_changed_content_or_path_is_an_error(tmp_path: Path) -> None:
             attempts=1,
             max_cost_usd=10.0,
             client=FakeClient([ANSWER]),
-            verify_fn=lambda answer, context: (True, 0.5),
+            verify_fn=lambda answer, context: (True, 0.5, ""),
             git_sha="0" * 40,
             started_utc="2026-10-31T00:00:00Z",
         )
@@ -545,7 +545,7 @@ def test_tasks_file_changed_content_or_path_is_an_error(tmp_path: Path) -> None:
             attempts=1,
             max_cost_usd=10.0,
             client=FakeClient([ANSWER]),
-            verify_fn=lambda answer, context: (True, 0.5),
+            verify_fn=lambda answer, context: (True, 0.5, ""),
             git_sha="0" * 40,
             started_utc="2026-10-31T00:00:00Z",
         )

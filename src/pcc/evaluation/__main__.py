@@ -35,6 +35,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     vero.add_argument("--model", required=True, help="model id sampled for every attempt")
     vero.add_argument("--attempts", required=True, type=int, help="independent samples per task")
+    vero.add_argument(
+        "--repair",
+        default=0,
+        type=int,
+        help="follow-up repair turns per attempt with Dafny feedback in the same conversation",
+    )
     vero.add_argument("--max-cost-usd", required=True, type=float)
     vero.add_argument("--out", required=True, help="output directory, e.g. runs/<name>")
     vero.add_argument("--endpoint", default="meta", choices=("meta", "glimmer"))
@@ -64,6 +70,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 out_dir=Path(args.out),
                 model=args.model,
                 attempts=args.attempts,
+                repair=args.repair,
                 max_cost_usd=args.max_cost_usd,
                 endpoint=args.endpoint,
                 concurrency=args.concurrency,

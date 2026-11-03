@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pcc.verifier.anti_cheat import anti_cheat
 from pcc.verifier.dafny import VerifyOutcome, build_python, python_name, resolve, verify
-from pcc.verifier.errors import parse_errors
+from pcc.verifier.errors import format_dafny_errors, parse_errors
 from pcc.verifier.ghost import executable_part, same_executable
 from pcc.verifier.layout import assemble, method_name, module_name
 
@@ -18,6 +18,7 @@ __all__ = [
     "assemble",
     "build_python",
     "executable_part",
+    "format_dafny_errors",
     "method_name",
     "module_name",
     "parse_errors",
