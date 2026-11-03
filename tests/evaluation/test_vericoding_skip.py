@@ -134,7 +134,7 @@ def test_unbuildable_rows_skipped_before_sampling(tmp_path: Path) -> None:
         max_cost_usd=10.0,
         tasks=(good, bad_first, bad_second),
         client=client,
-        verify_fn=lambda answer, frozen: (True, 0.5),
+        verify_fn=lambda answer, frozen: (True, 0.5, ""),
         git_sha="0" * 40,
         started_utc="2026-10-31T00:00:00Z",
     )
@@ -175,7 +175,7 @@ def test_non_value_error_from_build_prompt_propagates(tmp_path: Path, monkeypatc
             max_cost_usd=10.0,
             tasks=(_good_task(), bad),
             client=_ScriptedClient({"method add(": [(_good_answer(_good_task()), 0.2, 1.0)]}),
-            verify_fn=lambda answer, frozen: (True, 0.5),
+            verify_fn=lambda answer, frozen: (True, 0.5, ""),
             git_sha="0" * 40,
             started_utc="2026-10-31T00:00:00Z",
         )
@@ -194,7 +194,7 @@ def test_resume_redetects_skips_without_new_calls(tmp_path: Path) -> None:
         max_cost_usd=10.0,
         tasks=tasks,
         client=client,
-        verify_fn=lambda answer, frozen: (True, 0.5),
+        verify_fn=lambda answer, frozen: (True, 0.5, ""),
         git_sha="0" * 40,
         started_utc="2026-10-31T00:00:00Z",
     )
@@ -208,7 +208,7 @@ def test_resume_redetects_skips_without_new_calls(tmp_path: Path) -> None:
         max_cost_usd=10.0,
         tasks=tasks,
         client=client,
-        verify_fn=lambda answer, frozen: (True, 0.5),
+        verify_fn=lambda answer, frozen: (True, 0.5, ""),
         git_sha="0" * 40,
         started_utc="2026-10-31T00:00:00Z",
     )
@@ -232,7 +232,7 @@ def test_all_skipped_selection_writes_empty_results(tmp_path: Path) -> None:
         max_cost_usd=10.0,
         tasks=tasks,
         client=client,
-        verify_fn=lambda answer, frozen: (True, 0.5),
+        verify_fn=lambda answer, frozen: (True, 0.5, ""),
         git_sha="0" * 40,
         started_utc="2026-10-31T00:00:00Z",
     )
