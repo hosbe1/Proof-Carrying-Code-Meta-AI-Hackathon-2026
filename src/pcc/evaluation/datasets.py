@@ -418,6 +418,10 @@ def make_splits(
     draws HumanEvalFix first and Vericoding second, so both committed files come from a single deterministic
     sequence. The AlgoVeri benchmark is evaluation only: every AlgoVeri task goes to test and its train
     split stays empty, so no AlgoVeri task ever enters training data. Returns the three split file paths.
+
+    Changed in #181: previously returned the ``(humanevalfix, vericoding)`` paths and now
+    returns ``(humanevalfix, vericoding, algoveri)`` in that order, so callers unpacking two
+    values must unpack three.
     """
     for name in _DATASETS:
         fetch(name, _resolve_cache_dir(cache_dir))
