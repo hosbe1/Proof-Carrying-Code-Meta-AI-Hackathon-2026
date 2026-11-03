@@ -14,6 +14,11 @@ return the full corrected program. The first verified turn counts; all ``attempt
 are sampled and costed, each chain stops at its first verified turn, and each repair turn
 counts against ``--max-cost-usd`` like an attempt.
 
+``--split algoveri`` (issue #181) runs the same harness on the external AlgoVeri Dafny
+benchmark instead of a Vericoding split: the loader maps each AlgoVeri problem onto the
+Vericoding ``vc-*`` payload shape, so the prompt, the frozen prefix and the anti-cheat
+rules apply unchanged. AlgoVeri is evaluation only and never enters training data.
+
 ``runs/<name>`` holds ``results.jsonl`` (one line per completed task, in stable task-ID order),
 ``run.json`` (the protocol fields) and ``summary.md`` (proof rate, cost and time per task).
 Tasks whose prompt cannot be built (``build_prompt`` raises ``ValueError``) are skipped before
@@ -54,6 +59,9 @@ HARNESS = "vericoding"
 
 #: The committed split file whose SHA-256 is recorded as ``split_sha256`` (it also defines the train complement).
 SPLIT_FILE = Path(__file__).resolve().parent / "splits" / "vericoding_test.txt"
+
+#: The committed AlgoVeri test file (evaluation only: it holds every AlgoVeri task).
+ALGOVERI_SPLIT_FILE = Path(__file__).resolve().parent / "splits" / "algoveri_test.txt"
 
 #: Keys of the Vericoding payload forming the immutable Dafny task prefix (the same contract as ``training.grpo``).
 _PREFIX_KEYS = ("vc-preamble", "vc-helpers", "vc-spec")
@@ -288,6 +296,16 @@ def _split_sha256() -> str:
         raw = SPLIT_FILE.read_bytes()
     except OSError as exc:
         raise ToolError(f"could not read the committed split file {SPLIT_FILE}: {exc}") from exc
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _split_sha256_for(split: str) -> str:
+    """SHA-256 of the committed split file behind ``split`` (``algoveri`` uses its own test file)."""
+    path = ALGOVERI_SPLIT_FILE if split == "algoveri" else SPLIT_FILE
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        raise ToolError(f"could not read the committed split file {path}: {exc}") from exc
     return hashlib.sha256(raw).hexdigest()
 
 
@@ -600,6 +618,9 @@ def run_harness(
 ) -> dict[str, Any]:
     """Run the Vericoding harness and return the ``run.json`` summary.
 
+    With ``split="algoveri"`` the harness runs the external AlgoVeri Dafny benchmark
+    (``datasets.split(datasets.ALGOVERI, "test")``) instead of a Vericoding split.
+
     ``tasks`` overrides the dataset split (a test hook that avoids downloads); ``client``
     overrides the model client (tests pass a scripted client); ``verify_fn`` replaces the
     process-pool Dafny verification with ``(verified, seconds, feedback)`` per answer (a test
@@ -638,10 +659,12 @@ def run_harness(
             which: Literal["test", "train"] = "test"
         elif split == "train":
             which = "train"
+        elif split == "algoveri":
+            which = "test"
         else:
-            raise ValueError(f"unknown split {split!r}; expected 'test' or 'train'")
+            raise ValueError(f"unknown split {split!r}; expected 'test', 'train' or 'algoveri'")
         split_label = split
-        file_sha = _split_sha256()
+        file_sha = _split_sha256_for(split)
     else:
         resolved_file = tasks_file.resolve()
         try:
@@ -670,7 +693,12 @@ def run_harness(
         active = client
     contributor = model == _CONTRIBUTOR_MODEL
     if tasks_file is None:
-        resolved = tasks if tasks is not None else datasets.split(datasets.VERICODING, which)
+        if tasks is not None:
+            resolved = tasks
+        elif split == "algoveri":
+            resolved = datasets.split(datasets.ALGOVERI, which)
+        else:
+            resolved = datasets.split(datasets.VERICODING, which)
     elif tasks is not None:
         resolved = tasks
     else:
@@ -1000,4 +1028,4 @@ def _score_chains(task: Task, chains: list[_ChainState], attempts: int) -> dict[
     )
 
 
-__all__ = ["CAP_LINE", "HARNESS", "SPLIT_FILE", "run_harness", "task_spec_of"]
+__all__ = ["ALGOVERI_SPLIT_FILE", "CAP_LINE", "HARNESS", "SPLIT_FILE", "run_harness", "task_spec_of"]

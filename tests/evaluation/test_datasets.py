@@ -22,6 +22,7 @@ from pcc.evaluation.datasets import Task, fetch, load, main, make_splits, split
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 HUMANEVALFIX_ROWS: list[dict[str, str]] = json.loads((FIXTURES / "humanevalfix.json").read_text(encoding="utf-8"))
 VERICODING_BYTES = (FIXTURES / "vericoding-train.jsonl").read_bytes()
+ALGOVERI_BYTES = (FIXTURES / "algoveri-dafny.jsonl").read_bytes()
 
 HUMANEVALFIX_IDS = [f"humanevalfix/Python/{n}" for n in range(10)]
 VERICODING_IDS = [
@@ -60,6 +61,14 @@ def _fixture_datasets() -> dict[str, datasets._DatasetSpec]:
             cache_filename="vericoding-train.jsonl",
             kind="jsonl",
         ),
+        "algoveri": datasets._DatasetSpec(
+            name="algoveri",
+            url="https://example.invalid/algoveri-dafny.jsonl",
+            revision="fixture",
+            sha256=hashlib.sha256(ALGOVERI_BYTES).hexdigest(),
+            cache_filename="algoveri-dafny.jsonl",
+            kind="jsonl",
+        ),
     }
 
 
@@ -68,11 +77,13 @@ def fixture_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[Pat
     """Serve the fixture datasets through a monkeypatched download into a bare cache directory."""
     specs = _fixture_datasets()
 
+    jsonl_bytes = {"vericoding": VERICODING_BYTES, "algoveri": ALGOVERI_BYTES}
+
     def fake_http_get(url: str) -> bytes:
         for spec in specs.values():
             if url == spec.url or url.startswith(spec.url + "?") or url.startswith(spec.url + "&"):
                 if spec.kind == "jsonl":
-                    return VERICODING_BYTES
+                    return jsonl_bytes[spec.name]
                 query = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
                 offset = int(query.get("offset", ["0"])[0])
                 length = int(query.get("length", ["100"])[0])
@@ -95,6 +106,7 @@ def fixture_splits(tmp_path: Path) -> Path:
         "humanevalfix/Python/5\nhumanevalfix/Python/8\n", encoding="utf-8"
     )
     (splits_dir / "vericoding_test.txt").write_text("vericoding/DA0003\n", encoding="utf-8")
+    (splits_dir / "algoveri_test.txt").write_text("algoveri/abs_val\n", encoding="utf-8")
     return splits_dir
 
 
@@ -203,6 +215,87 @@ def test_load_vericoding_filters_and_source_tasks(fixture_env: Path) -> None:
     assert "vericoding/VX0001" not in by_id
 
 
+def test_load_algoveri_task_shape(fixture_env: Path) -> None:
+    tasks = load("algoveri", fixture_env)
+    assert [task.id for task in tasks] == ["algoveri/abs_val", "algoveri/is_empty", "algoveri/max_two"]
+    assert all(isinstance(task, Task) for task in tasks)
+    by_id = {task.id: task for task in tasks}
+    assert by_id["algoveri/abs_val"].source_task == "algoveri/abs_val"
+    payload = by_id["algoveri/abs_val"].payload
+    # The loader maps each AlgoVeri problem onto the Vericoding vc-* payload shape.
+    assert set(payload) >= {
+        "vc-description",
+        "vc-preamble",
+        "vc-helpers",
+        "vc-spec",
+        "vc-code",
+        "vc-postamble",
+    }
+    assert "program" not in payload
+    assert payload["vc-description"] == "Return the absolute value of an integer."
+    assert "function AbsVal" in payload["vc-preamble"]
+    assert "method abs_val" in payload["vc-spec"]
+    # The <code> hole is kept as vc-code (never entering the prompt or the frozen
+    # prefix); the trailing Main method of is_empty becomes its vc-postamble.
+    assert "absolute value here" in payload["vc-code"]
+    assert "absolute value here" not in payload["vc-spec"]
+    assert payload["vc-postamble"] == ""
+    assert "method Main()" in by_id["algoveri/is_empty"].payload["vc-postamble"]
+    assert by_id["algoveri/is_empty"].payload["vc-helpers"] == ""
+
+
+def test_load_algoveri_ids_use_distinct_namespace(fixture_env: Path) -> None:
+    tasks = load("algoveri", fixture_env)
+    assert all(task.id.startswith("algoveri/") for task in tasks)
+    assert all(task.source_task.startswith("algoveri/") for task in tasks)
+    assert all(not task.source_task.startswith("vericoding/") for task in tasks)
+
+
+def test_fetch_algoveri_uses_pinned_cache_filename(fixture_env: Path) -> None:
+    path = fetch("algoveri", fixture_env)
+    assert path == fixture_env / "algoveri-dafny.jsonl"
+    assert path.read_bytes() == ALGOVERI_BYTES
+
+
+def test_load_algoveri_rejects_rows_without_a_spec(
+    fixture_env: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bad = ALGOVERI_BYTES + b'{"problem_id": "broken", "nl_desc": "No spec here.", "spec": "no sections"}\n'
+    monkeypatch.setattr(
+        datasets,
+        "_DATASETS",
+        {
+            "algoveri": datasets._DatasetSpec(
+                name="algoveri",
+                url="https://example.invalid/algoveri-dafny.jsonl",
+                revision="fixture",
+                sha256=hashlib.sha256(bad).hexdigest(),
+                cache_filename="algoveri-dafny.jsonl",
+                kind="jsonl",
+            )
+        },
+    )
+    monkeypatch.setattr(datasets, "_http_get", lambda url: bad)
+    with pytest.raises(ToolError):
+        load("algoveri", tmp_path / "cache")
+
+
+def test_split_algoveri_test_is_the_benchmark_and_train_is_empty(fixture_env: Path, fixture_splits: Path) -> None:
+    test_tasks = split("algoveri", "test", fixture_env, fixture_splits)
+    assert [task.id for task in test_tasks] == ["algoveri/abs_val"]
+    assert split("algoveri", "train", fixture_env, fixture_splits) == ()
+
+
+def test_split_train_of_other_datasets_excludes_algoveri_test_source_tasks(
+    fixture_env: Path, fixture_splits: Path
+) -> None:
+    algoveri_test_source_tasks = {task.source_task for task in split("algoveri", "test", fixture_env, fixture_splits)}
+    assert algoveri_test_source_tasks == {"algoveri/abs_val"}
+    for name in ("humanevalfix", "vericoding"):
+        for task in split(name, "train", fixture_env, fixture_splits):
+            assert task.source_task not in algoveri_test_source_tasks
+
+
 def test_split_test_and_train(fixture_env: Path, fixture_splits: Path) -> None:
     test_tasks = split("humanevalfix", "test", fixture_env, fixture_splits)
     assert [task.id for task in test_tasks] == ["humanevalfix/Python/5", "humanevalfix/Python/8"]
@@ -226,6 +319,17 @@ def test_split_train_excludes_test_source_tasks_of_other_datasets(fixture_env: P
     }
     assert "humaneval/HumanEval/5" in test_source_tasks
     assert all(task.source_task not in test_source_tasks for task in train_tasks)
+
+
+def test_split_algoveri_test_rejects_unknown_test_ids(fixture_env: Path, tmp_path: Path) -> None:
+    bad_dir = tmp_path / "bad-splits"
+    bad_dir.mkdir()
+    (bad_dir / "humanevalfix_test.txt").write_text("humanevalfix/Python/5\n", encoding="utf-8")
+    (bad_dir / "vericoding_test.txt").write_text("vericoding/DA0003\n", encoding="utf-8")
+    (bad_dir / "algoveri_test.txt").write_text("algoveri/abs_val\nalgoveri/no_such_task\n", encoding="utf-8")
+    with pytest.raises(ToolError) as excinfo:
+        split("algoveri", "test", fixture_env, bad_dir)
+    assert "algoveri/no_such_task" in str(excinfo.value)
 
 
 def test_split_test_rejects_unknown_test_ids(fixture_env: Path, tmp_path: Path) -> None:
@@ -256,18 +360,25 @@ def test_split_missing_split_file_raises_tool_error(fixture_env: Path, tmp_path:
 
 def test_make_splits_writes_sorted_files(fixture_env: Path, tmp_path: Path) -> None:
     splits_dir = tmp_path / "out"
-    first, second = make_splits(fixture_env, splits_dir, humanevalfix_test_size=3, vericoding_test_fraction=0.25)
+    first, second, third = make_splits(fixture_env, splits_dir, humanevalfix_test_size=3, vericoding_test_fraction=0.25)
     assert first == splits_dir / "humanevalfix_test.txt"
     assert second == splits_dir / "vericoding_test.txt"
+    assert third == splits_dir / "algoveri_test.txt"
     for path, expected_count in ((first, 3), (second, 1)):
         lines = path.read_text(encoding="utf-8").splitlines()
         assert len(lines) == expected_count
         assert lines == sorted(lines)
         assert path.read_text(encoding="utf-8").endswith("\n")
+    # The AlgoVeri benchmark is evaluation only: every task goes to test.
+    assert third.read_text(encoding="utf-8").splitlines() == [
+        "algoveri/abs_val",
+        "algoveri/is_empty",
+        "algoveri/max_two",
+    ]
     # The draw is deterministic: running again gives the same files.
-    before = (first.read_bytes(), second.read_bytes())
+    before = (first.read_bytes(), second.read_bytes(), third.read_bytes())
     make_splits(fixture_env, splits_dir, humanevalfix_test_size=3, vericoding_test_fraction=0.25)
-    assert (first.read_bytes(), second.read_bytes()) == before
+    assert (first.read_bytes(), second.read_bytes(), third.read_bytes()) == before
 
 
 def test_main_rejects_unknown_command() -> None:
@@ -302,6 +413,11 @@ def test_committed_split_files_have_committed_shape() -> None:
     assert vericoding_ids == sorted(vericoding_ids)
     assert len(set(vericoding_ids)) == 571
     assert all(i.startswith("vericoding/") for i in vericoding_ids)
+    algoveri_ids = (datasets._SPLITS_DIR / "algoveri_test.txt").read_text(encoding="utf-8").splitlines()
+    assert len(algoveri_ids) == 77
+    assert algoveri_ids == sorted(algoveri_ids)
+    assert len(set(algoveri_ids)) == 77
+    assert all(i.startswith("algoveri/") for i in algoveri_ids)
 
 
 @pytest.mark.live
@@ -313,8 +429,12 @@ def test_live_downloads_both_datasets_and_checks_counts(tmp_path: Path) -> None:
     assert vericoding_path.is_file()
     humanevalfix_tasks = load("humanevalfix", cache_dir)
     vericoding_tasks = load("vericoding", cache_dir)
+    algoveri_tasks = load("algoveri", cache_dir)
     assert len(humanevalfix_tasks) == 164
     assert len(vericoding_tasks) == 2857
+    assert len(algoveri_tasks) == 77
+    assert len(split("algoveri", "test", cache_dir)) == 77
+    assert split("algoveri", "train", cache_dir) == ()
     assert {task.source_task for task in humanevalfix_tasks} == {f"humaneval/HumanEval/{n}" for n in range(164)}
     assert len(split("humanevalfix", "test", cache_dir)) == 40
     assert len(split("vericoding", "test", cache_dir)) == 571

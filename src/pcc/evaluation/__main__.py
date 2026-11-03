@@ -26,7 +26,11 @@ def build_parser() -> argparse.ArgumentParser:
     fix.add_argument("--spec-only", action="store_true", help="run steps 1 to 3 only, no translation or proof")
     vero = sub.add_parser("vericoding", help="sample proofs for Vericoding specs and verify them with Dafny")
     group = vero.add_mutually_exclusive_group(required=True)
-    group.add_argument("--split", choices=("test", "train"), help="the dataset split to run")
+    group.add_argument(
+        "--split",
+        choices=("test", "train", "algoveri"),
+        help="the dataset split to run (algoveri runs the external AlgoVeri Dafny benchmark)",
+    )
     group.add_argument(
         "--tasks-file",
         type=Path,
