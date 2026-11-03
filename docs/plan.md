@@ -485,7 +485,7 @@ which are the same 164 problems.
 |---|---|---|---|
 | Meta Model API | $150 per person, three people ($450) | Bug hunt (full pipeline, Spark in contributor mode, Wonder in proof stage 3), round 0 and training data collection (Spark, contributor mode), model comparison (Wonder), pipeline development, evaluation and demo, reserve | bug hunt $100, training data $100 (round 0 and collection), development, evaluation, comparison and demo $200, reserve $50 |
 | Modal | $100, plus $30 free per month as reserve | Round 1 sampling with vLLM on an H100, evaluation of base, SFT 1 and SFT 2, demo serving | round 1 sampling $40, evaluation and demo serving $60 |
-| Fireworks | $100 | SFT 1 and SFT 2 (free until Nov 30, if #3 confirms it), GRPO stretch (dropped; see #72); reserve for an on-demand deployment if a trained adapter cannot be served on Modal, or for sampling if Modal fails. Dropped: rejection-sampling rounds up to SFT 4 replaced it; see #72. | GRPO $50 (dropped, not spent), reserve $50 |
+| Fireworks | $100 | SFT 1 and SFT 2 (free until Nov 30, if #3 confirms it), GRPO (dropped, not run; see #72); reserve for an on-demand deployment if a trained adapter cannot be served on Modal, or for sampling if Modal fails. Dropped: rejection-sampling rounds up to SFT 4 replaced it; see #72. | GRPO $50 (dropped, not spent), reserve $50 |
 
 Modal's caps add up to the $100 partner credits. The free $30 per month, confirmed for November too, is the reserve. The
 three Meta keys sit in one Meta environment on one team member's machine.
@@ -499,7 +499,7 @@ Hard limits per run, set with `--max-cost-usd` (Meta) or `--max-seconds` (Modal 
   runs in contributor mode at $10 each $80; development $40; demo $10. $25 stays unassigned as margin.
 - Reserve $50 on Meta.
 - Modal: round 1 sampling $40, about 10 H100 hours; evaluation and demo serving $60, about 15 H100 hours.
-- Fireworks: GRPO stretch $50 (dropped, not spent), the `max_spend_usd` of the training config. Dropped: rejection-sampling rounds up to SFT 4 replaced it; see #72.
+- Fireworks: GRPO $50 (dropped, not spent), the `max_spend_usd` of the training config. Dropped: rejection-sampling rounds up to SFT 4 replaced it; see #72.
 
 - Glimmer is served only while a job runs and scales to zero; nothing runs permanently.
 - SFT is free on Fireworks until Nov 30, if #3 confirms it, through the UI or the Serverless Training API.
