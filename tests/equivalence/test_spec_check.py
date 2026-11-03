@@ -125,6 +125,26 @@ def test_non_bmp_case_agrees(tmp_path: Path) -> None:
 
 
 @pytest.mark.dafny
+def test_raises_cases_are_skipped(tmp_path: Path) -> None:
+    """``raises <ExcType>`` results from raising mutants carry no value and are skipped (issue #195)."""
+    dafny_spec = (FIXTURE_DIR / "palindrome_spec.dfy").read_text(encoding="utf-8")
+    spec = palindrome_spec()
+    cases = [("'aba'", "True"), ("'ab'", "raises IndexError"), ("'ab'", "False")]
+    record = check_spec(spec, dafny_spec, spec.function, tmp_path, cases=cases)
+    assert record.passed is True, record.detail
+
+
+def test_only_raises_cases_means_no_cases(tmp_path: Path) -> None:
+    """Only ``raises`` results leave no cases, without touching Dafny."""
+    spec = palindrome_spec()
+    record = check_spec(
+        spec, "predicate spec(s: string, result: bool)", spec.function, tmp_path, cases=[("''", "raises IndexError")]
+    )
+    assert record.passed is False
+    assert "no cases" in record.detail
+
+
+@pytest.mark.dafny
 def test_planted_wrong_spec_is_caught(tmp_path: Path) -> None:
     """A spec translated as ``true`` is caught on a case with the wrong result."""
     dafny_pre = (FIXTURE_DIR / "palindrome_spec.dfy").read_text(encoding="utf-8").split("predicate spec")[0]
