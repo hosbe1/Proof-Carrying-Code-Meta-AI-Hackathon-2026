@@ -247,11 +247,12 @@ def _script(
         "@SPEC_NAME@": json.dumps(python_name("spec")),
         "@PRE_NAME@": json.dumps(python_name("pre")),
         "@CONVERT_PATH@": json.dumps(str(Path(__file__).with_name("convert.py"))),
-        "@FUNC_SOURCE@": json.dumps(function.source),
-        "@PREDICATE@": json.dumps(spec.predicate),
-        # JSON has no missing value: a missing precondition is the Python ``None``, not ``null``.
-        "@PRECONDITION@": "None" if spec.precondition is None else json.dumps(spec.precondition),
-        "@CASES@": json.dumps([list(case) for case in cases]),
+        # ``repr``, not JSON: JSON writes a non-BMP character as a surrogate pair, which a Python literal
+        # reads as two lone surrogates (issue #191).
+        "@FUNC_SOURCE@": repr(function.source),
+        "@PREDICATE@": repr(spec.predicate),
+        "@PRECONDITION@": repr(spec.precondition),
+        "@CASES@": repr([list(case) for case in cases]),
     }
     script = _SCRIPT_TEMPLATE
     for token, value in replacements.items():

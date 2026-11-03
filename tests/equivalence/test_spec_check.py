@@ -115,6 +115,16 @@ def test_palindrome_spec_agrees(tmp_path: Path) -> None:
 
 
 @pytest.mark.dafny
+def test_non_bmp_case_agrees(tmp_path: Path) -> None:
+    """A case holding a non-BMP character reaches both predicates intact (issue #191)."""
+    dafny_spec = (FIXTURE_DIR / "palindrome_spec.dfy").read_text(encoding="utf-8")
+    spec = palindrome_spec()
+    cases = [(repr(s), repr(s == s[::-1])) for s in ["\U000daeab", "a\U0001f600a", "\U0001f600b"]]
+    record = check_spec(spec, dafny_spec, spec.function, tmp_path, cases=cases)
+    assert record.passed is True, record.detail
+
+
+@pytest.mark.dafny
 def test_planted_wrong_spec_is_caught(tmp_path: Path) -> None:
     """A spec translated as ``true`` is caught on a case with the wrong result."""
     dafny_pre = (FIXTURE_DIR / "palindrome_spec.dfy").read_text(encoding="utf-8").split("predicate spec")[0]
