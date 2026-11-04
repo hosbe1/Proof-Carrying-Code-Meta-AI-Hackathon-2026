@@ -5,12 +5,13 @@ them, so adding a type touches only ``types.py``.
 """
 
 from pcc.core import types as _types
-from pcc.core.errors import NotCheckable, PccError, ToolError, UnsupportedConstruct
+from pcc.core.errors import ModelApiError, NotCheckable, PccError, ToolError, UnsupportedConstruct
 from pcc.core.serialize import dumps, from_data, loads, to_data
 from pcc.core.types import *  # noqa: F403
 
 __all__ = [
     *_types.__all__,
+    "ModelApiError",
     "NotCheckable",
     "PccError",
     "ToolError",

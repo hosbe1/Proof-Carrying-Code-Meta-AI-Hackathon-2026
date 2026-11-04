@@ -30,6 +30,7 @@ from pcc.core import (
     Evidence,
     FunctionRef,
     Intent,
+    ModelApiError,
     NotCheckable,
     ProofOutcome,
     Result,
@@ -1206,6 +1207,56 @@ def test_run_many_tool_error_fails_the_call(monkeypatch: pytest.MonkeyPatch, tmp
 
     with pytest.raises(ToolError):
         pcc.pipeline.run_many([a, z], tmp_path, client=FakeClient([]), config=Config())
+
+
+def test_run_many_model_api_error_ends_only_that_function_open(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    a, _, _ = _order_refs()
+    z = function_ref(source="def z(x: int) -> int:\n    return x\n", path=PATH, qualname="z", lineno=10)
+    steps = _Steps(a)
+    _install(monkeypatch, steps)
+
+    def selective_prove(translation: Translation, assumptions: Sequence[Any], **kwargs: Any) -> ProofOutcome:
+        if translation.function.qualname == "a":
+            raise ModelApiError("model API error for 'm' (step 'proof') after retries: read timed out")
+        return steps.fake_prove(translation, assumptions, **kwargs)
+
+    monkeypatch.setattr(pcc.pipeline, "prove", selective_prove)
+
+    results = pcc.pipeline.run_many([a, z], tmp_path, client=FakeClient([]), config=Config())
+
+    assert [result.state for result in results] == [State.OPEN, State.PROVEN]
+    assert results[0].reason == "model API error: model API error for 'm' (step 'proof') after retries: read timed out"
+    assert results[0].translation is not None, "the parts reached before the failing call are kept"
+    assert results[1].proof is not None
+
+
+@pytest.mark.parametrize("step", ["collect", "translate", "search_counterexample"])
+def test_run_model_api_error_in_any_step_is_open(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, step: str) -> None:
+    a, _, _ = _order_refs()
+    steps = _Steps(a)
+    _install(monkeypatch, steps)
+
+    def fail(*args: Any, **kwargs: Any) -> Any:
+        raise ModelApiError(f"model API error for 'm' (step {step!r}) after retries: 503")
+
+    monkeypatch.setattr(pcc.pipeline, step, fail)
+    if step == "translate":
+        monkeypatch.setattr(
+            pcc.pipeline, "transpile_function", lambda *args, **kwargs: (_ for _ in ()).throw(UnsupportedConstruct("x"))
+        )
+    if step == "search_counterexample":
+        monkeypatch.setattr(
+            pcc.pipeline,
+            "prove",
+            lambda translation, assumptions, **kwargs: ProofOutcome(
+                proven=False, dafny_source="", attempts=1, stage="glimmer"
+            ),
+        )
+
+    result = pcc.pipeline.run(a, tmp_path, client=FakeClient([]), config=Config())
+
+    assert result.state is State.OPEN
+    assert result.reason is not None and result.reason.startswith("model API error: ")
 
 
 def test_equivalence_uses_edge_case_model(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

@@ -29,6 +29,7 @@ from pcc.core import (
     Dependency,
     FunctionRef,
     Intent,
+    ModelApiError,
     NotCheckable,
     Result,
     SourceKind,
@@ -1009,7 +1010,8 @@ def run(
     module name (plus an import) and an unproven one by a generated assumptions module, and the run uses only
     the callees' specs. Failed ``MUTANTS`` and unsupported ``transpile_spec`` constructs share one
     ``max_rewrites`` counter; the rewritten spec runs the full step-3 check again. ``BudgetExceeded`` and an
-    elapsed time past ``max_seconds_per_function`` end the run ``open`` with the parts reached so far; the
+    elapsed time past ``max_seconds_per_function`` end the run ``open`` with the parts reached so far, and so does a
+    ``ModelApiError`` (a model call that still fails after its retries), with reason ``"model API error: <msg>"``; the
     second opinion is advisory and never changes the state. Expected step failures become result states;
     ``ToolError`` escapes. In scan mode (``config.pipeline.scan``) a step-3 or step-6 counterexample that
     contradicts the function's own doctests becomes ``open`` with reason ``"spec contradicts docstring"``
@@ -1239,11 +1241,11 @@ def run(
                 wrapped.usage,
             )
         )
-    except BudgetExceeded:
+    except (BudgetExceeded, ModelApiError) as error:
         return Result(
             function,
             State.OPEN,
-            _BUDGET_REASON,
+            _BUDGET_REASON if isinstance(error, BudgetExceeded) else f"model API error: {error}",
             intent,
             spec,
             translation,

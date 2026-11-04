@@ -15,7 +15,7 @@ from typing import Any
 
 import pytest
 
-from pcc.core import ToolError
+from pcc.core import ModelApiError, ToolError
 from pcc.models import Message, OpenAICompatClient
 from pcc.models.openai_compat import META_PRICES
 
@@ -250,7 +250,7 @@ def test_five_attempts_then_tool_error() -> None:
     server = _serve(state)
     sleeps: list[float] = []
     try:
-        with pytest.raises(ToolError, match="503"):
+        with pytest.raises(ModelApiError, match="503"):
             _client(server, sleeps).complete("m", (Message("user", "hi"),), step="intent")
     finally:
         server.shutdown()
@@ -277,10 +277,11 @@ def test_non_retryable_status_raises_at_once(status: int) -> None:
     server = _serve(state)
     sleeps: list[float] = []
     try:
-        with pytest.raises(ToolError):
+        with pytest.raises(ToolError) as excinfo:
             _client(server, sleeps).complete("m", (Message("user", "hi"),), step="intent")
     finally:
         server.shutdown()
+    assert not isinstance(excinfo.value, ModelApiError), "a non-retryable status aborts the whole run"
     assert len(state.requests) == 1
     assert sleeps == []
 
@@ -307,7 +308,7 @@ def test_connection_error_retries_then_raises() -> None:
     server.server_close()
     sleeps: list[float] = []
     client = OpenAICompatClient(f"http://127.0.0.1:{port}", "test-key", prices=PRICES, sleep=sleeps.append)
-    with pytest.raises(ToolError):
+    with pytest.raises(ModelApiError, match="after retries: connection error"):
         client.complete("m", (Message("user", "hi"),), step="intent", max_tokens=None)
     assert sleeps == [1, 2, 4, 8]
 
@@ -392,7 +393,7 @@ def test_second_invalid_json_raises() -> None:
     state = _StubState([_ok("not json"), _ok("still not json"), _ok('{"answer": "yes"}')])
     server = _serve(state)
     try:
-        with pytest.raises(ToolError, match="invalid JSON"):
+        with pytest.raises(ModelApiError, match="invalid JSON"):
             _client(server, []).complete("m", (Message("user", "hi"),), step="intent", schema=SCHEMA)
     finally:
         server.shutdown()

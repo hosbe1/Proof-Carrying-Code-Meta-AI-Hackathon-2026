@@ -22,7 +22,7 @@ import urllib.request
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from pcc.core import ToolError, Usage
+from pcc.core import ModelApiError, ToolError, Usage
 from pcc.models.client import Completion, Message
 
 META_PRICES: dict[str, tuple[float, float]] = {
@@ -97,7 +97,9 @@ class OpenAICompatClient:
     attempts per call; the ``response_format`` fallback and the invalid-JSON
     retry share this budget. Retryable failures (408, 429, 500, 502, 503, 504 and
     connection errors) sleep with backoff 1, 2, 4, 8 s, or ``Retry-After`` when
-    valid; the fallbacks never sleep. ``Usage.seconds`` is the wall-clock time
+    valid; the fallbacks never sleep. When the retries run out, or the answer is
+    invalid JSON twice, the call raises ``ModelApiError`` (a ``ToolError``);
+    other HTTP errors stay plain ``ToolError``. ``Usage.seconds`` is the wall-clock time
     of the whole call, including sleeps. The API key is sent as
     ``Authorization: Bearer`` and never appears in an error message.
 
@@ -201,14 +203,14 @@ class OpenAICompatClient:
                 retries_used = self._consume_retry(model, step, retries_used, last_error)
                 continue
             if schema is not None and not _is_json(text):
-                raise ToolError(f"model {model!r} (step {step!r}) returned invalid JSON twice: {text[:200]}")
+                raise ModelApiError(f"model {model!r} (step {step!r}) returned invalid JSON twice: {text[:200]}")
             seconds = time.monotonic() - start
             cost = self._cost(model, input_tokens, output_tokens)
             return Completion(text, Usage(step, model, input_tokens, output_tokens, cost, seconds))
 
     def _consume_retry(self, model: str, step: str, retries_used: int, last_error: str) -> int:
         if retries_used >= self._max_retries:
-            raise ToolError(f"model API error for {model!r} (step {step!r}) after retries: {last_error}")
+            raise ModelApiError(f"model API error for {model!r} (step {step!r}) after retries: {last_error}")
         return retries_used + 1
 
     def _cost(self, model: str, input_tokens: int, output_tokens: int) -> float:
