@@ -29,3 +29,11 @@ class ToolError(Exception):
     This says nothing about the code under test, so it is not an expected failure and never becomes a result state.
     It must escape the pipeline as an exception.
     """
+
+
+class ModelApiError(ToolError):
+    """A model call still fails after its retries (timeouts, 5xx, an answer that is never valid JSON).
+
+    The API may well work for the next function, so ``pcc.pipeline.run`` ends only the function in progress ``open``
+    with the reason ``"model API error: <message>"`` instead of letting it abort the whole run (issue #197).
+    """
